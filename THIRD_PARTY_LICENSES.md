@@ -24,6 +24,8 @@ See each package on [pub.dev](https://pub.dev) for its license. Notable ones:
 | path_provider | BSD-3-Clause |
 | archive | MIT |
 | uuid | MIT |
+| flutter_secure_storage | BSD-3-Clause |
+| vault_agent_core (vendored) | MIT (Memex Lab) — fork of [dart_agent_core](https://github.com/memex-lab/dart_agent_core) at `683d942`; sources in `packages/vault_agent_core/` (not from pub.dev) |
 
 ## Distribution
 

@@ -392,7 +392,18 @@ class WslSession implements SandboxSession {
   Future<CommandResult> run(String cmd) async {
     final result = await Process.run(
       'wsl.exe',
-      ['-d', distroName, '-u', 'root', '-e', '/bin/sh', '-c', cmd],
+      [
+        '-d',
+        distroName,
+        '-u',
+        'root',
+        '--cd',
+        kGuestHome,
+        '-e',
+        '/bin/sh',
+        '-c',
+        cmd,
+      ],
       stdoutEncoding: null,
       stderrEncoding: null,
     );
@@ -404,7 +415,64 @@ class WslSession implements SandboxSession {
   }
 
   @override
+  Future<void> writeGuestFile(String guestAbsolutePath, List<int> bytes) async {
+    final guestPath = assertGuestPathUnderHome(guestAbsolutePath);
+    final parent = p.posix.dirname(guestPath);
+    final mkdir = await run('mkdir -p ${shellSingleQuote(parent)}');
+    if (!mkdir.success) {
+      throw StateError(
+        '无法在沙箱内创建目录 $parent：${mkdir.stderr}',
+      );
+    }
+
+    // Prefer \\wsl$\ UNC (no size limit from argv); fall back to base64 pipe.
+    final unc = _wslUncPath(guestPath);
+    try {
+      final file = File(unc);
+      await file.parent.create(recursive: true);
+      await file.writeAsBytes(bytes, flush: true);
+      return;
+    } catch (_) {
+      // Fall through.
+    }
+
+    final proc = await Process.start(
+      'wsl.exe',
+      [
+        '-d',
+        distroName,
+        '-u',
+        'root',
+        '--cd',
+        kGuestHome,
+        '-e',
+        '/bin/sh',
+        '-c',
+        'base64 -d > ${shellSingleQuote(guestPath)}',
+      ],
+    );
+    proc.stdin.add(utf8.encode(base64Encode(bytes)));
+    await proc.stdin.close();
+    final exit = await proc.exitCode;
+    if (exit != 0) {
+      final err = await proc.stderr.transform(utf8.decoder).join();
+      throw StateError('写入沙箱文件失败（exit $exit）：$err');
+    }
+  }
+
+  String _wslUncPath(String guestAbsolutePath) {
+    final relative = guestAbsolutePath.startsWith('/')
+        ? guestAbsolutePath.substring(1)
+        : guestAbsolutePath;
+    return '\\\\wsl\$\\$distroName\\${relative.replaceAll('/', '\\')}';
+  }
+
+  @override
   Future<void> dispose() async {
     _pty.kill();
   }
 }
+
+/// Single-quote for POSIX sh.
+String shellSingleQuote(String value) =>
+    "'${value.replaceAll("'", "'\\''")}'";

@@ -20,7 +20,7 @@
 | 会话间文件系统 / 软件包隔离 | ✅ |
 | 中文 UI | ✅ |
 | Android 沙箱 | ✅ 已验收（见 `android-mvp-report.md`） |
-| Agent 编排层 | ❌ 未开始 |
+| Agent 编排层 | ✅ 见 `agent-mvp-report.md` |
 
 ---
 

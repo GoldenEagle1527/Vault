@@ -21,7 +21,7 @@
 | 前台服务保活（通知「Vault 会话运行中」） | ✅（已接入） |
 | 中文 UI | ✅ |
 | Play 上架 | ❌ 不做（仅侧载） |
-| Agent 编排层 | ❌ 未开始（M4） |
+| Agent 编排层 | ✅ 见 `agent-mvp-report.md`（共用 Dart Agent；长任务仍用本报告 FGS） |
 
 成功标准（与计划一致）：真机新建会话 → Alpine shell → `apk` → 中文 UI；GPLv3 侧载说明齐全。
 
@@ -238,4 +238,4 @@ adb logcat | grep -i proot
 - 勿把 Windows 的 `assets/rootfs/alpine-minirootfs-aarch64.tar.gz` 当作 Android 唯一 rootfs  
 - 勿把 proot 放进 assets 再 chmod 执行  
 - 终端：`lib/widgets/session_terminal.dart`（非桌面 `hardwareKeyboardOnly: false`）  
-- 下一步：M4 Agent 编排；补全多设备矩阵与正式 release 签名侧载流程  
+- 下一步：补全多设备矩阵与正式 release 签名侧载流程；Agent 见 `agent-mvp-report.md`  

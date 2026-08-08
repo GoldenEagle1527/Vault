@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:uuid/uuid.dart';
 import 'package:vault/sandbox/sandbox_provider.dart';
+import 'package:vault/screens/agent_screen.dart';
+import 'package:vault/screens/settings_screen.dart';
 import 'package:vault/screens/terminal_screen.dart';
 
 class HomeScreen extends StatefulWidget {
@@ -99,6 +101,31 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
+  Future<void> _openAgent(SandboxInfo info) async {
+    setState(() {
+      _busy = true;
+      _error = null;
+    });
+    try {
+      final session = await widget.provider.attach(info.sessionId);
+      if (!mounted) return;
+      await Navigator.of(context).push(
+        MaterialPageRoute(
+          builder: (_) => AgentScreen(
+            title: info.displayName,
+            session: session,
+          ),
+        ),
+      );
+      await _refresh();
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _error = '打开 Agent 失败：$e');
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
   Future<void> _destroySession(SandboxInfo info) async {
     final ok = await showDialog<bool>(
       context: context,
@@ -156,6 +183,17 @@ class _HomeScreenState extends State<HomeScreen> {
         title: const Text('Vault'),
         actions: [
           IconButton(
+            onPressed: _busy
+                ? null
+                : () {
+                    Navigator.of(context).push(
+                      MaterialPageRoute(builder: (_) => SettingsScreen()),
+                    );
+                  },
+            icon: const Icon(Icons.settings),
+            tooltip: 'Agent 设置',
+          ),
+          IconButton(
             onPressed: _busy ? null : _refresh,
             icon: const Icon(Icons.refresh),
             tooltip: '刷新',
@@ -200,10 +238,25 @@ class _HomeScreenState extends State<HomeScreen> {
                     '${s.createdAt.toLocal()} · ${_formatBytes(s.approxDiskBytes)}',
                   ),
                   onTap: _busy ? null : () => _openSession(s),
-                  trailing: IconButton(
-                    icon: const Icon(Icons.delete_outline),
-                    tooltip: '删除',
-                    onPressed: _busy ? null : () => _destroySession(s),
+                  trailing: Wrap(
+                    spacing: 0,
+                    children: [
+                      IconButton(
+                        icon: const Icon(Icons.smart_toy_outlined),
+                        tooltip: 'Agent',
+                        onPressed: _busy ? null : () => _openAgent(s),
+                      ),
+                      IconButton(
+                        icon: const Icon(Icons.terminal),
+                        tooltip: '终端',
+                        onPressed: _busy ? null : () => _openSession(s),
+                      ),
+                      IconButton(
+                        icon: const Icon(Icons.delete_outline),
+                        tooltip: '删除',
+                        onPressed: _busy ? null : () => _destroySession(s),
+                      ),
+                    ],
                   ),
                 ),
               ),

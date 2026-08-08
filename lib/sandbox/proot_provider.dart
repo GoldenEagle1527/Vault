@@ -417,7 +417,7 @@ class ProotSession implements SandboxSession {
       '--kill-on-exit',
       '--change-id=0:0',
       '--rootfs=$rootfsPath',
-      '--cwd=/root',
+      '--cwd=$kGuestHome',
       '--bind=/dev',
       '--bind=/proc',
       '--bind=/sys',
@@ -435,7 +435,7 @@ class ProotSession implements SandboxSession {
         'PROOT_TMP_DIR': p.join(rootfsPath, 'tmp'),
         'TMPDIR': p.join(rootfsPath, 'tmp'),
         'PATH': '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin',
-        'HOME': '/root',
+        'HOME': kGuestHome,
         'USER': 'root',
         'LANG': 'C.UTF-8',
       },
@@ -450,6 +450,16 @@ class ProotSession implements SandboxSession {
           ? result.stderr as String
           : utf8.decode(result.stderr as List<int>, allowMalformed: true),
     );
+  }
+
+  @override
+  Future<void> writeGuestFile(String guestAbsolutePath, List<int> bytes) async {
+    final guestPath = assertGuestPathUnderHome(guestAbsolutePath);
+    final relative = guestPath.substring(1); // drop leading /
+    final hostPath = p.join(rootfsPath, relative);
+    final file = File(hostPath);
+    await file.parent.create(recursive: true);
+    await file.writeAsBytes(bytes, flush: true);
   }
 
   @override

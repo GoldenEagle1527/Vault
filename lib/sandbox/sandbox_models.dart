@@ -1,5 +1,11 @@
 import 'dart:typed_data';
 
+/// Default working directory / home inside every Vault guest session.
+const String kGuestHome = '/root';
+
+/// Host → guest file drop directory for Agent attachments.
+const String kGuestInboxDir = '$kGuestHome/inbox';
+
 /// Result of probing the host for sandbox support.
 class SandboxCapabilities {
   const SandboxCapabilities({
@@ -71,7 +77,57 @@ abstract class SandboxSession {
   Future<int> get exitCode;
 
   /// Non-interactive command for the agent loop.
+  ///
+  /// Implementations should run as root with cwd [kGuestHome] when practical.
   Future<CommandResult> run(String cmd);
 
+  /// Write [bytes] to an absolute guest path (e.g. `/root/inbox/a.txt`).
+  ///
+  /// Creates parent directories. Path must stay under [kGuestHome] (no `..` escape).
+  Future<void> writeGuestFile(String guestAbsolutePath, List<int> bytes);
+
   Future<void> dispose();
+}
+
+/// Sanitize a user-facing file name for [kGuestInboxDir] (basename only).
+String sanitizeInboxFileName(String name) {
+  var base = name.replaceAll('\\', '/').split('/').last.trim();
+  if (base.isEmpty || base == '.' || base == '..') {
+    base = 'upload.bin';
+  }
+  base = base.replaceAll(RegExp(r'[^\w.\-+=@()\[\]{} ]'), '_');
+  if (base.length > 180) {
+    base = base.substring(base.length - 180);
+  }
+  return base;
+}
+
+String inboxGuestPath(String fileName) =>
+    '$kGuestInboxDir/${sanitizeInboxFileName(fileName)}';
+
+/// Reject path traversal outside [kGuestHome].
+String assertGuestPathUnderHome(String guestAbsolutePath) {
+  final raw = guestAbsolutePath.trim();
+  if (!raw.startsWith('/')) {
+    throw ArgumentError('guest path must be absolute: $guestAbsolutePath');
+  }
+  final parts = <String>[];
+  for (final seg in raw.split('/')) {
+    if (seg.isEmpty || seg == '.') continue;
+    if (seg == '..') {
+      if (parts.isEmpty) {
+        throw ArgumentError('guest path escapes root: $guestAbsolutePath');
+      }
+      parts.removeLast();
+      continue;
+    }
+    parts.add(seg);
+  }
+  final normalized = '/${parts.join('/')}';
+  if (normalized != kGuestHome && !normalized.startsWith('$kGuestHome/')) {
+    throw ArgumentError(
+      'guest path must be under $kGuestHome: $guestAbsolutePath',
+    );
+  }
+  return normalized;
 }
