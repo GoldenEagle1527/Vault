@@ -19,7 +19,7 @@
 | 默认不挂载 Windows 盘符 | ✅ |
 | 会话间文件系统 / 软件包隔离 | ✅ |
 | 中文 UI | ✅ |
-| Android 沙箱 | ❌ 未开始（见 `android-mvp-plan.md`） |
+| Android 沙箱 | ✅ 已验收（见 `android-mvp-report.md`） |
 | Agent 编排层 | ❌ 未开始 |
 
 ---
@@ -207,4 +207,4 @@ default=root
 
 - Windows 实现以 `lib/sandbox/wsl_provider.dart` 为准，模式可复用到 Android 的 `ProotProvider`
 - 终端接线以 `lib/widgets/session_terminal.dart` 为准（Android 上 `hardwareKeyboardOnly: false`）
-- **下一步请严格按** [`android-mvp-plan.md`](./android-mvp-plan.md) **执行；M2 是硬门禁，未过关不要做 Android UI**
+- Android 已验收：见 [`android-mvp-report.md`](./android-mvp-report.md)；后续 M4 Agent 编排跨平台进行

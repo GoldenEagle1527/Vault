@@ -43,3 +43,12 @@ app.*.map.json
 /android/app/debug
 /android/app/profile
 /android/app/release
+
+# Local codegraph index
+.codegraph/
+
+# Local oonid/pr clone (nested git); ship jniLibs via scripts/build_android_proot.sh
+third_party/oonid-pr/
+
+# Keep xz intermediate optional; ship .tar.gz in assets
+assets/rootfs/android/*.tar.xz

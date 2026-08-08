@@ -105,8 +105,10 @@ class _HomeScreenState extends State<HomeScreen> {
       builder: (ctx) => AlertDialog(
         title: const Text('删除会话？'),
         content: Text(
-          '将执行 wsl --unregister 注销 ${info.displayName}，并删除其磁盘文件。'
-          '通常可回收约 1 GB 空间。',
+          _caps?.backend == SandboxBackend.proot
+              ? '将删除会话 ${info.displayName} 的独立 rootfs 目录并结束相关进程。'
+              : '将执行 wsl --unregister 注销 ${info.displayName}，并删除其磁盘文件。'
+                  '通常可回收约 1 GB 空间。',
         ),
         actions: [
           TextButton(
@@ -237,7 +239,8 @@ class _CapabilitiesCard extends StatelessWidget {
           children: [
             Text(
               caps.available
-                  ? '沙箱就绪（$_backendLabel，${caps.architecture}）'
+                  ? '沙箱就绪（$_backendLabel，${caps.architecture}'
+                      '${caps.pageSizeBytes != null ? "，页 ${caps.pageSizeBytes}B" : ""}）'
                   : '沙箱不可用',
               style: Theme.of(context).textTheme.titleSmall,
             ),

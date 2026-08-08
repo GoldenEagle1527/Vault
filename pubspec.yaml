@@ -66,6 +66,7 @@ flutter:
   assets:
     - assets/rootfs/alpine-minirootfs-x86_64.tar.gz
     - assets/rootfs/alpine-minirootfs-aarch64.tar.gz
+    - assets/rootfs/android/alpine-prootdistro-aarch64.tar.gz
 
   # An image asset can refer to one or more resolution-specific "variants", see
   # https://flutter.dev/to/resolution-aware-images
