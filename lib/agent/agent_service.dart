@@ -28,6 +28,11 @@ class AgentUiAssistantFinal extends AgentUiEvent {
   final String text;
 }
 
+/// Drop a trailing whitespace-only assistant draft (common before tool calls).
+class AgentUiDiscardDraftAssistant extends AgentUiEvent {
+  const AgentUiDiscardDraftAssistant();
+}
+
 class AgentUiToolCall extends AgentUiEvent {
   const AgentUiToolCall({required this.name, required this.arguments});
   final String name;
@@ -56,19 +61,45 @@ class AgentService {
     required SandboxSession session,
     required AgentSettings settings,
     Duration shellTimeout = kDefaultShellToolTimeout,
+    AgentState? initialState,
   })  : _session = session,
         _settings = settings,
-        _shellTimeout = shellTimeout;
+        _shellTimeout = shellTimeout,
+        _pendingState = initialState;
 
   final SandboxSession _session;
-  final AgentSettings _settings;
+  AgentSettings _settings;
   final Duration _shellTimeout;
 
   StatefulAgent? _agent;
+  /// Held between settings reloads until the next [_ensureAgent].
+  AgentState? _pendingState;
   CancelToken? _cancelToken;
   bool _running = false;
 
   bool get isRunning => _running;
+
+  /// Messages currently in the agent conversation (including pending state).
+  int get historyMessageCount =>
+      (_agent?.state ?? _pendingState)?.history.messages.length ?? 0;
+
+  /// Apply new BYO settings without wiping conversation history.
+  ///
+  /// The live [StatefulAgent] is dropped so the next turn rebuilds the LLM
+  /// client with the new credentials, but the same [AgentState] is reused.
+  void applySettings(AgentSettings settings) {
+    final unchanged = _settings.apiBaseUrl == settings.apiBaseUrl &&
+        _settings.apiKey == settings.apiKey &&
+        _settings.model == settings.model;
+    _settings = settings;
+    if (unchanged) return;
+
+    final existing = _agent?.state;
+    if (existing != null) {
+      _pendingState = existing;
+    }
+    _agent = null;
+  }
 
   void _ensureAgent() {
     if (_agent != null) return;
@@ -81,6 +112,9 @@ class AgentService {
       baseUrl: _normalizeBaseUrl(_settings.apiBaseUrl),
     );
 
+    final state = _pendingState ?? AgentState.empty();
+    _pendingState = null;
+
     _agent = StatefulAgent(
       name: 'vault_${_session.sessionId}',
       client: client,
@@ -88,11 +122,14 @@ class AgentService {
         createShellTool(_session, timeout: _shellTimeout),
       ],
       modelConfig: ModelConfig(model: _settings.model),
-      state: AgentState.empty(),
+      state: state,
       systemPrompts: vaultAgentSystemPrompts(sessionId: _session.sessionId),
       controller: AgentController(),
     );
   }
+
+  /// Visible for tests: materialize the agent with current settings/state.
+  void ensureAgentForTest() => _ensureAgent();
 
   /// Runs one user turn; yields UI events until complete, cancelled, or failed.
   ///
@@ -139,6 +176,8 @@ class AgentService {
       yield const AgentUiStatus('正在思考…');
       _ensureAgent();
       final agent = _agent!;
+      // Per model-turn buffer. Cleared on tool calls so preamble whitespace from
+      // a tool-using turn does not prefix the final user-facing reply.
       final buffer = StringBuffer();
 
       final context = buildAttachmentContextMessage(guestPaths);
@@ -155,6 +194,7 @@ class AgentService {
           case StreamingEventType.modelChunkMessage:
             final chunk = event.data as ModelMessage;
             final text = chunk.textOutput;
+            // Pass model text through unchanged.
             if (text != null && text.isNotEmpty) {
               buffer.write(text);
               yield AgentUiAssistantDelta(text);
@@ -167,6 +207,12 @@ class AgentService {
               yield AgentUiAssistantDelta(text);
             }
           case StreamingEventType.functionCallRequest:
+            // End this model-turn's UI buffer. Do not rewrite text — only
+            // choose whether the draft bubble stays (has content) or is dropped
+            // (whitespace-only preamble before tools).
+            for (final ui in _flushTurnBeforeTools(buffer)) {
+              yield ui;
+            }
             final calls = event.data;
             if (calls is List<FunctionCall>) {
               for (final call in calls) {
@@ -196,8 +242,11 @@ class AgentService {
                 yield AgentUiToolResult(name: r.name, result: text);
               }
             }
-          case StreamingEventType.beforeCallModel:
           case StreamingEventType.modelRetrying:
+            buffer.clear();
+            yield const AgentUiDiscardDraftAssistant();
+            yield const AgentUiStatus('正在调用模型…');
+          case StreamingEventType.beforeCallModel:
             yield const AgentUiStatus('正在调用模型…');
         }
       }
@@ -222,6 +271,20 @@ class AgentService {
     }
   }
 
+  /// Close the current UI turn buffer when the model switches to tools.
+  ///
+  /// Model text is never rewritten. Whitespace-only drafts are discarded as a
+  /// UI bubble (they are not the final answer); non-empty drafts are shown as-is.
+  static Iterable<AgentUiEvent> _flushTurnBeforeTools(StringBuffer buffer) sync* {
+    final draft = buffer.toString();
+    buffer.clear();
+    if (draft.trim().isEmpty) {
+      yield const AgentUiDiscardDraftAssistant();
+      return;
+    }
+    yield AgentUiAssistantFinal(draft);
+  }
+
   void cancel() {
     final token = _cancelToken;
     if (token != null && !token.isCancelled) {
@@ -232,6 +295,7 @@ class AgentService {
   Future<void> dispose() async {
     cancel();
     _agent = null;
+    _pendingState = null;
   }
 
   /// Visible for unit tests. Prefer calling via settings save path in production.

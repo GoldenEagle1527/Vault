@@ -74,8 +74,13 @@ class _AgentScreenState extends State<AgentScreen> {
 
   Future<void> _reloadService() async {
     final settings = await _store.load();
-    await _service?.dispose();
-    _service = AgentService(session: widget.session, settings: settings);
+    final existing = _service;
+    if (existing == null) {
+      _service = AgentService(session: widget.session, settings: settings);
+    } else {
+      // Keep conversation history across settings changes.
+      existing.applySettings(settings);
+    }
   }
 
   Future<void> _openSettings() async {
@@ -116,8 +121,7 @@ class _AgentScreenState extends State<AgentScreen> {
       return;
     }
 
-    // Recreate service with latest settings each turn (cheap).
-    await _reloadService();
+    // Reuse the same AgentService so StatefulAgent history accumulates.
     final service = _service!;
     final attachments = List<AgentAttachment>.from(_pendingAttachments);
     _inputCtrl.clear();
@@ -141,12 +145,17 @@ class _AgentScreenState extends State<AgentScreen> {
             _items.add(_ChatItem(kind: _ChatKind.assistant, text: text));
           }
         case AgentUiAssistantFinal(:final text):
-          if (_items.isEmpty || _items.last.kind != _ChatKind.assistant) {
-            _items.add(_ChatItem(kind: _ChatKind.assistant, text: text));
-          } else {
+          if (_items.isNotEmpty &&
+              _items.last.kind == _ChatKind.assistant &&
+              _items.last.subtitle == null) {
             _items.last.text = text;
+          } else {
+            _items.add(_ChatItem(kind: _ChatKind.assistant, text: text));
           }
+        case AgentUiDiscardDraftAssistant():
+          _discardBlankAssistantDraft();
         case AgentUiToolCall(:final name, :final arguments):
+          _discardBlankAssistantDraft();
           _items.add(
             _ChatItem(
               kind: _ChatKind.tool,
@@ -176,6 +185,16 @@ class _AgentScreenState extends State<AgentScreen> {
       _running = false;
       _status = null;
     });
+  }
+
+  /// Removes a trailing assistant bubble that only contains whitespace.
+  /// Used when a tool-using turn streamed newlines but never real reply text.
+  void _discardBlankAssistantDraft() {
+    while (_items.isNotEmpty &&
+        _items.last.kind == _ChatKind.assistant &&
+        _items.last.text.trim().isEmpty) {
+      _items.removeLast();
+    }
   }
 
   void _cancel() {
