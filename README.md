@@ -41,6 +41,7 @@ adb install -r build/app/outputs/flutter-apk/app-debug.apk
 ```
 
 安装后打开应用 → 新建会话 → 终端内验证 `uname -a` / `apk update`。  
+会话初始化会自动将 Alpine apk 源切换为国内镜像（阿里云），无代理也可下载软件包。  
 长任务请保留「Vault 会话运行中」通知，并按提示关闭电池优化。
 
 ## Agent（F1）

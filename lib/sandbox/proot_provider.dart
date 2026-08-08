@@ -4,6 +4,7 @@ import 'dart:io';
 import 'package:flutter/services.dart';
 import 'package:flutter_pty/flutter_pty.dart';
 import 'package:path/path.dart' as p;
+import 'package:vault/sandbox/alpine_mirrors.dart';
 import 'package:vault/sandbox/proot_host.dart';
 import 'package:vault/sandbox/rootfs_extract.dart';
 import 'package:vault/sandbox/sandbox_provider.dart';
@@ -80,6 +81,7 @@ class ProotProvider implements SandboxProvider {
       '每个会话独立 rootfs；无真 PID/网络 namespace；proot 有约 20–30% 性能开销。',
       '长任务请允许通知与关闭电池优化，避免灭屏后被杀。',
       'rootfs 使用 proot-distro Alpine（16KB 页友好），与 Windows 上游包分离。',
+      '初始化时会将 apk 源切换为国内镜像（$kDefaultAlpineApkMirror），无代理也可 apk update。',
     ];
 
     try {
@@ -160,13 +162,16 @@ class ProotProvider implements SandboxProvider {
     // /bin/sh → /bin/busybox; we rewrite them to relative links.
     await extractGuestRootfs(tarFile.path, dest.path);
 
-    // Ensure writable temp + resolv for apk
+    // Ensure writable temp + resolv for apk (AliDNS / DNSPod — usable in CN).
     await Directory(p.join(dest.path, 'tmp')).create(recursive: true);
     final resolv = File(p.join(dest.path, 'etc', 'resolv.conf'));
     if (!await resolv.exists()) {
       await resolv.parent.create(recursive: true);
-      await resolv.writeAsString('nameserver 8.8.8.8\nnameserver 1.1.1.1\n');
+      await resolv.writeAsString('nameserver 223.5.5.5\nnameserver 119.29.29.29\n');
     }
+
+    // Official Alpine CDN is unreachable without a proxy in many CN networks.
+    await applyAlpineApkMirrorOnHost(dest.path);
 
     if (!guestHasBinSh(dest.path)) {
       throw StateError(
@@ -251,6 +256,9 @@ class ProotProvider implements SandboxProvider {
         '请删除该会话后重新创建（需使用会保留 busybox 符号链接的解压逻辑）。',
       );
     }
+
+    // Older sessions may still point at dl-cdn; rewrite on attach.
+    await applyAlpineApkMirrorOnHost(rootfs.path);
 
     final bins = await _nativeBins();
     final session = ProotSession(

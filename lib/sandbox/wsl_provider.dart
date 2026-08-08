@@ -5,6 +5,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_pty/flutter_pty.dart';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
+import 'package:vault/sandbox/alpine_mirrors.dart';
 import 'package:vault/sandbox/sandbox_provider.dart';
 import 'package:vault/sandbox/wsl_output.dart';
 
@@ -116,6 +117,7 @@ class WslProvider implements SandboxProvider {
     final notes = <String>[
       '每个会话会导入独立的 WSL2 发行版；稀疏 ext4.vhdx 实际占用通常接近约 1 GB。',
       '所有 WSL2 发行版共享同一虚拟机、内核与网络命名空间——仅有文件系统与进程隔离。',
+      '初始化时会将 apk 源切换为国内镜像（$kDefaultAlpineApkMirror），无代理也可 apk update。',
       '若终端出现 localhost 代理提示：系统代理在 NAT 模式下无法直接进 WSL，'
           '可在 %UserProfile%\\.wslconfig 设置 networkingMode=mirrored，或忽略该警告。',
     ];
@@ -238,6 +240,24 @@ EOF
     if (conf.exitCode != 0) {
       stderr.writeln('写入 wsl.conf 失败：${conf.stderr}');
     }
+    await _configureApkMirrors(name);
+  }
+
+  /// Switch apk to a China mirror so `apk update` works without a proxy.
+  Future<void> _configureApkMirrors(String name) async {
+    final result = await _wsl([
+      '-d',
+      name,
+      '-u',
+      'root',
+      '-e',
+      '/bin/sh',
+      '-c',
+      alpineApkMirrorShellScript(),
+    ]);
+    if (result.exitCode != 0) {
+      stderr.writeln('配置 apk 国内镜像失败：${result.stderr}');
+    }
   }
 
   @override
@@ -248,7 +268,25 @@ EOF
       throw StateError('会话 $sessionId 没有对应的 WSL 发行版（$name）');
     }
     await _ensureHardened(name);
+    await _ensureApkMirrors(name);
     return WslSession(sessionId: sessionId, distroName: name);
+  }
+
+  /// Idempotent: rewrite official CDN repos on older sessions.
+  Future<void> _ensureApkMirrors(String name) async {
+    final check = await _wsl([
+      '-d',
+      name,
+      '-u',
+      'root',
+      '-e',
+      '/bin/sh',
+      '-c',
+      r'grep -E "dl-cdn\.alpinelinux\.org|dl-[0-9]\.alpinelinux\.org" '
+          r'/etc/apk/repositories >/dev/null 2>&1',
+    ]);
+    if (check.exitCode != 0) return;
+    await _configureApkMirrors(name);
   }
 
   /// 确保发行版已关闭 Windows PATH 注入；若刚写入配置则 terminate 使其生效。
