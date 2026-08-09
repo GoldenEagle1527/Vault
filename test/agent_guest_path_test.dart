@@ -26,6 +26,8 @@ void main() {
     expect(joined, contains('Alpine'));
     expect(joined, contains('/root/inbox'));
     expect(joined, contains('不是用户的 Windows/Android 主机'));
+    expect(joined, contains('Python 3.12'));
+    expect(joined, contains('python3'));
   });
 
   test('attachment context lists guest paths', () {

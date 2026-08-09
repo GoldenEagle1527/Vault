@@ -118,8 +118,9 @@ class WslProvider implements SandboxProvider {
     final notes = <String>[
       '每个工作区会导入独立的 WSL2 发行版；稀疏 ext4.vhdx 实际占用通常接近约 1 GB。',
       '所有 WSL2 发行版共享同一虚拟机、内核与网络命名空间——仅有文件系统与进程隔离。',
-      '初始化时会将 apk 源切换为国内镜像（$kDefaultAlpineApkMirror），'
-          '并安装 ${kDefaultAlpinePackages.join('、')}。',
+      '初始化时会将 apk / pip 源切换为国内镜像（apk: $kDefaultAlpineApkMirror；'
+          'pip: $kDefaultPipIndexUrl），'
+          '并安装 ${kDefaultAlpinePackages.join('、')}（python3 为 3.12.x）。',
       '若终端出现 localhost 代理提示：系统代理在 NAT 模式下无法直接进 WSL，'
           '可在 %UserProfile%\\.wslconfig 设置 networkingMode=mirrored，或忽略该警告。',
     ];
@@ -308,6 +309,7 @@ EOF
     }
     await _ensureHardened(name);
     await _ensureApkMirrors(name);
+    await _ensurePipMirror(name);
     // Refresh stubs + port each attach (host port may change across restarts).
     await _installOffloadBridge(name);
     return WslWorkspace(workspaceId: workspaceId, distroName: name);
@@ -328,6 +330,34 @@ EOF
     ]);
     if (check.exitCode == 0) return;
     await _configureApkMirrors(name);
+  }
+
+  /// Idempotent: ensure guest `/etc/pip.conf` uses the China PyPI mirror.
+  Future<void> _ensurePipMirror(String name) async {
+    final check = await _wsl([
+      '-d',
+      name,
+      '-u',
+      'root',
+      '-e',
+      '/bin/sh',
+      '-c',
+      'grep -Fq ${shellSingleQuote(kDefaultPipTrustedHost)} /etc/pip.conf',
+    ]);
+    if (check.exitCode == 0) return;
+    final result = await _wsl([
+      '-d',
+      name,
+      '-u',
+      'root',
+      '-e',
+      '/bin/sh',
+      '-c',
+      alpinePipMirrorShellScript(),
+    ]);
+    if (result.exitCode != 0) {
+      stderr.writeln('配置 pip 国内镜像失败：${result.stderr}');
+    }
   }
 
   /// 确保发行版已关闭 Windows PATH 注入；若刚写入配置则 terminate 使其生效。

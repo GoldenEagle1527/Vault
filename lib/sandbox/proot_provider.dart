@@ -100,8 +100,9 @@ class ProotProvider implements SandboxProvider {
       'Agent 使用长驻 shell（无 --kill-on-exit），后台服务可在同工作区跨命令存活。',
       '长任务请允许通知与关闭电池优化，避免灭屏后被杀。',
       'rootfs 使用 proot-distro Alpine（16KB 页友好），与 Windows 上游包分离。',
-      '初始化时会将 apk 源切换为国内镜像（$kDefaultAlpineApkMirror），'
-          '并安装 ${kDefaultAlpinePackages.join('、')}。',
+      '初始化时会将 apk / pip 源切换为国内镜像（apk: $kDefaultAlpineApkMirror；'
+          'pip: $kDefaultPipIndexUrl），'
+          '并安装 ${kDefaultAlpinePackages.join('、')}（python3 为 3.12.x）。',
     ];
 
     try {
@@ -190,6 +191,7 @@ class ProotProvider implements SandboxProvider {
 
     // Official Alpine CDN / other hosts → Tsinghua mirror.
     await applyAlpineApkMirrorOnHost(dest.path);
+    await applyAlpinePipConfOnHost(dest.path);
 
     if (!guestHasBinSh(dest.path)) {
       throw StateError(
@@ -312,6 +314,7 @@ class ProotProvider implements SandboxProvider {
     // Older workspaces may still use official CDN / 1.1.1.1; fix on attach.
     await applyAlpineResolvConfOnHost(rootfs.path);
     await applyAlpineApkMirrorOnHost(rootfs.path);
+    await applyAlpinePipConfOnHost(rootfs.path);
 
     // Re-attach: replace live handle without double-acquire.
     final prior = _live.remove(workspaceId);

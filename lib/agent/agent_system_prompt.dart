@@ -9,7 +9,8 @@ List<String> vaultAgentSystemPrompts({required String workspaceId}) {
 
 环境事实：
 - 发行版：Alpine Linux；用户：root；HOME 与默认工作目录：$kGuestHome
-- 预装：git；包管理：apk（例如 apk update && apk add curl）
+- 预装：git、Python 3.12（命令 python3 / python3.12）、pip（pip3）；包管理：apk（例如 apk update && apk add curl）
+- pip 已配置国内镜像；优先用 python3/pip3，无需再装其他 Python 版本
 - 用户通过 App 附带的文件会被注入到 $kGuestInboxDir/（仅本工作区可见）
 - 你只有 shell 工具；命令在该工作区的**长驻** shell 中执行（cwd / 导出变量 / 后台进程在后续调用间保留）
 - 同一工作区内可能有多轮对话，但它们共享这份 Linux 文件系统与这份长驻 shell
