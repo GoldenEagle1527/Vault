@@ -7,16 +7,61 @@ class TerminalScreen extends StatelessWidget {
     super.key,
     required this.title,
     required this.session,
+    this.disposeSession = true,
   });
 
   final String title;
   final SandboxSession session;
 
+  /// When false, the PTY stays owned by the caller (e.g. [AgentScreen]).
+  final bool disposeSession;
+
   @override
   Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
     return Scaffold(
-      appBar: AppBar(title: Text(title)),
-      body: SessionTerminal(session: session),
+      appBar: AppBar(
+        title: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text('Linux 终端'),
+            Text(
+              '$title · 高级调试',
+              style: Theme.of(
+                context,
+              ).textTheme.labelSmall?.copyWith(color: scheme.onSurfaceVariant),
+            ),
+          ],
+        ),
+      ),
+      body: Column(
+        children: [
+          Material(
+            color: scheme.surfaceContainerHigh,
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+              child: Row(
+                children: [
+                  Icon(Icons.info_outline, color: scheme.primary),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Text(
+                      '高级调试模式：命令会在当前任务的独立 Linux 空间中执行。',
+                      style: Theme.of(context).textTheme.bodySmall,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+          Expanded(
+            child: SessionTerminal(
+              session: session,
+              disposeSession: disposeSession,
+            ),
+          ),
+        ],
+      ),
     );
   }
 }

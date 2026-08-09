@@ -8,9 +8,16 @@ import 'package:xterm/xterm.dart';
 
 /// Wires a [SandboxSession] to an [xterm] [TerminalView].
 class SessionTerminal extends StatefulWidget {
-  const SessionTerminal({super.key, required this.session});
+  const SessionTerminal({
+    super.key,
+    required this.session,
+    this.disposeSession = true,
+  });
 
   final SandboxSession session;
+
+  /// When false, only the terminal view is torn down (session stays alive).
+  final bool disposeSession;
 
   @override
   State<SessionTerminal> createState() => _SessionTerminalState();
@@ -38,13 +45,16 @@ class _SessionTerminalState extends State<SessionTerminal> {
   @override
   void dispose() {
     _outSub?.cancel();
-    unawaited(widget.session.dispose());
+    if (widget.disposeSession) {
+      unawaited(widget.session.dispose());
+    }
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
-    final hardwareOnly = Platform.isWindows || Platform.isLinux || Platform.isMacOS;
+    final hardwareOnly =
+        Platform.isWindows || Platform.isLinux || Platform.isMacOS;
     return TerminalView(
       _terminal,
       autofocus: true,
