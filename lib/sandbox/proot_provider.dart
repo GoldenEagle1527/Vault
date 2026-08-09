@@ -7,6 +7,7 @@ import 'package:path/path.dart' as p;
 import 'package:vault/sandbox/alpine_mirrors.dart';
 import 'package:vault/sandbox/offload_host.dart';
 import 'package:vault/sandbox/offload_stubs.dart';
+import 'package:vault/sandbox/persistent_shell.dart';
 import 'package:vault/sandbox/proot_host.dart';
 import 'package:vault/sandbox/rootfs_extract.dart';
 import 'package:vault/sandbox/sandbox_provider.dart';
@@ -96,6 +97,7 @@ class ProotProvider implements SandboxProvider {
     final notes = <String>[
       'Android 侧载分发（不上 Play）；GPLv3。',
       '每个工作区独立 rootfs；无真 PID/网络 namespace；proot 有约 20–30% 性能开销。',
+      'Agent 使用长驻 shell（无 --kill-on-exit），后台服务可在同工作区跨命令存活。',
       '长任务请允许通知与关闭电池优化，避免灭屏后被杀。',
       'rootfs 使用 proot-distro Alpine（16KB 页友好），与 Windows 上游包分离。',
       '初始化时会将 apk 源切换为国内镜像（$kDefaultAlpineApkMirror），'
@@ -488,7 +490,7 @@ class ProotWorkspace implements SandboxWorkspace {
     required this.onDisposed,
     int rows = 32,
     int columns = 100,
-  }) {
+  }) : _hostEnvironment = Map<String, String>.from(environment) {
     _pty = Pty.start(
       prootPath,
       arguments: prootArgs,
@@ -505,8 +507,10 @@ class ProotWorkspace implements SandboxWorkspace {
   final String prootPath;
   final String loaderPath;
   final String rootfsPath;
+  final Map<String, String> _hostEnvironment;
   final Future<void> Function() onDisposed;
   late final Pty _pty;
+  PersistentShell? _agentShell;
   bool _disposed = false;
 
   @override
@@ -530,27 +534,14 @@ class ProotWorkspace implements SandboxWorkspace {
   @override
   Future<int> get exitCode => _pty.exitCode;
 
-  @override
-  Future<CommandResult> run(
-    String cmd, {
-    Map<String, String>? environment,
-  }) async {
-    final guestCmd = withGuestEnvironment(cmd, environment);
-    final args = <String>[
-      '--link2symlink',
-      '--kill-on-exit',
-      '--change-id=0:0',
-      '--rootfs=$rootfsPath',
-      '--cwd=$kGuestHome',
-      '--bind=/dev',
-      '--bind=/proc',
-      '--bind=/sys',
-      '--bind=$rootfsPath/tmp:/dev/shm',
-      '/bin/sh',
-      '-c',
-      guestCmd,
-    ];
+  /// Agent shell: long-lived proot **/without** `--kill-on-exit`.
+  Future<PersistentShell> _ensureAgentShell() async {
+    final existing = _agentShell;
+    if (existing != null && existing.running) return existing;
+    if (existing != null) await existing.stop();
+
     final hostEnv = <String, String>{
+      ..._hostEnvironment,
       'PROOT_LOADER': loaderPath,
       'PROOT_NO_SECCOMP': '1',
       'PROOT_TMP_DIR': p.join(rootfsPath, 'tmp'),
@@ -559,26 +550,46 @@ class ProotWorkspace implements SandboxWorkspace {
       'HOME': kGuestHome,
       'USER': 'root',
       'LANG': 'C.UTF-8',
-      ...?environment,
+      'TERM': 'dumb',
+      'PS1': '',
     };
     final offloadPort = OffloadHost.port;
     if (offloadPort != null && offloadPort > 0) {
       hostEnv.putIfAbsent('VAULT_OFFLOAD_PORT', () => '$offloadPort');
     }
-    final result = await Process.run(
-      prootPath,
-      args,
+
+    final shell = PersistentShell(
+      executable: prootPath,
+      arguments: [
+        '--link2symlink',
+        '--change-id=0:0',
+        '--rootfs=$rootfsPath',
+        '--cwd=$kGuestHome',
+        '--bind=/dev',
+        '--bind=/proc',
+        '--bind=/sys',
+        '--bind=$rootfsPath/tmp:/dev/shm',
+        '/bin/sh',
+      ],
       environment: hostEnv,
       workingDirectory: rootfsPath,
+      includeParentEnvironment: false,
     );
-    return CommandResult(
-      exitCode: result.exitCode,
-      stdout: result.stdout is String
-          ? result.stdout as String
-          : utf8.decode(result.stdout as List<int>, allowMalformed: true),
-      stderr: result.stderr is String
-          ? result.stderr as String
-          : utf8.decode(result.stderr as List<int>, allowMalformed: true),
+    _agentShell = shell;
+    return shell;
+  }
+
+  @override
+  Future<CommandResult> run(
+    String cmd, {
+    Map<String, String>? environment,
+    Duration? timeout,
+  }) async {
+    final shell = await _ensureAgentShell();
+    return shell.run(
+      cmd,
+      environment: environment,
+      timeout: timeout,
     );
   }
 
@@ -596,6 +607,8 @@ class ProotWorkspace implements SandboxWorkspace {
   Future<void> dispose() async {
     if (_disposed) return;
     _disposed = true;
+    await _agentShell?.stop();
+    _agentShell = null;
     _pty.kill();
     await onDisposed();
   }

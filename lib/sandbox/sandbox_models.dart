@@ -86,10 +86,20 @@ abstract class SandboxWorkspace {
   /// Non-interactive command for the agent loop.
   ///
   /// Implementations should run as root with cwd [kGuestHome] when practical.
+  /// Prefer a **long-lived guest shell** so cwd / exports / background jobs
+  /// persist across calls (OpenMinis PersistentShell pattern). One-shot
+  /// `sh -c` with proot `--kill-on-exit` kills daemons started with `&`.
   ///
   /// [environment] is applied inside the guest shell (not host Process APIs
   /// exposed to callers). Used e.g. for `VAULT_CHAT_SESSION_ID`.
-  Future<CommandResult> run(String cmd, {Map<String, String>? environment});
+  ///
+  /// When [timeout] elapses, return exit code 124 without tearing down the
+  /// persistent shell (best-effort Ctrl+C).
+  Future<CommandResult> run(
+    String cmd, {
+    Map<String, String>? environment,
+    Duration? timeout,
+  });
 
   /// Write [bytes] to an absolute guest path (e.g. `/root/inbox/a.txt`).
   ///

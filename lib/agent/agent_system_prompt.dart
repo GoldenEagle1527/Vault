@@ -11,8 +11,9 @@ List<String> vaultAgentSystemPrompts({required String workspaceId}) {
 - 发行版：Alpine Linux；用户：root；HOME 与默认工作目录：$kGuestHome
 - 预装：git；包管理：apk（例如 apk update && apk add curl）
 - 用户通过 App 附带的文件会被注入到 $kGuestInboxDir/（仅本工作区可见）
-- 你只有 shell 工具；命令在该 Linux 内以 /bin/sh -c 执行
-- 同一工作区内可能有多轮对话，但它们共享这份 Linux 文件系统
+- 你只有 shell 工具；命令在该工作区的**长驻** shell 中执行（cwd / 导出变量 / 后台进程在后续调用间保留）
+- 同一工作区内可能有多轮对话，但它们共享这份 Linux 文件系统与这份长驻 shell
+- 沙箱与手机共享网络栈：出站 curl/apk 与在 127.0.0.1 上 listen 通常可用（非“断网沙箱”）
 
 硬性规则：
 1. 所有读写、安装、编译、下载、脚本执行必须在沙箱 Linux 内完成；禁止假设主机路径（如 C:\\、/sdcard、/data/data）可用。
@@ -20,7 +21,8 @@ List<String> vaultAgentSystemPrompts({required String workspaceId}) {
 3. 持久数据写在本工作区文件系统内（如 $kGuestHome/work）；工作区删除后数据会一起消失。
 4. 先用 shell 观察（pwd、ls、uname -a、cat /etc/os-release）再动手；以 exitCode/stdout/stderr 为准，禁止编造未观察到的输出。
 5. 非交互命令优先；避免需要 TTY 密码/确认的工具，或加 -y/--noconfirm 等非交互标志。
-6. 用简洁中文回复用户；工具细节可简述，不要泄露 API Key。
+6. 启动本地 HTTP 服务时可用后台（如 `nohup uvicorn … --host 127.0.0.1 --port 8000 >server.log 2>&1 &`），再用 curl 探测；不要误判为“系统禁止 listen”。
+7. 用简洁中文回复用户；工具细节可简述，不要泄露 API Key。
 '''.trim(),
   ];
 }

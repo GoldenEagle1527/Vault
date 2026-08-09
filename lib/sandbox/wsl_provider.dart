@@ -8,6 +8,7 @@ import 'package:path_provider/path_provider.dart';
 import 'package:vault/offload/offload_host_server.dart';
 import 'package:vault/offload/wsl_offload_install.dart';
 import 'package:vault/sandbox/alpine_mirrors.dart';
+import 'package:vault/sandbox/persistent_shell.dart';
 import 'package:vault/sandbox/sandbox_provider.dart';
 import 'package:vault/sandbox/wsl_output.dart';
 
@@ -577,6 +578,8 @@ class WslWorkspace implements SandboxWorkspace {
 
   final String distroName;
   late final Pty _pty;
+  PersistentShell? _agentShell;
+  bool _disposed = false;
 
   @override
   Stream<Uint8List> get output => _pty.output;
@@ -599,15 +602,13 @@ class WslWorkspace implements SandboxWorkspace {
   @override
   Future<int> get exitCode => _pty.exitCode;
 
-  @override
-  Future<CommandResult> run(
-    String cmd, {
-    Map<String, String>? environment,
-  }) async {
-    final guestCmd = withGuestEnvironment(cmd, environment);
-    final result = await Process.run(
-      'wsl.exe',
-      [
+  Future<PersistentShell> _ensureAgentShell() async {
+    final existing = _agentShell;
+    if (existing != null && existing.running) return existing;
+    if (existing != null) await existing.stop();
+    final shell = PersistentShell(
+      executable: 'wsl.exe',
+      arguments: [
         '-d',
         distroName,
         '-u',
@@ -616,16 +617,25 @@ class WslWorkspace implements SandboxWorkspace {
         kGuestHome,
         '-e',
         '/bin/sh',
-        '-c',
-        guestCmd,
       ],
-      stdoutEncoding: null,
-      stderrEncoding: null,
+      environment: WslProvider._wslHostEnv,
+      includeParentEnvironment: false,
     );
-    return CommandResult(
-      exitCode: result.exitCode,
-      stdout: decodeWslOutput(result.stdout as List<int>),
-      stderr: decodeWslOutput(result.stderr as List<int>),
+    _agentShell = shell;
+    return shell;
+  }
+
+  @override
+  Future<CommandResult> run(
+    String cmd, {
+    Map<String, String>? environment,
+    Duration? timeout,
+  }) async {
+    final shell = await _ensureAgentShell();
+    return shell.run(
+      cmd,
+      environment: environment,
+      timeout: timeout,
     );
   }
 
@@ -679,6 +689,10 @@ class WslWorkspace implements SandboxWorkspace {
 
   @override
   Future<void> dispose() async {
+    if (_disposed) return;
+    _disposed = true;
+    await _agentShell?.stop();
+    _agentShell = null;
     _pty.kill();
   }
 }

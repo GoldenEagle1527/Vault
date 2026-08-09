@@ -29,6 +29,7 @@ class _FakeWorkspace implements SandboxWorkspace {
   Future<CommandResult> run(
     String cmd, {
     Map<String, String>? environment,
+    Duration? timeout,
   }) async => const CommandResult(exitCode: 0, stdout: '', stderr: '');
 
   @override
