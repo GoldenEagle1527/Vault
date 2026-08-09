@@ -1,10 +1,16 @@
 import 'dart:typed_data';
 
-/// Default working directory / home inside every Vault guest session.
+/// Default working directory / home inside every Vault guest workspace.
 const String kGuestHome = '/root';
 
 /// Host → guest file drop directory for Agent attachments.
 const String kGuestInboxDir = '$kGuestHome/inbox';
+
+/// Vault-managed metadata inside the guest Linux (conversations, etc.).
+const String kGuestVaultDir = '$kGuestHome/.vault';
+
+/// Agent conversation index + state JSON files live here (inside Linux).
+const String kGuestConversationsDir = '$kGuestVaultDir/conversations';
 
 /// Result of probing the host for sandbox support.
 class SandboxCapabilities {
@@ -32,16 +38,17 @@ class SandboxCapabilities {
 
 enum SandboxBackend { wsl, proot, unsupported }
 
-class SandboxInfo {
-  const SandboxInfo({
-    required this.sessionId,
+/// Metadata for one isolated Linux workspace (WSL distro or proot rootfs).
+class WorkspaceInfo {
+  const WorkspaceInfo({
+    required this.workspaceId,
     required this.displayName,
     required this.createdAt,
     this.diskPath,
     this.approxDiskBytes,
   });
 
-  final String sessionId;
+  final String workspaceId;
   final String displayName;
   final DateTime createdAt;
   final String? diskPath;
@@ -62,9 +69,9 @@ class CommandResult {
   bool get success => exitCode == 0;
 }
 
-/// Interactive PTY-like session. Does not expose [Process].
-abstract class SandboxSession {
-  String get sessionId;
+/// Interactive PTY-like handle for one workspace. Does not expose [Process].
+abstract class SandboxWorkspace {
+  String get workspaceId;
 
   Stream<Uint8List> get output;
 

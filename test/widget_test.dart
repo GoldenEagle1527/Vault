@@ -1,3 +1,5 @@
+import 'dart:typed_data';
+
 import 'package:flutter_test/flutter_test.dart';
 import 'package:vault/main.dart';
 import 'package:vault/sandbox/sandbox_provider.dart';
@@ -15,24 +17,45 @@ class _FakeProvider implements SandboxProvider {
   }
 
   @override
-  Future<SandboxSession> create(String sessionId) {
+  Future<SandboxWorkspace> create(String workspaceId) {
     throw UnimplementedError();
   }
 
   @override
-  Future<SandboxSession> attach(String sessionId) {
+  Future<SandboxWorkspace> attach(String workspaceId) {
     throw UnimplementedError();
   }
 
   @override
-  Future<void> destroy(String sessionId) async {}
+  Future<void> destroy(String workspaceId) async {}
 
   @override
-  Future<List<SandboxInfo>> list() async => const [];
+  Future<List<WorkspaceInfo>> list() async => const [];
+
+  @override
+  Future<Uint8List?> readGuestFile(
+    String workspaceId,
+    String guestAbsolutePath,
+  ) async =>
+      null;
+
+  @override
+  Future<void> writeGuestFile(
+    String workspaceId,
+    String guestAbsolutePath,
+    List<int> bytes,
+  ) async {}
+
+  @override
+  Future<void> deleteGuestPath(
+    String workspaceId,
+    String guestAbsolutePath, {
+    bool recursive = false,
+  }) async {}
 }
 
 void main() {
-  testWidgets('Vault 主页渲染欢迎区与空任务状态', (tester) async {
+  testWidgets('Vault 主页渲染欢迎区与空工作区状态', (tester) async {
     await tester.pumpWidget(
       VaultApp(provider: _FakeProvider(), themeController: ThemeController()),
     );
@@ -41,7 +64,7 @@ void main() {
     expect(find.text('Vault'), findsWidgets);
     expect(find.textContaining('今天想让 Vault 帮你做什么'), findsOneWidget);
     expect(find.textContaining('环境不可用'), findsWidgets);
-    expect(find.textContaining('还没有任务'), findsOneWidget);
-    expect(find.text('新建任务'), findsOneWidget);
+    expect(find.textContaining('还没有工作区'), findsOneWidget);
+    expect(find.text('新建工作区'), findsOneWidget);
   });
 }

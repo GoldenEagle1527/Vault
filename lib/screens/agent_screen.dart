@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:vault/agent/agent_inbox.dart';
 import 'package:vault/agent/agent_service.dart';
 import 'package:vault/agent/agent_settings.dart';
+import 'package:vault/agent/conversation_store.dart';
 import 'package:vault/sandbox/sandbox_models.dart';
 import 'package:vault/screens/settings_screen.dart';
 import 'package:vault/screens/terminal_screen.dart';
@@ -14,13 +15,15 @@ import 'package:vault/widgets/glass.dart';
 class AgentScreen extends StatefulWidget {
   const AgentScreen({
     super.key,
-    required this.session,
+    required this.workspace,
     required this.title,
+    required this.conversationStore,
     this.settingsStore,
   });
 
-  final SandboxSession session;
+  final SandboxWorkspace workspace;
   final String title;
+  final ConversationStore conversationStore;
   final AgentSettingsStore? settingsStore;
 
   @override
@@ -38,12 +41,17 @@ class _ChatItem {
 enum _ChatKind { user, assistant, tool, status, error }
 
 class _AgentScreenState extends State<AgentScreen> {
-  late final AgentSettingsStore _store;
+  late final AgentSettingsStore _settingsStore;
+  late final ConversationStore _conversationStore;
   final _inputCtrl = TextEditingController();
   final _scrollCtrl = ScrollController();
   final List<_ChatItem> _items = [];
   final List<AgentAttachment> _pendingAttachments = [];
+  final _scaffoldKey = GlobalKey<ScaffoldState>();
   AgentService? _service;
+  List<ConversationInfo> _conversations = const [];
+  String? _activeConversationId;
+  String _conversationTitle = kNewConversationTitle;
   bool _running = false;
   String? _status;
   bool _booting = true;
@@ -51,41 +59,107 @@ class _AgentScreenState extends State<AgentScreen> {
   @override
   void initState() {
     super.initState();
-    _store = widget.settingsStore ?? AgentSettingsStore();
+    _settingsStore = widget.settingsStore ?? AgentSettingsStore();
+    _conversationStore = widget.conversationStore;
     _boot();
   }
 
   Future<void> _boot() async {
     try {
-      final settings = await _store.load();
+      final settings = await _settingsStore.load();
       if (!mounted) return;
-      _service = AgentService(session: widget.session, settings: settings);
+      final service = await AgentService.open(
+        workspace: widget.workspace,
+        settings: settings,
+        conversationStore: _conversationStore,
+      );
+      _service = service;
+      await _refreshConversationList();
+      _hydrateFromService();
       if (!settings.isConfigured) {
         _items.add(
-          _ChatItem(kind: _ChatKind.status, text: '尚未配置 API。请先打开设置填写 Key 与模型。'),
+          _ChatItem(
+            kind: _ChatKind.status,
+            text: '尚未配置 API。请先打开设置填写 Key 与模型。',
+          ),
         );
       }
     } catch (e) {
       _items.add(_ChatItem(kind: _ChatKind.error, text: '初始化失败：$e'));
     } finally {
-      if (mounted) setState(() => _booting = false);
+      if (mounted) {
+        setState(() => _booting = false);
+        _scrollToEnd();
+      }
+    }
+  }
+
+  Future<void> _refreshConversationList() async {
+    final index = await _conversationStore.list(widget.workspace.workspaceId);
+    _conversations = index.conversations;
+    _activeConversationId =
+        _service?.conversationId ?? index.activeConversationId;
+    _conversationTitle = _service?.conversationTitle ?? kNewConversationTitle;
+  }
+
+  void _hydrateFromService() {
+    _items.clear();
+    final service = _service;
+    if (service == null) return;
+    for (final event in service.restoredUiEvents) {
+      _applyRestoredEvent(event);
+    }
+    _conversationTitle = service.conversationTitle;
+    _activeConversationId = service.conversationId;
+  }
+
+  void _applyRestoredEvent(AgentUiEvent event) {
+    switch (event) {
+      case AgentUiUserMessage(:final text):
+        _items.add(_ChatItem(kind: _ChatKind.user, text: text));
+      case AgentUiAssistantFinal(:final text):
+        _items.add(_ChatItem(kind: _ChatKind.assistant, text: text));
+      case AgentUiAssistantDelta(:final text):
+        _items.add(_ChatItem(kind: _ChatKind.assistant, text: text));
+      case AgentUiToolCall(:final name, :final arguments):
+        _items.add(
+          _ChatItem(
+            kind: _ChatKind.tool,
+            text: '调用 $name',
+            subtitle: arguments,
+          ),
+        );
+      case AgentUiToolResult(:final name, :final result):
+        _items.add(
+          _ChatItem(kind: _ChatKind.tool, text: '结果 $name', subtitle: result),
+        );
+      case AgentUiError(:final message):
+        _items.add(_ChatItem(kind: _ChatKind.error, text: message));
+      case AgentUiStatus():
+      case AgentUiDiscardDraftAssistant():
+        break;
     }
   }
 
   Future<void> _reloadService() async {
-    final settings = await _store.load();
+    final settings = await _settingsStore.load();
     final existing = _service;
     if (existing == null) {
-      _service = AgentService(session: widget.session, settings: settings);
+      _service = await AgentService.open(
+        workspace: widget.workspace,
+        settings: settings,
+        conversationStore: _conversationStore,
+      );
+      _hydrateFromService();
     } else {
       existing.applySettings(settings);
     }
   }
 
   Future<void> _openSettings() async {
-    await Navigator.of(
-      context,
-    ).push(MaterialPageRoute(builder: (_) => SettingsScreen(store: _store)));
+    await Navigator.of(context).push(
+      MaterialPageRoute(builder: (_) => SettingsScreen(store: _settingsStore)),
+    );
     if (!mounted) return;
     await _reloadService();
     setState(() {});
@@ -96,8 +170,8 @@ class _AgentScreenState extends State<AgentScreen> {
       MaterialPageRoute(
         builder: (_) => TerminalScreen(
           title: widget.title,
-          session: widget.session,
-          disposeSession: false,
+          workspace: widget.workspace,
+          disposeWorkspace: false,
         ),
       ),
     );
@@ -119,6 +193,135 @@ class _AgentScreenState extends State<AgentScreen> {
         );
       }
     });
+  }
+
+  Future<bool> _confirmLeaveRunning() async {
+    if (!_running) return true;
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('切换会话？'),
+        content: const Text('当前会话仍在运行，切换将取消正在进行的任务。'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('切换并取消'),
+          ),
+        ],
+      ),
+    );
+    return ok == true;
+  }
+
+  Future<void> _newConversation() async {
+    if (!await _confirmLeaveRunning()) return;
+    final service = _service;
+    if (service == null) return;
+    setState(() {
+      _status = '正在新建会话…';
+    });
+    try {
+      await service.newConversation();
+      await _refreshConversationList();
+      _hydrateFromService();
+      _pendingAttachments.clear();
+    } catch (e) {
+      if (!mounted) return;
+      _items.add(_ChatItem(kind: _ChatKind.error, text: '新建会话失败：$e'));
+    } finally {
+      if (mounted) {
+        setState(() => _status = null);
+        _scrollToEnd();
+      }
+    }
+  }
+
+  Future<void> _switchConversation(String id) async {
+    if (id == _activeConversationId) {
+      Navigator.of(context).maybePop();
+      return;
+    }
+    if (!await _confirmLeaveRunning()) return;
+    if (!mounted) return;
+    final service = _service;
+    if (service == null) return;
+    Navigator.of(context).maybePop();
+    setState(() => _status = '正在切换会话…');
+    try {
+      await service.switchConversation(id);
+      await _refreshConversationList();
+      _hydrateFromService();
+      _pendingAttachments.clear();
+    } catch (e) {
+      if (!mounted) return;
+      _items.add(_ChatItem(kind: _ChatKind.error, text: '切换会话失败：$e'));
+    } finally {
+      if (mounted) {
+        setState(() {
+          _running = false;
+          _status = null;
+        });
+        _scrollToEnd();
+      }
+    }
+  }
+
+  Future<void> _deleteConversation(String id) async {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('删除会话？'),
+        content: const Text('将删除该会话的对话历史。工作区 Linux 文件不会因此删除。'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('删除'),
+          ),
+        ],
+      ),
+    );
+    if (ok != true) return;
+
+    final service = _service;
+    if (service == null) return;
+
+    if (_running && id == _activeConversationId) {
+      service.cancel();
+    }
+
+    try {
+      final deletingActive = id == _activeConversationId;
+      final next = await _conversationStore.deleteConversation(
+        widget.workspace.workspaceId,
+        id,
+      );
+      final active = next.activeConversationId;
+      if (active != null) {
+        // Never persist the deleted conversation back to disk.
+        await service.switchConversation(
+          active,
+          persistCurrent: !deletingActive,
+        );
+      } else {
+        await service.newConversation(persistCurrent: false);
+      }
+      await _refreshConversationList();
+      _hydrateFromService();
+      if (mounted) setState(() {});
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _items.add(_ChatItem(kind: _ChatKind.error, text: '删除会话失败：$e'));
+      });
+    }
   }
 
   Future<void> _send() async {
@@ -179,11 +382,13 @@ class _AgentScreenState extends State<AgentScreen> {
         case AgentUiStatus(:final message):
           _status = message;
       }
+      _conversationTitle = service.conversationTitle;
       setState(() {});
       _scrollToEnd();
     }
 
     if (!mounted) return;
+    await _refreshConversationList();
     setState(() {
       _running = false;
       _status = null;
@@ -213,10 +418,22 @@ class _AgentScreenState extends State<AgentScreen> {
     });
   }
 
+  String _relativeTime(DateTime when) {
+    final local = when.toLocal();
+    final now = DateTime.now();
+    final today = DateTime(now.year, now.month, now.day);
+    final day = DateTime(local.year, local.month, local.day);
+    final hm =
+        '${local.hour.toString().padLeft(2, '0')}:${local.minute.toString().padLeft(2, '0')}';
+    if (day == today) return '今天 $hm';
+    if (day == today.subtract(const Duration(days: 1))) return '昨天 $hm';
+    return '${local.month} 月 ${local.day} 日 $hm';
+  }
+
   @override
   void dispose() {
-    _service?.dispose();
-    unawaited(widget.session.dispose());
+    unawaited(_service?.dispose() ?? Future.value());
+    unawaited(widget.workspace.dispose());
     _inputCtrl.dispose();
     _scrollCtrl.dispose();
     super.dispose();
@@ -226,10 +443,102 @@ class _AgentScreenState extends State<AgentScreen> {
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
     final wide = MediaQuery.sizeOf(context).width >= 720;
+    final hasChatContent = _items.any(
+      (i) =>
+          i.kind == _ChatKind.user ||
+          i.kind == _ChatKind.assistant ||
+          i.kind == _ChatKind.tool,
+    );
 
     return AmbientBackdrop(
       child: Scaffold(
+        key: _scaffoldKey,
         backgroundColor: Colors.transparent,
+        endDrawer: Drawer(
+          child: SafeArea(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 12, 8, 8),
+                  child: Row(
+                    children: [
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              '会话历史',
+                              style: Theme.of(context).textTheme.titleLarge,
+                            ),
+                            Text(
+                              widget.title,
+                              style: Theme.of(context).textTheme.labelMedium
+                                  ?.copyWith(color: scheme.onSurfaceVariant),
+                            ),
+                          ],
+                        ),
+                      ),
+                      IconButton(
+                        tooltip: '关闭',
+                        onPressed: () => Navigator.of(context).maybePop(),
+                        icon: const Icon(Icons.close),
+                      ),
+                    ],
+                  ),
+                ),
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(12, 0, 12, 8),
+                  child: FilledButton.tonalIcon(
+                    onPressed: _booting ? null : _newConversation,
+                    icon: const Icon(Icons.add),
+                    label: const Text('新会话'),
+                  ),
+                ),
+                const Divider(height: 1),
+                Expanded(
+                  child: _conversations.isEmpty
+                      ? Center(
+                          child: Text(
+                            '暂无会话',
+                            style: TextStyle(color: scheme.onSurfaceVariant),
+                          ),
+                        )
+                      : ListView.builder(
+                          itemCount: _conversations.length,
+                          itemBuilder: (context, i) {
+                            final c = _conversations[i];
+                            final selected = c.id == _activeConversationId;
+                            return ListTile(
+                              selected: selected,
+                              leading: Icon(
+                                selected
+                                    ? Icons.chat_bubble
+                                    : Icons.chat_bubble_outline,
+                              ),
+                              title: Text(
+                                c.title,
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                              subtitle: Text(
+                                '${_relativeTime(c.updatedAt)}'
+                                '${c.messageCount > 0 ? ' · ${c.messageCount} 条消息' : ''}',
+                              ),
+                              onTap: () => _switchConversation(c.id),
+                              trailing: IconButton(
+                                tooltip: '删除会话',
+                                onPressed: () => _deleteConversation(c.id),
+                                icon: const Icon(Icons.delete_outline),
+                              ),
+                            );
+                          },
+                        ),
+                ),
+              ],
+            ),
+          ),
+        ),
         appBar: AppBar(
           titleSpacing: 0,
           title: Row(
@@ -246,7 +555,7 @@ class _AgentScreenState extends State<AgentScreen> {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Text(
-                      widget.title,
+                      _conversationTitle,
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
                       style: Theme.of(context).textTheme.titleMedium?.copyWith(
@@ -254,7 +563,7 @@ class _AgentScreenState extends State<AgentScreen> {
                       ),
                     ),
                     Text(
-                      'Vault 助手 · 安全空间',
+                      '${widget.title} · 工作区',
                       style: Theme.of(context).textTheme.labelSmall?.copyWith(
                         color: scheme.onSurfaceVariant,
                       ),
@@ -283,6 +592,16 @@ class _AgentScreenState extends State<AgentScreen> {
                   labelStyle: TextStyle(color: scheme.onPrimaryContainer),
                 ),
               ),
+            IconButton(
+              tooltip: '会话历史',
+              onPressed: () => _scaffoldKey.currentState?.openEndDrawer(),
+              icon: const Icon(Icons.history),
+            ),
+            IconButton(
+              tooltip: '新会话',
+              onPressed: _booting ? null : _newConversation,
+              icon: const Icon(Icons.add_comment_outlined),
+            ),
             IconButton(
               tooltip: 'Linux 终端',
               onPressed: _openTerminal,
@@ -331,7 +650,7 @@ class _AgentScreenState extends State<AgentScreen> {
                       alignment: Alignment.topCenter,
                       child: ConstrainedBox(
                         constraints: const BoxConstraints(maxWidth: 840),
-                        child: _items.isEmpty
+                        child: !hasChatContent
                             ? _EmptyChat(
                                 onPrompt: (p) {
                                   _inputCtrl.text = p;
@@ -469,7 +788,7 @@ class _EmptyChat extends StatelessWidget {
       ('帮我分析这份表格，找出最重要的三个趋势', '分析表格', Icons.table_chart_outlined),
       ('帮我整理一批文件，先给我一个不会误删文件的方案', '整理文件', Icons.folder_outlined),
       ('检查这个项目是否有明显问题，并用容易理解的方式告诉我', '检查项目', Icons.fact_check_outlined),
-      ('教我完成一个简单任务，每次只告诉我下一步', '一步步教我', Icons.school_outlined),
+      ('教我完成一个简单目标，每次只告诉我下一步', '一步步教我', Icons.school_outlined),
     ];
 
     return ListView(

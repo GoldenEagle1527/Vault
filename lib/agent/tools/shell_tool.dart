@@ -7,15 +7,15 @@ import 'package:vault_agent_core/vault_agent_core.dart';
 /// Default wall-clock timeout for a single sandbox shell invocation.
 const Duration kDefaultShellToolTimeout = Duration(minutes: 5);
 
-/// Builds a vault_agent_core [Tool] that runs commands inside [session].
+/// Builds a vault_agent_core [Tool] that runs commands inside [workspace].
 Tool createShellTool(
-  SandboxSession session, {
+  SandboxWorkspace workspace, {
   Duration timeout = kDefaultShellToolTimeout,
 }) {
   return Tool(
     name: 'shell',
     description:
-        '在当前会话的隔离 Alpine Linux 内执行非交互命令（root，$kGuestHome，/bin/sh -c）。'
+        '在当前工作区的隔离 Alpine Linux 内执行非交互命令（root，$kGuestHome，/bin/sh -c）。'
         '返回 exitCode、stdout、stderr。'
         '用于 apk、文件、编译、脚本等。'
         '用户附件在 $kGuestInboxDir/。'
@@ -48,7 +48,7 @@ Tool createShellTool(
       }
 
       try {
-        final result = await session.run(command).timeout(timeout);
+        final result = await workspace.run(command).timeout(timeout);
         return jsonEncode({
           'ok': result.success,
           'exitCode': result.exitCode,

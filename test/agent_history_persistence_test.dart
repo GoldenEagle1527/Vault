@@ -6,9 +6,9 @@ import 'package:vault/agent/agent_settings.dart';
 import 'package:vault/sandbox/sandbox_models.dart';
 import 'package:vault_agent_core/vault_agent_core.dart';
 
-class _FakeSession implements SandboxSession {
+class _FakeWorkspace implements SandboxWorkspace {
   @override
-  String get sessionId => 'hist-test';
+  String get workspaceId => 'hist-test';
 
   @override
   Stream<Uint8List> get output => const Stream.empty();
@@ -62,7 +62,7 @@ void main() {
     ]);
 
     final service = AgentService(
-      session: _FakeSession(),
+      workspace: _FakeWorkspace(),
       settings: settingsA,
       initialState: prior,
     );
@@ -77,7 +77,7 @@ void main() {
 
   test('dispose clears pending history', () async {
     final service = AgentService(
-      session: _FakeSession(),
+      workspace: _FakeWorkspace(),
       settings: settingsA,
       initialState: _stateWithMessages([UserMessage.text('hi')]),
     );
@@ -85,4 +85,20 @@ void main() {
     await service.dispose();
     expect(service.historyMessageCount, 0);
   });
+
+  test('restoredUiEvents mirrors persisted messages', () {
+    final service = AgentService(
+      workspace: _FakeWorkspace(),
+      settings: settingsA,
+      initialState: _stateWithMessages([
+        UserMessage.text('写个贪吃蛇'),
+        ModelMessage(model: 'model-a', textOutput: '已写好'),
+      ]),
+      conversationId: 's1',
+    );
+    final events = service.restoredUiEvents;
+    expect(events, hasLength(2));
+    expect(service.conversationTitle, '写个贪吃蛇');
+  });
 }
+

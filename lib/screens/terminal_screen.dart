@@ -1,20 +1,20 @@
 import 'package:flutter/material.dart';
 import 'package:vault/sandbox/sandbox_models.dart';
-import 'package:vault/widgets/session_terminal.dart';
+import 'package:vault/widgets/workspace_terminal.dart';
 
 class TerminalScreen extends StatelessWidget {
   const TerminalScreen({
     super.key,
     required this.title,
-    required this.session,
-    this.disposeSession = true,
+    required this.workspace,
+    this.disposeWorkspace = true,
   });
 
   final String title;
-  final SandboxSession session;
+  final SandboxWorkspace workspace;
 
   /// When false, the PTY stays owned by the caller (e.g. [AgentScreen]).
-  final bool disposeSession;
+  final bool disposeWorkspace;
 
   @override
   Widget build(BuildContext context) {
@@ -46,7 +46,7 @@ class TerminalScreen extends StatelessWidget {
                   const SizedBox(width: 10),
                   Expanded(
                     child: Text(
-                      '高级调试模式：命令会在当前任务的独立 Linux 空间中执行。',
+                      '高级调试模式：命令会在当前工作区的独立 Linux 空间中执行。',
                       style: Theme.of(context).textTheme.bodySmall,
                     ),
                   ),
@@ -55,9 +55,9 @@ class TerminalScreen extends StatelessWidget {
             ),
           ),
           Expanded(
-            child: SessionTerminal(
-              session: session,
-              disposeSession: disposeSession,
+            child: WorkspaceTerminal(
+              workspace: workspace,
+              disposeWorkspace: disposeWorkspace,
             ),
           ),
         ],

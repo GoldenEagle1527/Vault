@@ -19,10 +19,10 @@ void main() {
     expect(inboxGuestPath('note.md'), '/root/inbox/note.md');
   });
 
-  test('system prompt pins Alpine session + inbox', () {
-    final prompts = vaultAgentSystemPrompts(sessionId: 'abc123');
+  test('system prompt pins Alpine workspace + inbox', () {
+    final prompts = vaultAgentSystemPrompts(workspaceId: 'abc123');
     final joined = prompts.join('\n');
-    expect(joined, contains('sessionId=abc123'));
+    expect(joined, contains('workspaceId=abc123'));
     expect(joined, contains('Alpine'));
     expect(joined, contains('/root/inbox'));
     expect(joined, contains('不是用户的 Windows/Android 主机'));

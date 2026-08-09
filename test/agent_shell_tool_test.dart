@@ -6,13 +6,13 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:vault/agent/tools/shell_tool.dart';
 import 'package:vault/sandbox/sandbox_models.dart';
 
-class _FakeSession implements SandboxSession {
-  _FakeSession(this._handler);
+class _FakeWorkspace implements SandboxWorkspace {
+  _FakeWorkspace(this._handler);
 
   final Future<CommandResult> Function(String cmd) _handler;
 
   @override
-  String get sessionId => 'test';
+  String get workspaceId => 'test';
 
   @override
   Stream<Uint8List> get output => const Stream.empty();
@@ -41,11 +41,11 @@ class _FakeSession implements SandboxSession {
 
 void main() {
   test('shell tool returns exitCode/stdout/stderr json', () async {
-    final session = _FakeSession((cmd) async {
+    final workspace = _FakeWorkspace((cmd) async {
       expect(cmd, 'echo hi');
       return const CommandResult(exitCode: 0, stdout: 'hi\n', stderr: '');
     });
-    final tool = createShellTool(session);
+    final tool = createShellTool(workspace);
     final raw = await tool.executable!(<String, dynamic>{'command': 'echo hi'});
     final map = jsonDecode(raw as String) as Map<String, dynamic>;
     expect(map['ok'], isTrue);
@@ -54,12 +54,12 @@ void main() {
   });
 
   test('shell tool maps timeout to Chinese error payload', () async {
-    final session = _FakeSession((cmd) async {
+    final workspace = _FakeWorkspace((cmd) async {
       await Future<void>.delayed(const Duration(seconds: 2));
       return const CommandResult(exitCode: 0, stdout: '', stderr: '');
     });
     final tool = createShellTool(
-      session,
+      workspace,
       timeout: const Duration(milliseconds: 50),
     );
     final raw = await tool.executable!(<String, dynamic>{'command': 'sleep'});
@@ -69,10 +69,10 @@ void main() {
   });
 
   test('empty command rejected', () async {
-    final session = _FakeSession((_) async {
+    final workspace = _FakeWorkspace((_) async {
       fail('should not run');
     });
-    final tool = createShellTool(session);
+    final tool = createShellTool(workspace);
     final raw = await tool.executable!(<String, dynamic>{'command': '  '});
     final map = jsonDecode(raw as String) as Map<String, dynamic>;
     expect(map['ok'], isFalse);

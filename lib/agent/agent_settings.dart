@@ -1,7 +1,7 @@
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 
 /// BYO LLM settings. API key is stored only in secure storage — never in
-/// `sessions.json` or application logs.
+/// `workspaces.json` or application logs.
 class AgentSettings {
   const AgentSettings({
     required this.apiBaseUrl,

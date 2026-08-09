@@ -1,6 +1,6 @@
 # Vault 未完成特性 / 跨会话 backlog
 
-**用途：** 新会话开工前先读本文 + `README.md`，避免重复做已验收项或重开已定决策。  
+**用途：** 新开工前先读本文 + `README.md` + [`workspace-and-conversation-storage.md`](./workspace-and-conversation-storage.md)，避免重复做已验收项或重开已定决策。  
 **更新约定：** 完成一项就勾掉并写日期；新增缺口直接补条目。不要把本文当「愿景文档」——只记**还没做完**的事。
 
 **基线（已验收，勿重做）：**
@@ -14,7 +14,7 @@
 **已定约束（勿再问）：**
 
 - Android = jniLibs `libproot.so` + `PROOT_LOADER`，**禁止** assets + chmod + 直接 exec  
-- 每会话独立 rootfs（Android）/ 独立 WSL 发行版（Windows）  
+- 每工作区独立 rootfs（Android）/ 独立 WSL 发行版（Windows）  
 - UI 语言 = 中文  
 - 抽象见 `lib/sandbox/sandbox_provider.dart` —— **禁止**把 `dart:io Process` 泄漏进接口  
 
@@ -28,7 +28,7 @@
 | F2 | 文件浏览器（会话内） | P0（可跟 F1 一起） | 未开始 |
 | F3 | Android M2c 设备矩阵补全 | P1 | 部分（仅一档真机） |
 | F4 | 沙箱层自动化测试 | P1 | 偏薄 |
-| F5 | 会话/任务持久化增强 | P2 | 仅有 sessions.json |
+| F5 | 工作区/会话持久化增强 | P2 | ✅ 多会话历史 2026-08-09；启动续开/磁盘清理仍缺 |
 | F6 | Differencing VHD（Windows 磁盘） | P3 / 延后 | 明确不做于 MVP |
 | F7 | Docker 后端 / 桌面 Linux / iOS | 不做（当前） | 计划外 |
 
@@ -69,7 +69,7 @@ lib/screens/
 
 - 不要为 Agent 再开一套「共享 rootfs」  
 - 不要在未完成 F3 风险说明前宣称「全 Android 版本已验证」  
-- 不要把密钥写进仓库或 `sessions.json`  
+- 不要把密钥写进仓库或 `workspaces.json`  
 - 不要把 Agent 做成独立 OS 进程 / HTTP 微服务  
 
 **依赖接口（已有）：**
@@ -123,22 +123,25 @@ lib/screens/
 |------|------|
 | `rootfs_extract` 单测 | 绝对 symlink → 相对；执行位保留；缺 `/bin/sh` 应失败 |
 | `wsl_output` 解码 | 已有，保持回归 |
-| Provider 契约（可 mock） | sessionId 校验、meta 读写、destroy 清理 meta |
+| Provider 契约（可 mock） | workspaceId 校验、meta 读写、destroy 清理 meta |
 | （可选）集成 | Windows 本机有 WSL 时跳过/启用；Android 以仪表测试或文档化手工脚本为准 |
 
 ---
 
-## F5 — 会话 / 任务持久化增强（P2）
+## F5 — 工作区 / 会话持久化增强（P2）
 
-**已有：** `sessions.json`（Windows / Android 各一份元数据）。  
+**已有：** `workspaces.json`（Windows / Android 各一份工作区元数据）。  
+
+**已完成（2026-08-09）：**
+
+- 用户可见「任务」→「工作区」
+- 工作区内多会话：`agent_states/{workspaceId}/index.json` + `{conversationId}.json`
+- 重开工作区恢复会话列表与对话气泡 / Agent 上下文；删除工作区级联清理会话目录
 
 **未有：**
 
-- Agent 对话历史 / 任务状态  
-- 跨重启恢复「上次打开的 Agent 会话」  
-- 磁盘占用汇总与一键清理策略（UI 已有单会话删除，可加强提示）  
-
-做 F1 时顺带定 schema，避免二次迁移。
+- 跨重启自动打开「上次工作区」  
+- 磁盘占用汇总与一键清理策略（UI 已有单工作区删除，可加强提示）
 
 ---
 
@@ -160,11 +163,11 @@ lib/screens/
 
 ---
 
-## 新会话开工清单
+## 新开工清单
 
-1. 读本文 + [`README.md`](../README.md)  
-2. 若动沙箱：读对应 MVP 报告与 `lib/sandbox/*`  
-3. 若做 Agent：从 **F1** 开工，复用现有 `SandboxSession`，先通最小 shell tool  
+1. 读本文 + [`README.md`](../README.md) + [`workspace-and-conversation-storage.md`](./workspace-and-conversation-storage.md)  
+2. 若动沙箱：读对应 MVP 报告与 `lib/sandbox/*`（`SandboxWorkspace` / `workspaceId`）  
+3. 若做 Agent：复用 `SandboxWorkspace` + `ConversationStore`，shell 只打当前工作区  
 4. 改 Android 原生 / proot：同步看 [`android-mvp-report.md`](./android-mvp-report.md) §5 踩坑  
 
 **完成 F1/F2 后：** 在本文勾选，并补一份 `docs/agent-mvp-report.md`（建议），把验收命令与密钥存储方案写死。

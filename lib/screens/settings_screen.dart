@@ -97,7 +97,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
               ],
               Text(
                 'OpenAI 兼容 API（BYO Key）。Base 需带 /v1，例如 https://apihub.example.com/v1。'
-                '密钥不会写入 sessions.json。',
+                '密钥不会写入 workspaces.json。',
                 style: Theme.of(context).textTheme.bodyMedium,
               ),
               const SizedBox(height: 16),

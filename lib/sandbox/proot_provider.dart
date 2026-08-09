@@ -9,20 +9,20 @@ import 'package:vault/sandbox/proot_host.dart';
 import 'package:vault/sandbox/rootfs_extract.dart';
 import 'package:vault/sandbox/sandbox_provider.dart';
 
-/// 每个会话一份独立 Alpine rootfs（proot-distro 系，16KB 友好）。
+/// 每个工作区一份独立 Alpine rootfs（proot-distro 系，16KB 友好）。
 ///
 /// proot / loader 必须来自 [nativeLibraryDir]（jniLibs），不能放在 files/。
 class ProotProvider implements SandboxProvider {
-  static const _metaFileName = 'sessions.json';
+  static const _metaFileName = 'workspaces.json';
   static const rootfsAsset =
       'assets/rootfs/android/alpine-prootdistro-aarch64.tar.gz';
 
-  /// Live interactive sessions (for FGS refcount).
-  static final _live = <String, ProotSession>{};
+  /// Live interactive workspaces (for FGS refcount).
+  static final _live = <String, ProotWorkspace>{};
 
-  Future<Directory> _sessionsRoot() async {
+  Future<Directory> _workspacesRoot() async {
     final files = await ProotHost.getFilesDir();
-    final dir = Directory(p.join(files, 'sessions'));
+    final dir = Directory(p.join(files, 'workspaces'));
     if (!await dir.exists()) {
       await dir.create(recursive: true);
     }
@@ -30,17 +30,17 @@ class ProotProvider implements SandboxProvider {
   }
 
   Future<File> _metaFile() async {
-    final root = await _sessionsRoot();
+    final root = await _workspacesRoot();
     return File(p.join(root.path, _metaFileName));
   }
 
   Future<Map<String, dynamic>> _readMeta() async {
     final file = await _metaFile();
     if (!await file.exists()) {
-      return {'sessions': <String, dynamic>{}};
+      return {'workspaces': <String, dynamic>{}};
     }
     final raw = jsonDecode(await file.readAsString()) as Map<String, dynamic>;
-    raw.putIfAbsent('sessions', () => <String, dynamic>{});
+    raw.putIfAbsent('workspaces', () => <String, dynamic>{});
     return raw;
   }
 
@@ -49,14 +49,14 @@ class ProotProvider implements SandboxProvider {
     await file.writeAsString(const JsonEncoder.withIndent('  ').convert(meta));
   }
 
-  Future<Directory> _sessionDir(String sessionId) async {
-    final root = await _sessionsRoot();
-    return Directory(p.join(root.path, sessionId));
+  Future<Directory> _workspaceDir(String workspaceId) async {
+    final root = await _workspacesRoot();
+    return Directory(p.join(root.path, workspaceId));
   }
 
-  Future<Directory> _rootfsDir(String sessionId) async {
-    final session = await _sessionDir(sessionId);
-    return Directory(p.join(session.path, 'rootfs'));
+  Future<Directory> _rootfsDir(String workspaceId) async {
+    final workspace = await _workspaceDir(workspaceId);
+    return Directory(p.join(workspace.path, 'rootfs'));
   }
 
   Future<({String proot, String loader})> _nativeBins() async {
@@ -78,7 +78,7 @@ class ProotProvider implements SandboxProvider {
   Future<SandboxCapabilities> probe() async {
     final notes = <String>[
       'Android 侧载分发（不上 Play）；GPLv3。',
-      '每个会话独立 rootfs；无真 PID/网络 namespace；proot 有约 20–30% 性能开销。',
+      '每个工作区独立 rootfs；无真 PID/网络 namespace；proot 有约 20–30% 性能开销。',
       '长任务请允许通知与关闭电池优化，避免灭屏后被杀。',
       'rootfs 使用 proot-distro Alpine（16KB 页友好），与 Windows 上游包分离。',
       '初始化时会将 apk 源切换为国内镜像（$kDefaultAlpineApkMirror），无代理也可 apk update。',
@@ -145,7 +145,7 @@ class ProotProvider implements SandboxProvider {
   }
 
   Future<void> _extractRootfs(Directory dest) async {
-    final cacheDir = Directory(p.join((await _sessionsRoot()).path, '_cache'));
+    final cacheDir = Directory(p.join((await _workspacesRoot()).path, '_cache'));
     if (!await cacheDir.exists()) {
       await cacheDir.create(recursive: true);
     }
@@ -175,7 +175,7 @@ class ProotProvider implements SandboxProvider {
 
     if (!guestHasBinSh(dest.path)) {
       throw StateError(
-        'rootfs 解压后仍缺少 /bin/sh（及 busybox）。请删除会话后重试，'
+        'rootfs 解压后仍缺少 /bin/sh（及 busybox）。请删除工作区后重试，'
         '或检查 $rootfsAsset 是否完整。',
       );
     }
@@ -218,11 +218,11 @@ class ProotProvider implements SandboxProvider {
   }
 
   @override
-  Future<SandboxSession> create(String sessionId) async {
-    if (!RegExp(r'^[A-Za-z0-9_-]+$').hasMatch(sessionId)) {
+  Future<SandboxWorkspace> create(String workspaceId) async {
+    if (!RegExp(r'^[A-Za-z0-9_-]+$').hasMatch(workspaceId)) {
       throw ArgumentError.value(
-        sessionId,
-        'sessionId',
+        workspaceId,
+        'workspaceId',
         '只能包含字母、数字、下划线或连字符',
       );
     }
@@ -232,77 +232,77 @@ class ProotProvider implements SandboxProvider {
       throw StateError(caps.hint ?? 'Android proot 不可用');
     }
 
-    final rootfs = await _rootfsDir(sessionId);
+    final rootfs = await _rootfsDir(workspaceId);
     await _extractRootfs(rootfs);
 
     final meta = await _readMeta();
-    final sessions = Map<String, dynamic>.from(meta['sessions'] as Map);
-    sessions[sessionId] = {
+    final workspaces = Map<String, dynamic>.from(meta['workspaces'] as Map);
+    workspaces[workspaceId] = {
       'rootfs': rootfs.path,
       'createdAt': DateTime.now().toIso8601String(),
     };
-    meta['sessions'] = sessions;
+    meta['workspaces'] = workspaces;
     await _writeMeta(meta);
 
-    return attach(sessionId);
+    return attach(workspaceId);
   }
 
   @override
-  Future<SandboxSession> attach(String sessionId) async {
-    final rootfs = await _rootfsDir(sessionId);
+  Future<SandboxWorkspace> attach(String workspaceId) async {
+    final rootfs = await _rootfsDir(workspaceId);
     if (!guestHasBinSh(rootfs.path)) {
       throw StateError(
-        '会话 $sessionId 的 rootfs 不完整：缺少 /bin/sh。'
-        '请删除该会话后重新创建（需使用会保留 busybox 符号链接的解压逻辑）。',
+        '工作区 $workspaceId 的 rootfs 不完整：缺少 /bin/sh。'
+        '请删除该工作区后重新创建（需使用会保留 busybox 符号链接的解压逻辑）。',
       );
     }
 
-    // Older sessions may still point at dl-cdn; rewrite on attach.
+    // Older workspaces may still point at dl-cdn; rewrite on attach.
     await applyAlpineApkMirrorOnHost(rootfs.path);
 
     final bins = await _nativeBins();
-    final session = ProotSession(
-      sessionId: sessionId,
+    final workspace = ProotWorkspace(
+      workspaceId: workspaceId,
       prootPath: bins.proot,
       loaderPath: bins.loader,
       rootfsPath: rootfs.path,
       prootArgs: _prootArgs(rootfs.path),
       environment: _prootEnv(bins.loader, rootfs.path),
       onDisposed: () async {
-        _live.remove(sessionId);
+        _live.remove(workspaceId);
         await _refreshForegroundService();
       },
     );
-    _live[sessionId] = session;
+    _live[workspaceId] = workspace;
     await _refreshForegroundService();
-    return session;
+    return workspace;
   }
 
   @override
-  Future<void> destroy(String sessionId) async {
-    final live = _live.remove(sessionId);
+  Future<void> destroy(String workspaceId) async {
+    final live = _live.remove(workspaceId);
     await live?.dispose();
     await _refreshForegroundService();
 
-    final sessionDir = await _sessionDir(sessionId);
-    if (await sessionDir.exists()) {
-      await sessionDir.delete(recursive: true);
+    final workspaceDir = await _workspaceDir(workspaceId);
+    if (await workspaceDir.exists()) {
+      await workspaceDir.delete(recursive: true);
     }
 
     final meta = await _readMeta();
-    final sessions = Map<String, dynamic>.from(meta['sessions'] as Map);
-    sessions.remove(sessionId);
-    meta['sessions'] = sessions;
+    final workspaces = Map<String, dynamic>.from(meta['workspaces'] as Map);
+    workspaces.remove(workspaceId);
+    meta['workspaces'] = workspaces;
     await _writeMeta(meta);
   }
 
   @override
-  Future<List<SandboxInfo>> list() async {
+  Future<List<WorkspaceInfo>> list() async {
     final meta = await _readMeta();
-    final sessions = Map<String, dynamic>.from(meta['sessions'] as Map);
-    final out = <SandboxInfo>[];
+    final workspaces = Map<String, dynamic>.from(meta['workspaces'] as Map);
+    final out = <WorkspaceInfo>[];
 
-    for (final entry in sessions.entries) {
+    for (final entry in workspaces.entries) {
       final id = entry.key;
       final data = Map<String, dynamic>.from(entry.value as Map);
       final rootfsPath = data['rootfs'] as String? ?? (await _rootfsDir(id)).path;
@@ -315,8 +315,8 @@ class ProotProvider implements SandboxProvider {
       } catch (_) {}
 
       out.add(
-        SandboxInfo(
-          sessionId: id,
+        WorkspaceInfo(
+          workspaceId: id,
           displayName: 'proot_$id',
           createdAt: DateTime.tryParse(data['createdAt'] as String? ?? '') ??
               DateTime.fromMillisecondsSinceEpoch(0),
@@ -340,8 +340,8 @@ class ProotProvider implements SandboxProvider {
   }
 
   /// Non-interactive one-shot for spike / agent (does not open PTY).
-  Future<CommandResult> runOnce(String sessionId, String cmd) async {
-    final rootfs = await _rootfsDir(sessionId);
+  Future<CommandResult> runOnce(String workspaceId, String cmd) async {
+    final rootfs = await _rootfsDir(workspaceId);
     final bins = await _nativeBins();
     final args = _prootArgs(
       rootfs.path,
@@ -363,11 +363,59 @@ class ProotProvider implements SandboxProvider {
           : utf8.decode(result.stderr as List<int>, allowMalformed: true),
     );
   }
+
+  Future<File> _hostFileForGuest(
+    String workspaceId,
+    String guestAbsolutePath,
+  ) async {
+    final guest = assertGuestPathUnderHome(guestAbsolutePath);
+    final rootfs = await _rootfsDir(workspaceId);
+    return File(p.join(rootfs.path, guest.substring(1)));
+  }
+
+  @override
+  Future<Uint8List?> readGuestFile(
+    String workspaceId,
+    String guestAbsolutePath,
+  ) async {
+    final file = await _hostFileForGuest(workspaceId, guestAbsolutePath);
+    if (!await file.exists()) return null;
+    return Uint8List.fromList(await file.readAsBytes());
+  }
+
+  @override
+  Future<void> writeGuestFile(
+    String workspaceId,
+    String guestAbsolutePath,
+    List<int> bytes,
+  ) async {
+    final file = await _hostFileForGuest(workspaceId, guestAbsolutePath);
+    await file.parent.create(recursive: true);
+    await file.writeAsBytes(bytes, flush: true);
+  }
+
+  @override
+  Future<void> deleteGuestPath(
+    String workspaceId,
+    String guestAbsolutePath, {
+    bool recursive = false,
+  }) async {
+    final guest = assertGuestPathUnderHome(guestAbsolutePath);
+    final rootfs = await _rootfsDir(workspaceId);
+    final path = p.join(rootfs.path, guest.substring(1));
+    final type = await FileSystemEntity.type(path);
+    if (type == FileSystemEntityType.notFound) return;
+    if (type == FileSystemEntityType.directory) {
+      await Directory(path).delete(recursive: recursive);
+    } else {
+      await File(path).delete();
+    }
+  }
 }
 
-class ProotSession implements SandboxSession {
-  ProotSession({
-    required this.sessionId,
+class ProotWorkspace implements SandboxWorkspace {
+  ProotWorkspace({
+    required this.workspaceId,
     required this.prootPath,
     required this.loaderPath,
     required this.rootfsPath,
@@ -388,7 +436,7 @@ class ProotSession implements SandboxSession {
   }
 
   @override
-  final String sessionId;
+  final String workspaceId;
 
   final String prootPath;
   final String loaderPath;

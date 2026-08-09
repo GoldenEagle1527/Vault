@@ -43,7 +43,7 @@ class ProotPlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
                 result.success(Build.SUPPORTED_ABIS.firstOrNull() ?: "unknown")
             }
             "startForegroundService" -> {
-                val intent = Intent(appContext, SessionForegroundService::class.java)
+                val intent = Intent(appContext, WorkspaceForegroundService::class.java)
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                     appContext.startForegroundService(intent)
                 } else {
@@ -52,7 +52,7 @@ class ProotPlugin : FlutterPlugin, MethodChannel.MethodCallHandler {
                 result.success(true)
             }
             "stopForegroundService" -> {
-                val intent = Intent(appContext, SessionForegroundService::class.java)
+                val intent = Intent(appContext, WorkspaceForegroundService::class.java)
                 appContext.stopService(intent)
                 result.success(true)
             }

@@ -145,7 +145,7 @@ flutter run -d windows
 ## 7. 后续（非本 MVP）
 
 - F2 会话内文件浏览器（与 inbox / Agent 工具共用）
-- Agent 对话历史持久化（F5）
+- ~~Agent 对话历史持久化（F5）~~ → 已做：工作区多会话（见 `docs/feat.md` F5）；启动自动续开工作区 / 磁盘清理仍缺
 - 按需裁剪 fork（eval / sub-agent）以减小体积
 - Android 多档设备上的 Agent 长任务抽检（依赖 F3 矩阵）
 

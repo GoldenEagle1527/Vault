@@ -9,13 +9,13 @@ import 'package:vault/sandbox/alpine_mirrors.dart';
 import 'package:vault/sandbox/sandbox_provider.dart';
 import 'package:vault/sandbox/wsl_output.dart';
 
-/// 每个会话对应一个独立的 WSL2 发行版。
+/// 每个工作区对应一个独立的 WSL2 发行版。
 ///
-/// 发行版名：`vault_<sessionId>`。每次 import 会生成独立的 ext4.vhdx
+/// 发行版名：`vault_<workspaceId>`。每次 import 会生成独立的 ext4.vhdx
 ///（实际占用常接近约 1 GB）。所有 WSL2 发行版共享同一 VM / 内核 / 网络。
 class WslProvider implements SandboxProvider {
   static const distroPrefix = 'vault_';
-  static const _metaFileName = 'sessions.json';
+  static const _metaFileName = 'workspaces.json';
 
   Future<Directory> _rootDir() async {
     final base = await getApplicationSupportDirectory();
@@ -34,10 +34,10 @@ class WslProvider implements SandboxProvider {
   Future<Map<String, dynamic>> _readMeta() async {
     final file = await _metaFile();
     if (!await file.exists()) {
-      return {'sessions': <String, dynamic>{}};
+      return {'workspaces': <String, dynamic>{}};
     }
     final raw = jsonDecode(await file.readAsString()) as Map<String, dynamic>;
-    raw.putIfAbsent('sessions', () => <String, dynamic>{});
+    raw.putIfAbsent('workspaces', () => <String, dynamic>{});
     return raw;
   }
 
@@ -46,7 +46,7 @@ class WslProvider implements SandboxProvider {
     await file.writeAsString(const JsonEncoder.withIndent('  ').convert(meta));
   }
 
-  String distroName(String sessionId) => '$distroPrefix$sessionId';
+  String distroName(String workspaceId) => '$distroPrefix$workspaceId';
 
   String _hostArchAsset() {
     final arch = Platform.environment['PROCESSOR_ARCHITECTURE']?.toUpperCase();
@@ -115,7 +115,7 @@ class WslProvider implements SandboxProvider {
         Platform.environment['PROCESSOR_ARCHITECTURE']?.toLowerCase() ??
             'unknown';
     final notes = <String>[
-      '每个会话会导入独立的 WSL2 发行版；稀疏 ext4.vhdx 实际占用通常接近约 1 GB。',
+      '每个工作区会导入独立的 WSL2 发行版；稀疏 ext4.vhdx 实际占用通常接近约 1 GB。',
       '所有 WSL2 发行版共享同一虚拟机、内核与网络命名空间——仅有文件系统与进程隔离。',
       '初始化时会将 apk 源切换为国内镜像（$kDefaultAlpineApkMirror），无代理也可 apk update。',
       '若终端出现 localhost 代理提示：系统代理在 NAT 模式下无法直接进 WSL，'
@@ -153,23 +153,23 @@ class WslProvider implements SandboxProvider {
   }
 
   @override
-  Future<SandboxSession> create(String sessionId) async {
-    if (!RegExp(r'^[A-Za-z0-9_-]+$').hasMatch(sessionId)) {
+  Future<SandboxWorkspace> create(String workspaceId) async {
+    if (!RegExp(r'^[A-Za-z0-9_-]+$').hasMatch(workspaceId)) {
       throw ArgumentError.value(
-        sessionId,
-        'sessionId',
+        workspaceId,
+        'workspaceId',
         '只能包含字母、数字、下划线或连字符',
       );
     }
 
-    final name = distroName(sessionId);
+    final name = distroName(workspaceId);
     final existing = await _registeredDistros();
     if (existing.contains(name)) {
       throw StateError('发行版已存在：$name');
     }
 
     final root = await _rootDir();
-    final installDir = Directory(p.join(root.path, sessionId));
+    final installDir = Directory(p.join(root.path, workspaceId));
     if (await installDir.exists()) {
       await installDir.delete(recursive: true);
     }
@@ -199,16 +199,16 @@ class WslProvider implements SandboxProvider {
     await Future<void>.delayed(const Duration(milliseconds: 800));
 
     final meta = await _readMeta();
-    final sessions = Map<String, dynamic>.from(meta['sessions'] as Map);
-    sessions[sessionId] = {
+    final workspaces = Map<String, dynamic>.from(meta['workspaces'] as Map);
+    workspaces[workspaceId] = {
       'distro': name,
       'path': installDir.path,
       'createdAt': DateTime.now().toIso8601String(),
     };
-    meta['sessions'] = sessions;
+    meta['workspaces'] = workspaces;
     await _writeMeta(meta);
 
-    return attach(sessionId);
+    return attach(workspaceId);
   }
 
   Future<void> _configureDistro(String name) async {
@@ -261,18 +261,18 @@ EOF
   }
 
   @override
-  Future<SandboxSession> attach(String sessionId) async {
-    final name = distroName(sessionId);
+  Future<SandboxWorkspace> attach(String workspaceId) async {
+    final name = distroName(workspaceId);
     final existing = await _registeredDistros();
     if (!existing.contains(name)) {
-      throw StateError('会话 $sessionId 没有对应的 WSL 发行版（$name）');
+      throw StateError('工作区 $workspaceId 没有对应的 WSL 发行版（$name）');
     }
     await _ensureHardened(name);
     await _ensureApkMirrors(name);
-    return WslSession(sessionId: sessionId, distroName: name);
+    return WslWorkspace(workspaceId: workspaceId, distroName: name);
   }
 
-  /// Idempotent: rewrite official CDN repos on older sessions.
+  /// Idempotent: rewrite official CDN repos on older workspaces.
   Future<void> _ensureApkMirrors(String name) async {
     final check = await _wsl([
       '-d',
@@ -309,8 +309,8 @@ EOF
   }
 
   @override
-  Future<void> destroy(String sessionId) async {
-    final name = distroName(sessionId);
+  Future<void> destroy(String workspaceId) async {
+    final name = distroName(workspaceId);
     final existing = await _registeredDistros();
     if (existing.contains(name)) {
       final result = await _wsl(['--unregister', name]);
@@ -322,26 +322,161 @@ EOF
     }
 
     final root = await _rootDir();
-    final installDir = Directory(p.join(root.path, sessionId));
+    final installDir = Directory(p.join(root.path, workspaceId));
     if (await installDir.exists()) {
       await installDir.delete(recursive: true);
     }
 
     final meta = await _readMeta();
-    final sessions = Map<String, dynamic>.from(meta['sessions'] as Map);
-    sessions.remove(sessionId);
-    meta['sessions'] = sessions;
+    final workspaces = Map<String, dynamic>.from(meta['workspaces'] as Map);
+    workspaces.remove(workspaceId);
+    meta['workspaces'] = workspaces;
     await _writeMeta(meta);
   }
 
-  @override
-  Future<List<SandboxInfo>> list() async {
-    final meta = await _readMeta();
-    final sessions = Map<String, dynamic>.from(meta['sessions'] as Map);
-    final registered = await _registeredDistros();
-    final out = <SandboxInfo>[];
+  String _wslUncFor(String workspaceId, String guestAbsolutePath) {
+    final guest = assertGuestPathUnderHome(guestAbsolutePath);
+    final relative = guest.startsWith('/') ? guest.substring(1) : guest;
+    return '\\\\wsl\$\\${distroName(workspaceId)}\\'
+        '${relative.replaceAll('/', '\\')}';
+  }
 
-    for (final entry in sessions.entries) {
+  Future<bool> _distroRegistered(String workspaceId) async {
+    final existing = await _registeredDistros();
+    return existing.contains(distroName(workspaceId));
+  }
+
+  Future<CommandResult> _runInDistro(String workspaceId, String cmd) async {
+    final result = await Process.run(
+      'wsl.exe',
+      [
+        '-d',
+        distroName(workspaceId),
+        '-u',
+        'root',
+        '--cd',
+        kGuestHome,
+        '-e',
+        '/bin/sh',
+        '-c',
+        cmd,
+      ],
+      environment: _wslHostEnv,
+      includeParentEnvironment: false,
+      stdoutEncoding: null,
+      stderrEncoding: null,
+    );
+    return CommandResult(
+      exitCode: result.exitCode,
+      stdout: decodeWslOutput(result.stdout as List<int>),
+      stderr: decodeWslOutput(result.stderr as List<int>),
+    );
+  }
+
+  @override
+  Future<Uint8List?> readGuestFile(
+    String workspaceId,
+    String guestAbsolutePath,
+  ) async {
+    if (!await _distroRegistered(workspaceId)) return null;
+    final guest = assertGuestPathUnderHome(guestAbsolutePath);
+    try {
+      final file = File(_wslUncFor(workspaceId, guest));
+      if (await file.exists()) {
+        return Uint8List.fromList(await file.readAsBytes());
+      }
+    } catch (_) {
+      // Fall through to wsl base64.
+    }
+    final result = await _runInDistro(
+      workspaceId,
+      'if [ -f ${shellSingleQuote(guest)} ]; then base64 ${shellSingleQuote(guest)}; else exit 2; fi',
+    );
+    if (result.exitCode == 2 || result.exitCode != 0) return null;
+    try {
+      final b64 = result.stdout.replaceAll(RegExp(r'\s+'), '');
+      if (b64.isEmpty) return null;
+      return Uint8List.fromList(base64Decode(b64));
+    } catch (_) {
+      return null;
+    }
+  }
+
+  @override
+  Future<void> writeGuestFile(
+    String workspaceId,
+    String guestAbsolutePath,
+    List<int> bytes,
+  ) async {
+    if (!await _distroRegistered(workspaceId)) {
+      throw StateError('工作区 $workspaceId 的 WSL 发行版不存在');
+    }
+    final guest = assertGuestPathUnderHome(guestAbsolutePath);
+    final parent = p.posix.dirname(guest);
+    final mkdir = await _runInDistro(
+      workspaceId,
+      'mkdir -p ${shellSingleQuote(parent)}',
+    );
+    if (!mkdir.success) {
+      throw StateError('无法在沙箱内创建目录 $parent：${mkdir.stderr}');
+    }
+    try {
+      final file = File(_wslUncFor(workspaceId, guest));
+      await file.parent.create(recursive: true);
+      await file.writeAsBytes(bytes, flush: true);
+      return;
+    } catch (_) {
+      // Fall through.
+    }
+    final proc = await Process.start(
+      'wsl.exe',
+      [
+        '-d',
+        distroName(workspaceId),
+        '-u',
+        'root',
+        '--cd',
+        kGuestHome,
+        '-e',
+        '/bin/sh',
+        '-c',
+        'base64 -d > ${shellSingleQuote(guest)}',
+      ],
+      environment: _wslHostEnv,
+      includeParentEnvironment: false,
+    );
+    proc.stdin.add(utf8.encode(base64Encode(bytes)));
+    await proc.stdin.close();
+    final exit = await proc.exitCode;
+    if (exit != 0) {
+      final err = await proc.stderr.transform(utf8.decoder).join();
+      throw StateError('写入沙箱文件失败（exit $exit）：$err');
+    }
+  }
+
+  @override
+  Future<void> deleteGuestPath(
+    String workspaceId,
+    String guestAbsolutePath, {
+    bool recursive = false,
+  }) async {
+    if (!await _distroRegistered(workspaceId)) return;
+    final guest = assertGuestPathUnderHome(guestAbsolutePath);
+    final flag = recursive ? '-rf' : '-f';
+    await _runInDistro(
+      workspaceId,
+      'rm $flag -- ${shellSingleQuote(guest)}',
+    );
+  }
+
+  @override
+  Future<List<WorkspaceInfo>> list() async {
+    final meta = await _readMeta();
+    final workspaces = Map<String, dynamic>.from(meta['workspaces'] as Map);
+    final registered = await _registeredDistros();
+    final out = <WorkspaceInfo>[];
+
+    for (final entry in workspaces.entries) {
       final id = entry.key;
       final data = Map<String, dynamic>.from(entry.value as Map);
       final distro = data['distro'] as String? ?? distroName(id);
@@ -357,8 +492,8 @@ EOF
         }
       }
       out.add(
-        SandboxInfo(
-          sessionId: id,
+        WorkspaceInfo(
+          workspaceId: id,
           displayName: distro,
           createdAt: DateTime.tryParse(data['createdAt'] as String? ?? '') ??
               DateTime.fromMillisecondsSinceEpoch(0),
@@ -372,9 +507,9 @@ EOF
   }
 }
 
-class WslSession implements SandboxSession {
-  WslSession({
-    required this.sessionId,
+class WslWorkspace implements SandboxWorkspace {
+  WslWorkspace({
+    required this.workspaceId,
     required this.distroName,
     int rows = 32,
     int columns = 100,
@@ -400,7 +535,7 @@ class WslSession implements SandboxSession {
   }
 
   @override
-  final String sessionId;
+  final String workspaceId;
 
   final String distroName;
   late final Pty _pty;

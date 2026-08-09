@@ -3,7 +3,7 @@ import 'dart:io';
 import 'package:path/path.dart' as p;
 import 'package:vault/sandbox/sandbox_models.dart';
 
-/// A host file the user selected to inject into the session inbox.
+/// A host file the user selected to inject into the workspace inbox.
 class AgentAttachment {
   const AgentAttachment({
     required this.hostPath,
@@ -14,11 +14,11 @@ class AgentAttachment {
   final String displayName;
 }
 
-/// Copy user attachments into [kGuestInboxDir] inside [session].
+/// Copy user attachments into [kGuestInboxDir] inside [workspace].
 ///
 /// Returns guest absolute paths that were written.
 Future<List<String>> injectAttachmentsIntoInbox(
-  SandboxSession session,
+  SandboxWorkspace workspace,
   List<AgentAttachment> attachments,
 ) async {
   if (attachments.isEmpty) return const [];
@@ -42,7 +42,7 @@ Future<List<String>> injectAttachmentsIntoInbox(
 
     final guestPath = inboxGuestPath(name);
     final bytes = await File(a.hostPath).readAsBytes();
-    await session.writeGuestFile(guestPath, bytes);
+    await workspace.writeGuestFile(guestPath, bytes);
     guestPaths.add(guestPath);
   }
 

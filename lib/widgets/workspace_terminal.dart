@@ -6,24 +6,24 @@ import 'package:flutter/material.dart';
 import 'package:vault/sandbox/sandbox_models.dart';
 import 'package:xterm/xterm.dart';
 
-/// Wires a [SandboxSession] to an [xterm] [TerminalView].
-class SessionTerminal extends StatefulWidget {
-  const SessionTerminal({
+/// Wires a [SandboxWorkspace] to an [xterm] [TerminalView].
+class WorkspaceTerminal extends StatefulWidget {
+  const WorkspaceTerminal({
     super.key,
-    required this.session,
-    this.disposeSession = true,
+    required this.workspace,
+    this.disposeWorkspace = true,
   });
 
-  final SandboxSession session;
+  final SandboxWorkspace workspace;
 
-  /// When false, only the terminal view is torn down (session stays alive).
-  final bool disposeSession;
+  /// When false, only the terminal view is torn down (workspace stays alive).
+  final bool disposeWorkspace;
 
   @override
-  State<SessionTerminal> createState() => _SessionTerminalState();
+  State<WorkspaceTerminal> createState() => _WorkspaceTerminalState();
 }
 
-class _SessionTerminalState extends State<SessionTerminal> {
+class _WorkspaceTerminalState extends State<WorkspaceTerminal> {
   late final Terminal _terminal;
   StreamSubscription<List<int>>? _outSub;
 
@@ -32,12 +32,12 @@ class _SessionTerminalState extends State<SessionTerminal> {
     super.initState();
     _terminal = Terminal(maxLines: 10000);
     _terminal.onOutput = (data) {
-      widget.session.write(data);
+      widget.workspace.write(data);
     };
     _terminal.onResize = (width, height, pixelWidth, pixelHeight) {
-      widget.session.resize(width, height);
+      widget.workspace.resize(width, height);
     };
-    _outSub = widget.session.output.listen((chunk) {
+    _outSub = widget.workspace.output.listen((chunk) {
       _terminal.write(utf8.decode(chunk, allowMalformed: true));
     });
   }
@@ -45,8 +45,8 @@ class _SessionTerminalState extends State<SessionTerminal> {
   @override
   void dispose() {
     _outSub?.cancel();
-    if (widget.disposeSession) {
-      unawaited(widget.session.dispose());
+    if (widget.disposeWorkspace) {
+      unawaited(widget.workspace.dispose());
     }
     super.dispose();
   }

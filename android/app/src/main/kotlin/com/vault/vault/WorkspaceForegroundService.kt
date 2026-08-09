@@ -10,9 +10,9 @@ import android.os.Build
 import android.os.IBinder
 
 /**
- * Keeps the process alive while sandbox sessions are running (apk / long jobs).
+ * Keeps the process alive while sandbox workspaces are running (apk / long jobs).
  */
-class SessionForegroundService : Service() {
+class WorkspaceForegroundService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onCreate() {
@@ -26,7 +26,7 @@ class SessionForegroundService : Service() {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
         )
         val notification = Notification.Builder(this, CHANNEL_ID)
-            .setContentTitle("Vault 会话运行中")
+            .setContentTitle("Vault 工作区运行中")
             .setContentText("沙箱终端仍在后台活动，点按返回应用。")
             .setSmallIcon(android.R.drawable.stat_notify_sync)
             .setContentIntent(pending)
@@ -44,16 +44,16 @@ class SessionForegroundService : Service() {
         val mgr = getSystemService(NotificationManager::class.java)
         val channel = NotificationChannel(
             CHANNEL_ID,
-            "Vault 会话",
+            "Vault 工作区",
             NotificationManager.IMPORTANCE_LOW,
         ).apply {
-            description = "有活跃沙箱会话时显示"
+            description = "有活跃沙箱工作区时显示"
         }
         mgr.createNotificationChannel(channel)
     }
 
     companion object {
-        private const val CHANNEL_ID = "vault_session"
+        private const val CHANNEL_ID = "vault_workspace"
         private const val NOTIFICATION_ID = 7301
     }
 }
