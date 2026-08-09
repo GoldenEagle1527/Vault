@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:vault/agent/agent_settings.dart';
+import 'package:vault/widgets/appearance_sheet.dart';
 
 class SettingsScreen extends StatefulWidget {
   SettingsScreen({super.key, AgentSettingsStore? store, this.embedded = false})
@@ -164,6 +165,19 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     : const Icon(Icons.save),
                 label: Text(_saving ? '保存中…' : '保存'),
               ),
+              const SizedBox(height: 32),
+              const Divider(),
+              const SizedBox(height: 8),
+              Text('外观', style: Theme.of(context).textTheme.titleLarge),
+              const SizedBox(height: 4),
+              Text(
+                '选择浅色、深色或跟随系统，并挑选主题色。',
+                style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                  color: Theme.of(context).colorScheme.onSurfaceVariant,
+                ),
+              ),
+              const SizedBox(height: 16),
+              const AppearanceControls(showHeader: false),
             ],
           );
 

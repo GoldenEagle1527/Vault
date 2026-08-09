@@ -9,7 +9,6 @@ import 'package:vault/agent/conversation_store.dart';
 import 'package:vault/sandbox/sandbox_models.dart';
 import 'package:vault/screens/settings_screen.dart';
 import 'package:vault/screens/terminal_screen.dart';
-import 'package:vault/widgets/appearance_sheet.dart';
 import 'package:vault/widgets/glass.dart';
 
 class AgentScreen extends StatefulWidget {
@@ -543,11 +542,19 @@ class _AgentScreenState extends State<AgentScreen> {
           titleSpacing: 0,
           title: Row(
             children: [
-              CircleAvatar(
-                radius: 18,
-                backgroundColor: scheme.primaryContainer.withValues(alpha: 0.9),
-                foregroundColor: scheme.onPrimaryContainer,
-                child: const Icon(Icons.smart_toy_outlined, size: 20),
+              Tooltip(
+                message: 'Linux 终端',
+                child: InkWell(
+                  onTap: _openTerminal,
+                  customBorder: const CircleBorder(),
+                  child: CircleAvatar(
+                    radius: 18,
+                    backgroundColor:
+                        scheme.primaryContainer.withValues(alpha: 0.9),
+                    foregroundColor: scheme.onPrimaryContainer,
+                    child: const Icon(Icons.smart_toy_outlined, size: 20),
+                  ),
+                ),
               ),
               const SizedBox(width: 10),
               Expanded(
@@ -596,21 +603,6 @@ class _AgentScreenState extends State<AgentScreen> {
               tooltip: '会话历史',
               onPressed: () => _scaffoldKey.currentState?.openEndDrawer(),
               icon: const Icon(Icons.history),
-            ),
-            IconButton(
-              tooltip: '新会话',
-              onPressed: _booting ? null : _newConversation,
-              icon: const Icon(Icons.add_comment_outlined),
-            ),
-            IconButton(
-              tooltip: 'Linux 终端',
-              onPressed: _openTerminal,
-              icon: const Icon(Icons.terminal),
-            ),
-            IconButton(
-              tooltip: '外观',
-              onPressed: () => showAppearanceSheet(context),
-              icon: const Icon(Icons.palette_outlined),
             ),
             IconButton(
               tooltip: '设置',
