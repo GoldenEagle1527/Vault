@@ -1,7 +1,9 @@
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
 import 'package:vault/agent/agent_inbox.dart';
 import 'package:vault/agent/agent_service.dart';
 import 'package:vault/agent/agent_settings.dart';
@@ -31,11 +33,33 @@ class AgentScreen extends StatefulWidget {
 }
 
 class _ChatItem {
-  _ChatItem({required this.kind, required this.text, this.subtitle});
+  _ChatItem({
+    required this.kind,
+    required this.text,
+    this.toolName,
+    this.toolArguments,
+    this.toolResult,
+  });
+
+  factory _ChatItem.tool({
+    required String name,
+    required String arguments,
+    String? result,
+  }) {
+    return _ChatItem(
+      kind: _ChatKind.tool,
+      text: name,
+      toolName: name,
+      toolArguments: arguments,
+      toolResult: result,
+    );
+  }
 
   final _ChatKind kind;
   String text;
-  final String? subtitle;
+  final String? toolName;
+  final String? toolArguments;
+  String? toolResult;
 }
 
 enum _ChatKind { user, assistant, tool, status, error }
@@ -120,23 +144,28 @@ class _AgentScreenState extends State<AgentScreen> {
       case AgentUiAssistantDelta(:final text):
         _items.add(_ChatItem(kind: _ChatKind.assistant, text: text));
       case AgentUiToolCall(:final name, :final arguments):
-        _items.add(
-          _ChatItem(
-            kind: _ChatKind.tool,
-            text: '调用 $name',
-            subtitle: arguments,
-          ),
-        );
+        _items.add(_ChatItem.tool(name: name, arguments: arguments));
       case AgentUiToolResult(:final name, :final result):
-        _items.add(
-          _ChatItem(kind: _ChatKind.tool, text: '结果 $name', subtitle: result),
-        );
+        _attachToolResult(name, result);
       case AgentUiError(:final message):
         _items.add(_ChatItem(kind: _ChatKind.error, text: message));
       case AgentUiStatus():
       case AgentUiDiscardDraftAssistant():
         break;
     }
+  }
+
+  void _attachToolResult(String name, String result) {
+    for (var i = _items.length - 1; i >= 0; i--) {
+      final item = _items[i];
+      if (item.kind == _ChatKind.tool &&
+          item.toolName == name &&
+          item.toolResult == null) {
+        item.toolResult = result;
+        return;
+      }
+    }
+    _items.add(_ChatItem.tool(name: name, arguments: '', result: result));
   }
 
   Future<void> _reloadService() async {
@@ -350,17 +379,13 @@ class _AgentScreenState extends State<AgentScreen> {
         case AgentUiUserMessage(:final text):
           _items.add(_ChatItem(kind: _ChatKind.user, text: text));
         case AgentUiAssistantDelta(:final text):
-          if (_items.isNotEmpty &&
-              _items.last.kind == _ChatKind.assistant &&
-              _items.last.subtitle == null) {
+          if (_items.isNotEmpty && _items.last.kind == _ChatKind.assistant) {
             _items.last.text += text;
           } else {
             _items.add(_ChatItem(kind: _ChatKind.assistant, text: text));
           }
         case AgentUiAssistantFinal(:final text):
-          if (_items.isNotEmpty &&
-              _items.last.kind == _ChatKind.assistant &&
-              _items.last.subtitle == null) {
+          if (_items.isNotEmpty && _items.last.kind == _ChatKind.assistant) {
             _items.last.text = text;
           } else {
             _items.add(_ChatItem(kind: _ChatKind.assistant, text: text));
@@ -369,17 +394,9 @@ class _AgentScreenState extends State<AgentScreen> {
           _discardBlankAssistantDraft();
         case AgentUiToolCall(:final name, :final arguments):
           _discardBlankAssistantDraft();
-          _items.add(
-            _ChatItem(
-              kind: _ChatKind.tool,
-              text: '调用 $name',
-              subtitle: arguments,
-            ),
-          );
+          _items.add(_ChatItem.tool(name: name, arguments: arguments));
         case AgentUiToolResult(:final name, :final result):
-          _items.add(
-            _ChatItem(kind: _ChatKind.tool, text: '结果 $name', subtitle: result),
-          );
+          _attachToolResult(name, result);
         case AgentUiError(:final message):
           _items.add(_ChatItem(kind: _ChatKind.error, text: message));
         case AgentUiStatus(:final message):
@@ -876,33 +893,13 @@ class _ChatBubble extends StatelessWidget {
     if (item.kind == _ChatKind.tool) {
       return Padding(
         padding: const EdgeInsets.symmetric(vertical: 6),
-        child: GlassPanel(
-          borderRadius: 18,
-          tone: GlassTone.regular,
-          child: Theme(
-            data: Theme.of(context).copyWith(dividerColor: Colors.transparent),
-            child: ExpansionTile(
-              tilePadding: const EdgeInsets.symmetric(horizontal: 12),
-              childrenPadding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
-              title: Text(
-                item.text,
-                style: Theme.of(context).textTheme.titleSmall,
-              ),
-              children: [
-                if (item.subtitle != null)
-                  Align(
-                    alignment: Alignment.centerLeft,
-                    child: SelectableText(
-                      item.subtitle!,
-                      style: TextStyle(
-                        color: scheme.onSurfaceVariant,
-                        fontFamily: 'monospace',
-                        fontSize: 12,
-                      ),
-                    ),
-                  ),
-              ],
+        child: Align(
+          alignment: Alignment.centerLeft,
+          child: ConstrainedBox(
+            constraints: BoxConstraints(
+              maxWidth: MediaQuery.sizeOf(context).width * 0.92,
             ),
+            child: _ToolCallCard(item: item),
           ),
         ),
       );
@@ -941,6 +938,8 @@ class _ChatBubble extends StatelessWidget {
       ),
     };
 
+    final md = _ChatMarkdown(data: item.text, color: fg);
+
     final bubble = solid
         ? DecoratedBox(
             decoration: BoxDecoration(
@@ -957,7 +956,7 @@ class _ChatBubble extends StatelessWidget {
             ),
             child: Padding(
               padding: const EdgeInsets.all(14),
-              child: SelectableText(item.text, style: TextStyle(color: fg)),
+              child: md,
             ),
           )
         : GlassPanel(
@@ -965,7 +964,7 @@ class _ChatBubble extends StatelessWidget {
             tone: GlassTone.regular,
             tint: tint,
             padding: const EdgeInsets.all(14),
-            child: SelectableText(item.text, style: TextStyle(color: fg)),
+            child: md,
           );
 
     return Padding(
@@ -983,4 +982,244 @@ class _ChatBubble extends StatelessWidget {
       ),
     );
   }
+}
+
+class _ChatMarkdown extends StatelessWidget {
+  const _ChatMarkdown({required this.data, required this.color});
+
+  final String data;
+  final Color color;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final base = theme.textTheme;
+    final codeBg = color.withValues(alpha: 0.14);
+    return MarkdownBody(
+      data: data,
+      selectable: true,
+      softLineBreak: true,
+      styleSheet: MarkdownStyleSheet.fromTheme(theme).copyWith(
+        p: base.bodyMedium?.copyWith(color: color, height: 1.35),
+        h1: base.titleLarge?.copyWith(color: color),
+        h2: base.titleMedium?.copyWith(color: color),
+        h3: base.titleSmall?.copyWith(color: color),
+        strong: base.bodyMedium?.copyWith(
+          color: color,
+          fontWeight: FontWeight.w700,
+        ),
+        em: base.bodyMedium?.copyWith(
+          color: color,
+          fontStyle: FontStyle.italic,
+        ),
+        a: base.bodyMedium?.copyWith(
+          color: color,
+          decoration: TextDecoration.underline,
+        ),
+        listBullet: base.bodyMedium?.copyWith(color: color),
+        code: base.bodySmall?.copyWith(
+          color: color,
+          fontFamily: 'monospace',
+          backgroundColor: codeBg,
+        ),
+        codeblockDecoration: BoxDecoration(
+          color: codeBg,
+          borderRadius: BorderRadius.circular(8),
+        ),
+        codeblockPadding: const EdgeInsets.all(10),
+        blockquote: base.bodyMedium?.copyWith(
+          color: color.withValues(alpha: 0.85),
+        ),
+        blockquoteDecoration: BoxDecoration(
+          border: Border(
+            left: BorderSide(color: color.withValues(alpha: 0.35), width: 3),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// Cursor-style collapsible tool call: command + output in one folded block.
+class _ToolCallCard extends StatefulWidget {
+  const _ToolCallCard({required this.item});
+
+  final _ChatItem item;
+
+  @override
+  State<_ToolCallCard> createState() => _ToolCallCardState();
+}
+
+class _ToolCallCardState extends State<_ToolCallCard> {
+  bool _expanded = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final command = _toolCommand(
+      widget.item.toolName ?? widget.item.text,
+      widget.item.toolArguments,
+    );
+    final result = widget.item.toolResult;
+    final done = result != null;
+    final summary = _toolSummary(
+      toolName: widget.item.toolName ?? widget.item.text,
+      command: command,
+      done: done,
+    );
+    final output = done ? _formatToolResult(result) : null;
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        InkWell(
+          onTap: () => setState(() => _expanded = !_expanded),
+          borderRadius: BorderRadius.circular(8),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 6),
+            child: Row(
+              children: [
+                Icon(
+                  _expanded
+                      ? Icons.keyboard_arrow_down
+                      : Icons.keyboard_arrow_right,
+                  size: 18,
+                  color: scheme.onSurfaceVariant,
+                ),
+                const SizedBox(width: 4),
+                if (!done) ...[
+                  SizedBox(
+                    width: 12,
+                    height: 12,
+                    child: CircularProgressIndicator(
+                      strokeWidth: 1.5,
+                      color: scheme.primary,
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                ],
+                Expanded(
+                  child: Text(
+                    summary,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                      color: scheme.onSurfaceVariant,
+                      fontWeight: FontWeight.w500,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+        if (_expanded)
+          Container(
+            margin: const EdgeInsets.only(left: 8, top: 2),
+            padding: const EdgeInsets.fromLTRB(12, 10, 12, 12),
+            decoration: BoxDecoration(
+              color: scheme.surfaceContainerHighest.withValues(alpha: 0.72),
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(
+                color: scheme.outlineVariant.withValues(alpha: 0.45),
+              ),
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                SelectableText(
+                  command,
+                  style: TextStyle(
+                    color: scheme.onSurface,
+                    fontFamily: 'monospace',
+                    fontSize: 12.5,
+                    height: 1.4,
+                  ),
+                ),
+                if (output != null && output.isNotEmpty) ...[
+                  const SizedBox(height: 8),
+                  SelectableText(
+                    output,
+                    style: TextStyle(
+                      color: scheme.onSurfaceVariant,
+                      fontFamily: 'monospace',
+                      fontSize: 12,
+                      height: 1.4,
+                    ),
+                  ),
+                ] else if (!done)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 8),
+                    child: Text(
+                      '执行中…',
+                      style: TextStyle(
+                        color: scheme.onSurfaceVariant,
+                        fontFamily: 'monospace',
+                        fontSize: 12,
+                      ),
+                    ),
+                  ),
+              ],
+            ),
+          ),
+      ],
+    );
+  }
+}
+
+String _toolCommand(String name, String? arguments) {
+  final raw = arguments?.trim() ?? '';
+  if (raw.isEmpty) return name;
+  try {
+    final decoded = jsonDecode(raw);
+    if (decoded is Map) {
+      final command = decoded['command'];
+      if (command is String && command.trim().isNotEmpty) {
+        return command.trim();
+      }
+    }
+  } catch (_) {}
+  return raw;
+}
+
+String _toolSummary({
+  required String toolName,
+  required String command,
+  required bool done,
+}) {
+  final firstLine = command.split(RegExp(r'\r?\n')).first.trim();
+  final preview = firstLine.length > 72
+      ? '${firstLine.substring(0, 72)}…'
+      : firstLine;
+  if (!done) {
+    return preview.isEmpty ? 'Running $toolName…' : 'Running $preview';
+  }
+  if (preview.isEmpty) return 'Ran $toolName';
+  return 'Ran $preview';
+}
+
+String _formatToolResult(String raw) {
+  final trimmed = raw.trim();
+  if (trimmed.isEmpty) return '';
+  try {
+    final decoded = jsonDecode(trimmed);
+    if (decoded is Map) {
+      final stdout = (decoded['stdout'] as String?) ?? '';
+      final stderr = (decoded['stderr'] as String?) ?? '';
+      final error = decoded['error']?.toString();
+      final buf = StringBuffer();
+      if (stdout.isNotEmpty) buf.write(stdout);
+      if (stderr.isNotEmpty) {
+        if (buf.isNotEmpty && !buf.toString().endsWith('\n')) {
+          buf.writeln();
+        }
+        buf.write(stderr);
+      }
+      if (buf.isNotEmpty) return buf.toString();
+      if (error != null && error.isNotEmpty) return error;
+      final exit = decoded['exitCode'];
+      if (exit != null) return 'exit $exit';
+    }
+  } catch (_) {}
+  return raw;
 }

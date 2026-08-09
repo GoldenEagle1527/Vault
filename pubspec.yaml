@@ -46,6 +46,7 @@ dependencies:
   # Vendored fork of memex-lab/dart_agent_core — do NOT use pub.dev dart_agent_core.
   vault_agent_core:
     path: packages/vault_agent_core
+  flutter_markdown_plus: ^1.0.12
 
 dev_dependencies:
   flutter_test:
