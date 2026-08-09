@@ -53,4 +53,19 @@ https://mirrors.aliyun.com/alpine/v3.21/community
     expect(script, contains('/etc/apk/repositories'));
     expect(script, contains('sed -i'));
   });
+
+  group('alpineApkInstallPackagesShellScript', () {
+    test('installs default packages including git', () {
+      final script = alpineApkInstallPackagesShellScript();
+      expect(script, 'apk update && apk add --no-cache git');
+      expect(kDefaultAlpinePackages, contains('git'));
+    });
+
+    test('rejects shell-unsafe package names', () {
+      expect(
+        () => alpineApkInstallPackagesShellScript(packages: ['git;rm']),
+        throwsArgumentError,
+      );
+    });
+  });
 }

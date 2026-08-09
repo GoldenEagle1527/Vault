@@ -7,6 +7,9 @@ import 'package:path/path.dart' as p;
 /// Preserves the version path from the rootfs (e.g. `/v3.21/main`).
 const String kDefaultAlpineApkMirror = 'https://mirrors.aliyun.com/alpine';
 
+/// Packages installed once when a workspace Alpine rootfs is first created.
+const List<String> kDefaultAlpinePackages = ['git'];
+
 final _officialAlpineHost = RegExp(
   r'https?://(?:dl-cdn|dl-\d+)\.alpinelinux\.org/alpine',
 );
@@ -59,4 +62,20 @@ if [ -f "\$f" ]; then
     "\$f"
 fi
 ''';
+}
+
+/// POSIX `/bin/sh -c` snippet: refresh indexes then install [packages].
+///
+/// Package names must be plain apk identifiers (no shell metacharacters).
+String alpineApkInstallPackagesShellScript({
+  List<String> packages = kDefaultAlpinePackages,
+}) {
+  if (packages.isEmpty) return 'true';
+  final nameRe = RegExp(r'^[A-Za-z0-9._+-]+$');
+  for (final pkg in packages) {
+    if (!nameRe.hasMatch(pkg)) {
+      throw ArgumentError.value(pkg, 'packages', '非法 apk 包名');
+    }
+  }
+  return 'apk update && apk add --no-cache ${packages.join(' ')}';
 }

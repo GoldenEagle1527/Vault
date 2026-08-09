@@ -117,7 +117,8 @@ class WslProvider implements SandboxProvider {
     final notes = <String>[
       '每个工作区会导入独立的 WSL2 发行版；稀疏 ext4.vhdx 实际占用通常接近约 1 GB。',
       '所有 WSL2 发行版共享同一虚拟机、内核与网络命名空间——仅有文件系统与进程隔离。',
-      '初始化时会将 apk 源切换为国内镜像（$kDefaultAlpineApkMirror），无代理也可 apk update。',
+      '初始化时会将 apk 源切换为国内镜像（$kDefaultAlpineApkMirror），'
+          '并安装 ${kDefaultAlpinePackages.join('、')}。',
       '若终端出现 localhost 代理提示：系统代理在 NAT 模式下无法直接进 WSL，'
           '可在 %UserProfile%\\.wslconfig 设置 networkingMode=mirrored，或忽略该警告。',
     ];
@@ -194,6 +195,7 @@ class WslProvider implements SandboxProvider {
     // 硬化：不自动挂载 Windows 盘；也不把 Windows PATH 拼进 Linux
     // （automount=false 时翻译 Windows PATH 会失败，交互启动常因此 RPC 报错）。
     await _configureDistro(name);
+    await _installDefaultPackages(name);
     await _wsl(['--terminate', name]);
     // terminate 后稍等，避免立刻 attach 撞到服务未就绪。
     await Future<void>.delayed(const Duration(milliseconds: 800));
@@ -257,6 +259,26 @@ EOF
     ]);
     if (result.exitCode != 0) {
       stderr.writeln('配置 apk 国内镜像失败：${result.stderr}');
+    }
+  }
+
+  /// Install [kDefaultAlpinePackages] into a freshly imported distro.
+  Future<void> _installDefaultPackages(String name) async {
+    final result = await _wsl([
+      '-d',
+      name,
+      '-u',
+      'root',
+      '-e',
+      '/bin/sh',
+      '-c',
+      alpineApkInstallPackagesShellScript(),
+    ]);
+    if (result.exitCode != 0) {
+      throw StateError(
+        '安装默认软件包（${kDefaultAlpinePackages.join(', ')}）失败'
+        '（${result.exitCode}）：${result.stderr}\n${result.stdout}',
+      );
     }
   }
 

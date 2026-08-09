@@ -81,7 +81,8 @@ class ProotProvider implements SandboxProvider {
       '每个工作区独立 rootfs；无真 PID/网络 namespace；proot 有约 20–30% 性能开销。',
       '长任务请允许通知与关闭电池优化，避免灭屏后被杀。',
       'rootfs 使用 proot-distro Alpine（16KB 页友好），与 Windows 上游包分离。',
-      '初始化时会将 apk 源切换为国内镜像（$kDefaultAlpineApkMirror），无代理也可 apk update。',
+      '初始化时会将 apk 源切换为国内镜像（$kDefaultAlpineApkMirror），'
+          '并安装 ${kDefaultAlpinePackages.join('、')}。',
     ];
 
     try {
@@ -234,6 +235,7 @@ class ProotProvider implements SandboxProvider {
 
     final rootfs = await _rootfsDir(workspaceId);
     await _extractRootfs(rootfs);
+    await _installDefaultPackages(rootfs.path);
 
     final meta = await _readMeta();
     final workspaces = Map<String, dynamic>.from(meta['workspaces'] as Map);
@@ -245,6 +247,30 @@ class ProotProvider implements SandboxProvider {
     await _writeMeta(meta);
 
     return attach(workspaceId);
+  }
+
+  /// Install [kDefaultAlpinePackages] into a freshly extracted rootfs via proot.
+  Future<void> _installDefaultPackages(String rootfsPath) async {
+    final bins = await _nativeBins();
+    final script = alpineApkInstallPackagesShellScript();
+    final result = await Process.run(
+      bins.proot,
+      _prootArgs(rootfsPath, command: ['/bin/sh', '-c', script]),
+      environment: _prootEnv(bins.loader, rootfsPath),
+      workingDirectory: rootfsPath,
+    );
+    if (result.exitCode != 0) {
+      final stderrText = result.stderr is String
+          ? result.stderr as String
+          : utf8.decode(result.stderr as List<int>, allowMalformed: true);
+      final stdoutText = result.stdout is String
+          ? result.stdout as String
+          : utf8.decode(result.stdout as List<int>, allowMalformed: true);
+      throw StateError(
+        '安装默认软件包（${kDefaultAlpinePackages.join(', ')}）失败'
+        '（${result.exitCode}）：$stderrText\n$stdoutText',
+      );
+    }
   }
 
   @override
