@@ -86,7 +86,10 @@ abstract class SandboxWorkspace {
   /// Non-interactive command for the agent loop.
   ///
   /// Implementations should run as root with cwd [kGuestHome] when practical.
-  Future<CommandResult> run(String cmd);
+  ///
+  /// [environment] is applied inside the guest shell (not host Process APIs
+  /// exposed to callers). Used e.g. for `VAULT_CHAT_SESSION_ID`.
+  Future<CommandResult> run(String cmd, {Map<String, String>? environment});
 
   /// Write [bytes] to an absolute guest path (e.g. `/root/inbox/a.txt`).
   ///
@@ -111,6 +114,22 @@ String sanitizeInboxFileName(String name) {
 
 String inboxGuestPath(String fileName) =>
     '$kGuestInboxDir/${sanitizeInboxFileName(fileName)}';
+
+/// POSIX single-quote for embedding values in guest `sh -c` strings.
+String shellSingleQuote(String value) => "'${value.replaceAll("'", "'\\''")}'";
+
+/// Prefix [cmd] with `env KEY=VAL … /bin/sh -c …` when [environment] is set.
+String withGuestEnvironment(String cmd, Map<String, String>? environment) {
+  if (environment == null || environment.isEmpty) return cmd;
+  final assignments = <String>[];
+  for (final e in environment.entries) {
+    if (!RegExp(r'^[A-Za-z_][A-Za-z0-9_]*$').hasMatch(e.key)) {
+      throw ArgumentError('invalid environment key: ${e.key}');
+    }
+    assignments.add('${e.key}=${shellSingleQuote(e.value)}');
+  }
+  return 'env ${assignments.join(' ')} /bin/sh -c ${shellSingleQuote(cmd)}';
+}
 
 /// Reject path traversal outside [kGuestHome].
 String assertGuestPathUnderHome(String guestAbsolutePath) {

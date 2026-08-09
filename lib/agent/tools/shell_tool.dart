@@ -8,10 +8,18 @@ import 'package:vault_agent_core/vault_agent_core.dart';
 const Duration kDefaultShellToolTimeout = Duration(minutes: 5);
 
 /// Builds a vault_agent_core [Tool] that runs commands inside [workspace].
+///
+/// When [chatSessionId] is set, injects `VAULT_CHAT_SESSION_ID` into the guest
+/// environment for each command (offload permission / bridge correlation).
 Tool createShellTool(
   SandboxWorkspace workspace, {
   Duration timeout = kDefaultShellToolTimeout,
+  String? chatSessionId,
 }) {
+  final sessionEnv = (chatSessionId == null || chatSessionId.trim().isEmpty)
+      ? null
+      : <String, String>{'VAULT_CHAT_SESSION_ID': chatSessionId.trim()};
+
   return Tool(
     name: 'shell',
     description:
@@ -48,7 +56,9 @@ Tool createShellTool(
       }
 
       try {
-        final result = await workspace.run(command).timeout(timeout);
+        final result = await workspace
+            .run(command, environment: sessionEnv)
+            .timeout(timeout);
         return jsonEncode({
           'ok': result.success,
           'exitCode': result.exitCode,

@@ -5,6 +5,8 @@ import 'package:flutter/services.dart';
 import 'package:flutter_pty/flutter_pty.dart';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
+import 'package:vault/offload/offload_host_server.dart';
+import 'package:vault/offload/wsl_offload_install.dart';
 import 'package:vault/sandbox/alpine_mirrors.dart';
 import 'package:vault/sandbox/sandbox_provider.dart';
 import 'package:vault/sandbox/wsl_output.dart';
@@ -59,9 +61,7 @@ class WslProvider implements SandboxProvider {
   Future<String> _materializeRootfsTar() async {
     final root = await _rootDir();
     final assetPath = _hostArchAsset();
-    final out = File(
-      p.join(root.path, '_cache', p.basename(assetPath)),
-    );
+    final out = File(p.join(root.path, '_cache', p.basename(assetPath)));
     if (await out.exists() && await out.length() > 0) {
       return out.path;
     }
@@ -113,7 +113,7 @@ class WslProvider implements SandboxProvider {
   Future<SandboxCapabilities> probe() async {
     final arch =
         Platform.environment['PROCESSOR_ARCHITECTURE']?.toLowerCase() ??
-            'unknown';
+        'unknown';
     final notes = <String>[
       '每个工作区会导入独立的 WSL2 发行版；稀疏 ext4.vhdx 实际占用通常接近约 1 GB。',
       '所有 WSL2 发行版共享同一虚拟机、内核与网络命名空间——仅有文件系统与进程隔离。',
@@ -196,6 +196,7 @@ class WslProvider implements SandboxProvider {
     // （automount=false 时翻译 Windows PATH 会失败，交互启动常因此 RPC 报错）。
     await _configureDistro(name);
     await _installDefaultPackages(name);
+    await _installOffloadBridge(name);
     await _wsl(['--terminate', name]);
     // terminate 后稍等，避免立刻 attach 撞到服务未就绪。
     await Future<void>.delayed(const Duration(milliseconds: 800));
@@ -211,6 +212,21 @@ class WslProvider implements SandboxProvider {
     await _writeMeta(meta);
 
     return attach(workspaceId);
+  }
+
+  /// Start host offload server (if needed) and write guest `vault-*` stubs.
+  Future<void> _installOffloadBridge(String distroName) async {
+    try {
+      final port = await ensureOffloadHostServer();
+      await installWslOffloadStubs(
+        distroName: distroName,
+        port: port,
+        wslHostEnv: _wslHostEnv,
+      );
+    } catch (e, st) {
+      // Non-fatal: workspace still usable without host offload.
+      stderr.writeln('安装 offload bridge 失败：$e\n$st');
+    }
   }
 
   Future<void> _configureDistro(String name) async {
@@ -245,7 +261,7 @@ EOF
     await _configureApkMirrors(name);
   }
 
-  /// Switch apk to a China mirror so `apk update` works without a proxy.
+  /// Switch apk to the Tsinghua mirror so `apk update` works without a proxy.
   Future<void> _configureApkMirrors(String name) async {
     final result = await _wsl([
       '-d',
@@ -291,11 +307,14 @@ EOF
     }
     await _ensureHardened(name);
     await _ensureApkMirrors(name);
+    // Refresh stubs + port each attach (host port may change across restarts).
+    await _installOffloadBridge(name);
     return WslWorkspace(workspaceId: workspaceId, distroName: name);
   }
 
-  /// Idempotent: rewrite official CDN repos on older workspaces.
+  /// Idempotent: rewrite non-default apk hosts (CDN / Aliyun / …) to Tsinghua.
   Future<void> _ensureApkMirrors(String name) async {
+    final host = Uri.parse(kDefaultAlpineApkMirror).host;
     final check = await _wsl([
       '-d',
       name,
@@ -304,10 +323,9 @@ EOF
       '-e',
       '/bin/sh',
       '-c',
-      r'grep -E "dl-cdn\.alpinelinux\.org|dl-[0-9]\.alpinelinux\.org" '
-          r'/etc/apk/repositories >/dev/null 2>&1',
+      'grep -Fq ${shellSingleQuote(host)} /etc/apk/repositories',
     ]);
-    if (check.exitCode != 0) return;
+    if (check.exitCode == 0) return;
     await _configureApkMirrors(name);
   }
 
@@ -485,10 +503,7 @@ EOF
     if (!await _distroRegistered(workspaceId)) return;
     final guest = assertGuestPathUnderHome(guestAbsolutePath);
     final flag = recursive ? '-rf' : '-f';
-    await _runInDistro(
-      workspaceId,
-      'rm $flag -- ${shellSingleQuote(guest)}',
-    );
+    await _runInDistro(workspaceId, 'rm $flag -- ${shellSingleQuote(guest)}');
   }
 
   @override
@@ -517,7 +532,8 @@ EOF
         WorkspaceInfo(
           workspaceId: id,
           displayName: distro,
-          createdAt: DateTime.tryParse(data['createdAt'] as String? ?? '') ??
+          createdAt:
+              DateTime.tryParse(data['createdAt'] as String? ?? '') ??
               DateTime.fromMillisecondsSinceEpoch(0),
           diskPath: path,
           approxDiskBytes: size,
@@ -584,7 +600,11 @@ class WslWorkspace implements SandboxWorkspace {
   Future<int> get exitCode => _pty.exitCode;
 
   @override
-  Future<CommandResult> run(String cmd) async {
+  Future<CommandResult> run(
+    String cmd, {
+    Map<String, String>? environment,
+  }) async {
+    final guestCmd = withGuestEnvironment(cmd, environment);
     final result = await Process.run(
       'wsl.exe',
       [
@@ -597,7 +617,7 @@ class WslWorkspace implements SandboxWorkspace {
         '-e',
         '/bin/sh',
         '-c',
-        cmd,
+        guestCmd,
       ],
       stdoutEncoding: null,
       stderrEncoding: null,
@@ -615,9 +635,7 @@ class WslWorkspace implements SandboxWorkspace {
     final parent = p.posix.dirname(guestPath);
     final mkdir = await run('mkdir -p ${shellSingleQuote(parent)}');
     if (!mkdir.success) {
-      throw StateError(
-        '无法在沙箱内创建目录 $parent：${mkdir.stderr}',
-      );
+      throw StateError('无法在沙箱内创建目录 $parent：${mkdir.stderr}');
     }
 
     // Prefer \\wsl$\ UNC (no size limit from argv); fall back to base64 pipe.
@@ -631,21 +649,18 @@ class WslWorkspace implements SandboxWorkspace {
       // Fall through.
     }
 
-    final proc = await Process.start(
-      'wsl.exe',
-      [
-        '-d',
-        distroName,
-        '-u',
-        'root',
-        '--cd',
-        kGuestHome,
-        '-e',
-        '/bin/sh',
-        '-c',
-        'base64 -d > ${shellSingleQuote(guestPath)}',
-      ],
-    );
+    final proc = await Process.start('wsl.exe', [
+      '-d',
+      distroName,
+      '-u',
+      'root',
+      '--cd',
+      kGuestHome,
+      '-e',
+      '/bin/sh',
+      '-c',
+      'base64 -d > ${shellSingleQuote(guestPath)}',
+    ]);
     proc.stdin.add(utf8.encode(base64Encode(bytes)));
     await proc.stdin.close();
     final exit = await proc.exitCode;
@@ -668,6 +683,4 @@ class WslWorkspace implements SandboxWorkspace {
   }
 }
 
-/// Single-quote for POSIX sh.
-String shellSingleQuote(String value) =>
-    "'${value.replaceAll("'", "'\\''")}'";
+// shellSingleQuote lives in sandbox_models.dart (shared with proot / smoke).

@@ -67,13 +67,13 @@ class AgentService {
     AgentState? initialState,
     ConversationStore? conversationStore,
     String? conversationId,
-  })  : _workspace = workspace,
-        _settings = settings,
-        _shellTimeout = shellTimeout,
-        _pendingState = initialState,
-        _store = conversationStore,
-        // AgentState.sessionId is the engine field for conversation id.
-        _conversationId = conversationId ?? initialState?.sessionId;
+  }) : _workspace = workspace,
+       _settings = settings,
+       _shellTimeout = shellTimeout,
+       _pendingState = initialState,
+       _store = conversationStore,
+       // AgentState.sessionId is the engine field for conversation id.
+       _conversationId = conversationId ?? initialState?.sessionId;
 
   /// Open the workspace's active conversation (creating one if needed).
   static Future<AgentService> open({
@@ -83,7 +83,8 @@ class AgentService {
     SandboxProvider? sandboxProvider,
     Duration shellTimeout = kDefaultShellToolTimeout,
   }) async {
-    final store = conversationStore ??
+    final store =
+        conversationStore ??
         (sandboxProvider != null
             ? ConversationStore(fs: SandboxWorkspaceGuestFs(sandboxProvider))
             : null);
@@ -147,7 +148,8 @@ class AgentService {
   /// The live [StatefulAgent] is dropped so the next turn rebuilds the LLM
   /// client with the new credentials, but the same [AgentState] is reused.
   void applySettings(AgentSettings settings) {
-    final unchanged = _settings.apiBaseUrl == settings.apiBaseUrl &&
+    final unchanged =
+        _settings.apiBaseUrl == settings.apiBaseUrl &&
         _settings.apiKey == settings.apiKey &&
         _settings.model == settings.model;
     _settings = settings;
@@ -177,12 +179,14 @@ class AgentService {
       baseUrl: _normalizeBaseUrl(_settings.apiBaseUrl),
     );
 
-    final conversationId = _conversationId ??
+    final conversationId =
+        _conversationId ??
         _pendingState?.sessionId ??
         const Uuid().v4().replaceAll('-', '').substring(0, 12);
     _conversationId = conversationId;
 
-    var state = _pendingState ??
+    var state =
+        _pendingState ??
         AgentState(
           sessionId: conversationId,
           metadata: {'workspaceId': workspaceId},
@@ -198,15 +202,17 @@ class AgentService {
       name: 'vault_${workspaceId}_$conversationId',
       client: client,
       tools: [
-        createShellTool(_workspace, timeout: _shellTimeout),
+        createShellTool(
+          _workspace,
+          timeout: _shellTimeout,
+          chatSessionId: conversationId,
+        ),
       ],
       modelConfig: ModelConfig(model: _settings.model),
       state: state,
       systemPrompts: vaultAgentSystemPrompts(workspaceId: workspaceId),
       controller: AgentController(),
-      autoSaveStateFunc: _store == null
-          ? null
-          : (s) => _persistIfNeeded(s),
+      autoSaveStateFunc: _store == null ? null : (s) => _persistIfNeeded(s),
     );
   }
 
@@ -303,9 +309,7 @@ class AgentService {
       if (attachments.isNotEmpty) {
         yield const AgentUiStatus('正在把附件写入工作区 Linux…');
         guestPaths = await injectAttachmentsIntoInbox(_workspace, attachments);
-        yield AgentUiStatus(
-          '已写入 ${guestPaths.length} 个文件到 $kGuestInboxDir',
-        );
+        yield AgentUiStatus('已写入 ${guestPaths.length} 个文件到 $kGuestInboxDir');
       }
 
       yield const AgentUiStatus('正在思考…');
@@ -321,10 +325,9 @@ class AgentService {
         if (trimmed.isNotEmpty) trimmed else '请查看附件并按我的意图处理（见上方 guest 路径）。',
       ].join('\n\n');
 
-      await for (final event in agent.runStream(
-        [UserMessage.text(prompt)],
-        cancelToken: _cancelToken,
-      )) {
+      await for (final event in agent.runStream([
+        UserMessage.text(prompt),
+      ], cancelToken: _cancelToken)) {
         switch (event.eventType) {
           case StreamingEventType.modelChunkMessage:
             final chunk = event.data as ModelMessage;
@@ -410,7 +413,9 @@ class AgentService {
   ///
   /// Model text is never rewritten. Whitespace-only drafts are discarded as a
   /// UI bubble (they are not the final answer); non-empty drafts are shown as-is.
-  static Iterable<AgentUiEvent> _flushTurnBeforeTools(StringBuffer buffer) sync* {
+  static Iterable<AgentUiEvent> _flushTurnBeforeTools(
+    StringBuffer buffer,
+  ) sync* {
     final draft = buffer.toString();
     buffer.clear();
     if (draft.trim().isEmpty) {
@@ -439,9 +444,7 @@ class AgentService {
           out.add(AgentUiAssistantFinal(text));
         }
         for (final call in m.functionCalls) {
-          out.add(
-            AgentUiToolCall(name: call.name, arguments: call.arguments),
-          );
+          out.add(AgentUiToolCall(name: call.name, arguments: call.arguments));
         }
       } else if (m is FunctionExecutionResultMessage) {
         for (final r in m.results) {
@@ -543,7 +546,8 @@ class AgentService {
 
   static String? _mapHttpStatus(int? status, String body) {
     final lower = body.toLowerCase();
-    final cloudflare = lower.contains('cloudflare') ||
+    final cloudflare =
+        lower.contains('cloudflare') ||
         lower.contains('attention required') ||
         lower.contains('cf-error');
     if (status == 403 && cloudflare) {

@@ -31,6 +31,7 @@
 | F5 | 工作区/会话持久化增强 | P2 | ✅ 多会话历史 2026-08-09；启动续开/磁盘清理仍缺 |
 | F6 | Differencing VHD（Windows 磁盘） | P3 / 延后 | 明确不做于 MVP |
 | F7 | Docker 后端 / 桌面 Linux / iOS | 不做（当前） | 计划外 |
+| F8 | Native Offload + API 权限组 | P1 | Wave0–4 已落地（Wave4=Android a11y/shizuku 骨架，默认 NOT_ALLOWED） |
 
 ---
 
@@ -160,6 +161,46 @@ lib/screens/
 - iOS / macOS / 桌面 Linux 沙箱  
 - 依赖 `workspace_sandbox` 包作为跨平台基础  
 - 自研完整 proot 补丁树（继续 vendor oonid/pr 预编译或同源构建）
+
+---
+
+## F8 — Native Offload + API 权限组（P1）
+
+**状态：** Wave0–4 已落地（Wave4 为 Android `a11y` / `shizuku` 骨架：status/smoke，默认 NOT_ALLOWED；无完整 UI 自动化 / Shizuku binder）。规格：[`vault-permission-api.md`](./vault-permission-api.md)。
+
+**目标：** 让 guest 内 Agent / 用户通过统一的 `vault-*` CLI 调用宿主能力（剪贴板、日历、通知、TTS 等），并由 Dart 侧权限注册表按组管控（`BYPASS` / `ASK_ONCE` / `NOT_ALLOWED`），而不是把敏感 API 直接敞给 shell。
+
+**范围平台：** Android + Windows bridges。**不做 iOS。**
+
+**权限组：** `privacy` · `host` · `media` · `system` · `integrations` · `config`
+
+**注册表要点（详见规格文档）：**
+
+| 能力 | Guest CLI | 组 | 默认 |
+|------|-----------|----|------|
+| clipboard / calendar / contacts / photos | `vault-*` | privacy | BYPASS（location = ASK_ONCE） |
+| host_files | `vault-host-files` | host | ASK_ONCE |
+| notification / device / open / weather | `vault-*` | system | BYPASS（alarm：Windows 延后） |
+| speak / speech / player | `vault-*` | media | BYPASS（player：Windows 延后） |
+| a11y / shizuku | `vault-*` | integrations | NOT_ALLOWED（仅 Android） |
+| vault_config | `vault-config` | config | 总开关默认开；允许写 provider/API key/model，禁止读回密钥 |
+
+**交付方向：**
+
+1. Guest 侧薄 CLI（`vault-clipboard` 等）→ 经 bridge 调宿主；拒绝时 exit `126`（`permission_denied`），平台不支持 exit `125`（`unsupported_platform`）  
+2. Dart 权限注册表 + 会话绑定（`VAULT_CHAT_SESSION_ID`）  
+3. 设置页权限组 IA + **「一键统测」** smoke（对当前会话批量跑 CLI）  
+4. 分波落地（与规格对齐）：
+
+| Wave | 范围 | 状态 |
+|------|------|------|
+| **0** | 桥 + 权限核 + Settings壳 + 一键统测框架；协议 125/126；`VAULT_CHAT_SESSION_ID` | 已落地 |
+| **1** | `clipboard`、`device_info`（`vault-device`）、`open_url`（`vault-open`）、`notification` | 已落地 |
+| **2** | `calendar`、`contacts`、`photos`、`location` | 已落地 |
+| **3** | `host_files`、`vault_config`、`speak`、`speech`；（`player`/`alarm` 按平台） | 已落地（host_files / vault_config / speak / speech） |
+| **4** | Android `a11y`、`shizuku`（可选）；统测扩表 | 骨架已落地（status/smoke；默认 NOT_ALLOWED） |
+
+**不要做：** 见 [`vault-permission-api.md`](./vault-permission-api.md) Non-goals；尤其不要做 iOS、不要把 OS 权限弹窗逻辑塞进 guest、不要另起一套与注册表无关的 ad-hoc MethodChannel。
 
 ---
 

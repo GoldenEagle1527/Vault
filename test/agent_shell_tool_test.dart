@@ -9,7 +9,11 @@ import 'package:vault/sandbox/sandbox_models.dart';
 class _FakeWorkspace implements SandboxWorkspace {
   _FakeWorkspace(this._handler);
 
-  final Future<CommandResult> Function(String cmd) _handler;
+  final Future<CommandResult> Function(
+    String cmd, {
+    Map<String, String>? environment,
+  })
+  _handler;
 
   @override
   String get workspaceId => 'test';
@@ -30,10 +34,14 @@ class _FakeWorkspace implements SandboxWorkspace {
   Future<int> get exitCode => Future.value(0);
 
   @override
-  Future<CommandResult> run(String cmd) => _handler(cmd);
+  Future<CommandResult> run(String cmd, {Map<String, String>? environment}) =>
+      _handler(cmd, environment: environment);
 
   @override
-  Future<void> writeGuestFile(String guestAbsolutePath, List<int> bytes) async {}
+  Future<void> writeGuestFile(
+    String guestAbsolutePath,
+    List<int> bytes,
+  ) async {}
 
   @override
   Future<void> dispose() async {}
@@ -41,7 +49,7 @@ class _FakeWorkspace implements SandboxWorkspace {
 
 void main() {
   test('shell tool returns exitCode/stdout/stderr json', () async {
-    final workspace = _FakeWorkspace((cmd) async {
+    final workspace = _FakeWorkspace((cmd, {environment}) async {
       expect(cmd, 'echo hi');
       return const CommandResult(exitCode: 0, stdout: 'hi\n', stderr: '');
     });
@@ -54,7 +62,7 @@ void main() {
   });
 
   test('shell tool maps timeout to Chinese error payload', () async {
-    final workspace = _FakeWorkspace((cmd) async {
+    final workspace = _FakeWorkspace((cmd, {environment}) async {
       await Future<void>.delayed(const Duration(seconds: 2));
       return const CommandResult(exitCode: 0, stdout: '', stderr: '');
     });
@@ -69,7 +77,7 @@ void main() {
   });
 
   test('empty command rejected', () async {
-    final workspace = _FakeWorkspace((_) async {
+    final workspace = _FakeWorkspace((_, {environment}) async {
       fail('should not run');
     });
     final tool = createShellTool(workspace);
@@ -78,4 +86,19 @@ void main() {
     expect(map['ok'], isFalse);
     expect(map['error'], '命令为空');
   });
+
+  test(
+    'shell tool injects VAULT_CHAT_SESSION_ID when chatSessionId set',
+    () async {
+      Map<String, String>? seenEnv;
+      final workspace = _FakeWorkspace((cmd, {environment}) async {
+        seenEnv = environment;
+        expect(cmd, 'true');
+        return const CommandResult(exitCode: 0, stdout: '', stderr: '');
+      });
+      final tool = createShellTool(workspace, chatSessionId: 'sess-abc');
+      await tool.executable!(<String, dynamic>{'command': 'true'});
+      expect(seenEnv, {'VAULT_CHAT_SESSION_ID': 'sess-abc'});
+    },
+  );
 }

@@ -3,6 +3,8 @@ import 'package:uuid/uuid.dart';
 import 'package:vault/agent/conversation_store.dart';
 import 'package:vault/sandbox/sandbox_provider.dart';
 import 'package:vault/sandbox/workspace_guest_fs.dart';
+import 'package:vault/permissions/active_workspace_holder.dart';
+import 'package:vault/permissions/offload_permission_dialog.dart';
 import 'package:vault/screens/agent_screen.dart';
 import 'package:vault/screens/settings_screen.dart';
 import 'package:vault/widgets/appearance_sheet.dart';
@@ -33,9 +35,27 @@ class _HomeScreenState extends State<HomeScreen> {
   @override
   void initState() {
     super.initState();
-    _conversationStore = widget.conversationStore ??
+    _conversationStore =
+        widget.conversationStore ??
         ConversationStore(fs: SandboxWorkspaceGuestFs(widget.provider));
+    // Settings smoke: temporarily attach first workspace when none is open.
+    ActiveWorkspaceHolder.resolver = _resolveWorkspaceForSmoke;
     _refresh();
+  }
+
+  @override
+  void dispose() {
+    if (identical(ActiveWorkspaceHolder.resolver, _resolveWorkspaceForSmoke)) {
+      ActiveWorkspaceHolder.resolver = null;
+    }
+    super.dispose();
+  }
+
+  /// Used by Settings 「运行全部 API 自检」 when no AgentScreen holds [current].
+  Future<SandboxWorkspace?> _resolveWorkspaceForSmoke() async {
+    if (_workspaces.isEmpty) return null;
+    if (_caps?.available != true) return null;
+    return widget.provider.attach(_workspaces.first.workspaceId);
   }
 
   Future<void> _refresh() async {
@@ -50,8 +70,8 @@ class _HomeScreenState extends State<HomeScreen> {
           : const <WorkspaceInfo>[];
       final summaries = <String, WorkspaceConversationSummary>{};
       for (final w in workspaces) {
-        summaries[w.workspaceId] =
-            await _conversationStore.peekWorkspaceSummary(w.workspaceId);
+        summaries[w.workspaceId] = await _conversationStore
+            .peekWorkspaceSummary(w.workspaceId);
       }
       if (!mounted) return;
       setState(() {
@@ -236,9 +256,12 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   void _openSettings() {
-    Navigator.of(
-      context,
-    ).push(MaterialPageRoute(builder: (_) => SettingsScreen()));
+    Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) =>
+            SettingsScreen(workspaceResolver: _resolveWorkspaceForSmoke),
+      ),
+    );
   }
 
   @override
@@ -264,191 +287,199 @@ class _HomeScreenState extends State<HomeScreen> {
       ),
     ];
 
-    return AmbientBackdrop(
-      child: Scaffold(
-        backgroundColor: Colors.transparent,
-        body: Row(
-          children: [
-            if (wide) ...[
-              Padding(
-                padding: const EdgeInsets.fromLTRB(10, 10, 0, 10),
-                child: GlassPanel(
-                  borderRadius: 28,
-                  tone: GlassTone.strong,
-                  child: NavigationRail(
-                    selectedIndex: _navIndex,
-                    onDestinationSelected: (i) {
-                      setState(() {
-                        _navIndex = i;
-                        if (i == 2) _settingsVisited = true;
-                      });
-                    },
-                    labelType: NavigationRailLabelType.all,
-                    leading: Padding(
-                      padding: const EdgeInsets.only(bottom: 16, top: 8),
-                      child: CircleAvatar(
-                        radius: 28,
-                        backgroundColor: scheme.primary,
-                        foregroundColor: scheme.onPrimary,
-                        child: const Icon(Icons.shield_outlined),
+    return OffloadPermissionDialogHost(
+      child: AmbientBackdrop(
+        child: Scaffold(
+          backgroundColor: Colors.transparent,
+          body: Row(
+            children: [
+              if (wide) ...[
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(10, 10, 0, 10),
+                  child: GlassPanel(
+                    borderRadius: 28,
+                    tone: GlassTone.strong,
+                    child: NavigationRail(
+                      selectedIndex: _navIndex,
+                      onDestinationSelected: (i) {
+                        setState(() {
+                          _navIndex = i;
+                          if (i == 2) _settingsVisited = true;
+                        });
+                      },
+                      labelType: NavigationRailLabelType.all,
+                      leading: Padding(
+                        padding: const EdgeInsets.only(bottom: 16, top: 8),
+                        child: CircleAvatar(
+                          radius: 28,
+                          backgroundColor: scheme.primary,
+                          foregroundColor: scheme.onPrimary,
+                          child: const Icon(Icons.shield_outlined),
+                        ),
                       ),
-                    ),
-                    trailing: Expanded(
-                      child: Align(
-                        alignment: Alignment.bottomCenter,
-                        child: Padding(
-                          padding: const EdgeInsets.only(bottom: 16),
-                          child: IconButton(
-                            tooltip: '外观',
-                            onPressed: () => showAppearanceSheet(context),
-                            icon: const Icon(Icons.palette_outlined),
+                      trailing: Expanded(
+                        child: Align(
+                          alignment: Alignment.bottomCenter,
+                          child: Padding(
+                            padding: const EdgeInsets.only(bottom: 16),
+                            child: IconButton(
+                              tooltip: '外观',
+                              onPressed: () => showAppearanceSheet(context),
+                              icon: const Icon(Icons.palette_outlined),
+                            ),
                           ),
                         ),
                       ),
-                    ),
-                    destinations: [
-                      for (final d in destinations)
-                        NavigationRailDestination(
-                          icon: d.icon,
-                          selectedIcon: d.selectedIcon,
-                          label: Text(d.label),
-                        ),
-                    ],
-                  ),
-                ),
-              ),
-              const SizedBox(width: 8),
-            ],
-            Expanded(
-              child: Column(
-                children: [
-                  if (_navIndex != 2)
-                    SafeArea(
-                      bottom: false,
-                      child: Padding(
-                        padding: const EdgeInsets.fromLTRB(16, 12, 16, 4),
-                        child: GlassPanel(
-                          borderRadius: 22,
-                          tone: GlassTone.regular,
-                          padding: const EdgeInsets.fromLTRB(16, 10, 8, 10),
-                          child: Row(
-                            children: [
-                              Expanded(
-                                child: Column(
-                                  crossAxisAlignment: CrossAxisAlignment.start,
-                                  children: [
-                                    Text(
-                                      'Vault',
-                                      style: Theme.of(context)
-                                          .textTheme
-                                          .labelLarge
-                                          ?.copyWith(
-                                            color: scheme.onSurfaceVariant,
-                                          ),
-                                    ),
-                                    Text(
-                                      _navIndex == 1 ? '工作区' : '首页',
-                                      style: Theme.of(
-                                        context,
-                                      ).textTheme.headlineSmall,
-                                    ),
-                                  ],
-                                ),
-                              ),
-                              if (_caps != null && wide)
-                                Padding(
-                                  padding: const EdgeInsets.only(right: 4),
-                                  child: _EnvChip(caps: _caps!),
-                                ),
-                              IconButton(
-                                tooltip: '外观',
-                                onPressed: () => showAppearanceSheet(context),
-                                icon: const Icon(Icons.palette_outlined),
-                              ),
-                              IconButton(
-                                tooltip: '刷新',
-                                onPressed: _busy ? null : _refresh,
-                                icon: const Icon(Icons.refresh),
-                              ),
-                              if (!wide)
-                                IconButton(
-                                  tooltip: '设置',
-                                  onPressed: _openSettings,
-                                  icon: const Icon(Icons.settings_outlined),
-                                ),
-                            ],
+                      destinations: [
+                        for (final d in destinations)
+                          NavigationRailDestination(
+                            icon: d.icon,
+                            selectedIcon: d.selectedIcon,
+                            label: Text(d.label),
                           ),
-                        ),
-                      ),
-                    ),
-                  if (_busy)
-                    const Padding(
-                      padding: EdgeInsets.symmetric(horizontal: 16),
-                      child: LinearProgressIndicator(minHeight: 2),
-                    ),
-                  Expanded(
-                    child: IndexedStack(
-                      index: _navIndex > 1 && !_settingsVisited ? 0 : _navIndex,
-                      children: [
-                        _HomePane(
-                          greeting: _greeting(),
-                          caps: _caps,
-                          busy: _busy,
-                          error: _error,
-                          workspaces: _workspaces,
-                          titleFor: _workspaceTitle,
-                          subtitleFor: _workspaceSubtitle,
-                          onDismissError: () => setState(() => _error = null),
-                          onCreate: _busy || _caps?.available != true
-                              ? null
-                              : _createWorkspace,
-                          onOpen: _busy ? null : _openWorkspace,
-                          onDelete: _busy ? null : _destroyWorkspace,
-                          onShowAll: () => setState(() => _navIndex = 1),
-                          workspaceIcon: _workspaceIcon,
-                        ),
-                        _WorkspacesPane(
-                          busy: _busy,
-                          error: _error,
-                          workspaces: _workspaces,
-                          titleFor: _workspaceTitle,
-                          subtitleFor: _workspaceSubtitle,
-                          onDismissError: () => setState(() => _error = null),
-                          onOpen: _busy ? null : _openWorkspace,
-                          onDelete: _busy ? null : _destroyWorkspace,
-                          workspaceIcon: _workspaceIcon,
-                        ),
-                        if (_settingsVisited)
-                          SettingsScreen(embedded: true)
-                        else
-                          const SizedBox.shrink(),
                       ],
                     ),
                   ),
-                ],
-              ),
-            ),
-          ],
-        ),
-        bottomNavigationBar: wide
-            ? null
-            : Padding(
-                padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
-                child: GlassPanel(
-                  borderRadius: 28,
-                  tone: GlassTone.strong,
-                  child: NavigationBar(
-                    selectedIndex: _navIndex,
-                    onDestinationSelected: (i) {
-                      setState(() {
-                        _navIndex = i;
-                        if (i == 2) _settingsVisited = true;
-                      });
-                    },
-                    destinations: destinations,
-                  ),
+                ),
+                const SizedBox(width: 8),
+              ],
+              Expanded(
+                child: Column(
+                  children: [
+                    if (_navIndex != 2)
+                      SafeArea(
+                        bottom: false,
+                        child: Padding(
+                          padding: const EdgeInsets.fromLTRB(16, 12, 16, 4),
+                          child: GlassPanel(
+                            borderRadius: 22,
+                            tone: GlassTone.regular,
+                            padding: const EdgeInsets.fromLTRB(16, 10, 8, 10),
+                            child: Row(
+                              children: [
+                                Expanded(
+                                  child: Column(
+                                    crossAxisAlignment:
+                                        CrossAxisAlignment.start,
+                                    children: [
+                                      Text(
+                                        'Vault',
+                                        style: Theme.of(context)
+                                            .textTheme
+                                            .labelLarge
+                                            ?.copyWith(
+                                              color: scheme.onSurfaceVariant,
+                                            ),
+                                      ),
+                                      Text(
+                                        _navIndex == 1 ? '工作区' : '首页',
+                                        style: Theme.of(
+                                          context,
+                                        ).textTheme.headlineSmall,
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                                if (_caps != null && wide)
+                                  Padding(
+                                    padding: const EdgeInsets.only(right: 4),
+                                    child: _EnvChip(caps: _caps!),
+                                  ),
+                                IconButton(
+                                  tooltip: '外观',
+                                  onPressed: () => showAppearanceSheet(context),
+                                  icon: const Icon(Icons.palette_outlined),
+                                ),
+                                IconButton(
+                                  tooltip: '刷新',
+                                  onPressed: _busy ? null : _refresh,
+                                  icon: const Icon(Icons.refresh),
+                                ),
+                                if (!wide)
+                                  IconButton(
+                                    tooltip: '设置',
+                                    onPressed: _openSettings,
+                                    icon: const Icon(Icons.settings_outlined),
+                                  ),
+                              ],
+                            ),
+                          ),
+                        ),
+                      ),
+                    if (_busy)
+                      const Padding(
+                        padding: EdgeInsets.symmetric(horizontal: 16),
+                        child: LinearProgressIndicator(minHeight: 2),
+                      ),
+                    Expanded(
+                      child: IndexedStack(
+                        index: _navIndex > 1 && !_settingsVisited
+                            ? 0
+                            : _navIndex,
+                        children: [
+                          _HomePane(
+                            greeting: _greeting(),
+                            caps: _caps,
+                            busy: _busy,
+                            error: _error,
+                            workspaces: _workspaces,
+                            titleFor: _workspaceTitle,
+                            subtitleFor: _workspaceSubtitle,
+                            onDismissError: () => setState(() => _error = null),
+                            onCreate: _busy || _caps?.available != true
+                                ? null
+                                : _createWorkspace,
+                            onOpen: _busy ? null : _openWorkspace,
+                            onDelete: _busy ? null : _destroyWorkspace,
+                            onShowAll: () => setState(() => _navIndex = 1),
+                            workspaceIcon: _workspaceIcon,
+                          ),
+                          _WorkspacesPane(
+                            busy: _busy,
+                            error: _error,
+                            workspaces: _workspaces,
+                            titleFor: _workspaceTitle,
+                            subtitleFor: _workspaceSubtitle,
+                            onDismissError: () => setState(() => _error = null),
+                            onOpen: _busy ? null : _openWorkspace,
+                            onDelete: _busy ? null : _destroyWorkspace,
+                            workspaceIcon: _workspaceIcon,
+                          ),
+                          if (_settingsVisited)
+                            SettingsScreen(
+                              embedded: true,
+                              workspaceResolver: _resolveWorkspaceForSmoke,
+                            )
+                          else
+                            const SizedBox.shrink(),
+                        ],
+                      ),
+                    ),
+                  ],
                 ),
               ),
+            ],
+          ),
+          bottomNavigationBar: wide
+              ? null
+              : Padding(
+                  padding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
+                  child: GlassPanel(
+                    borderRadius: 28,
+                    tone: GlassTone.strong,
+                    child: NavigationBar(
+                      selectedIndex: _navIndex,
+                      onDestinationSelected: (i) {
+                        setState(() {
+                          _navIndex = i;
+                          if (i == 2) _settingsVisited = true;
+                        });
+                      },
+                      destinations: destinations,
+                    ),
+                  ),
+                ),
+        ),
       ),
     );
   }

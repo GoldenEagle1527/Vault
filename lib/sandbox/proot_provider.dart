@@ -5,6 +5,8 @@ import 'package:flutter/services.dart';
 import 'package:flutter_pty/flutter_pty.dart';
 import 'package:path/path.dart' as p;
 import 'package:vault/sandbox/alpine_mirrors.dart';
+import 'package:vault/sandbox/offload_host.dart';
+import 'package:vault/sandbox/offload_stubs.dart';
 import 'package:vault/sandbox/proot_host.dart';
 import 'package:vault/sandbox/rootfs_extract.dart';
 import 'package:vault/sandbox/sandbox_provider.dart';
@@ -72,6 +74,21 @@ class ProotProvider implements SandboxProvider {
     } else {
       await ProotHost.startForegroundService();
     }
+  }
+
+  /// Start host TCP bridge + install guest vault-* stubs / port file.
+  ///
+  /// [acquireRef] increments the offload refcount (pair with [OffloadHost.release]
+  /// when the last live workspace is disposed).
+  Future<int> _ensureOffloadBridge(
+    String rootfsPath, {
+    bool acquireRef = true,
+  }) async {
+    final port = acquireRef
+        ? await OffloadHost.acquire()
+        : await OffloadHost.ensureStarted();
+    await installOffloadStubs(rootfsPath, port);
+    return port;
   }
 
   @override
@@ -146,7 +163,9 @@ class ProotProvider implements SandboxProvider {
   }
 
   Future<void> _extractRootfs(Directory dest) async {
-    final cacheDir = Directory(p.join((await _workspacesRoot()).path, '_cache'));
+    final cacheDir = Directory(
+      p.join((await _workspacesRoot()).path, '_cache'),
+    );
     if (!await cacheDir.exists()) {
       await cacheDir.create(recursive: true);
     }
@@ -163,15 +182,11 @@ class ProotProvider implements SandboxProvider {
     // /bin/sh → /bin/busybox; we rewrite them to relative links.
     await extractGuestRootfs(tarFile.path, dest.path);
 
-    // Ensure writable temp + resolv for apk (AliDNS / DNSPod — usable in CN).
+    // Writable temp + force China DNS (rootfs ships 1.1.1.1 which often fails).
     await Directory(p.join(dest.path, 'tmp')).create(recursive: true);
-    final resolv = File(p.join(dest.path, 'etc', 'resolv.conf'));
-    if (!await resolv.exists()) {
-      await resolv.parent.create(recursive: true);
-      await resolv.writeAsString('nameserver 223.5.5.5\nnameserver 119.29.29.29\n');
-    }
+    await applyAlpineResolvConfOnHost(dest.path);
 
-    // Official Alpine CDN is unreachable without a proxy in many CN networks.
+    // Official Alpine CDN / other hosts → Tsinghua mirror.
     await applyAlpineApkMirrorOnHost(dest.path);
 
     if (!guestHasBinSh(dest.path)) {
@@ -202,9 +217,13 @@ class ProotProvider implements SandboxProvider {
     return args;
   }
 
-  Map<String, String> _prootEnv(String loader, String rootfs) {
+  Map<String, String> _prootEnv(
+    String loader,
+    String rootfs, {
+    int? offloadPort,
+  }) {
     final tmp = p.join(rootfs, 'tmp');
-    return {
+    final env = <String, String>{
       'PROOT_LOADER': loader,
       'PROOT_NO_SECCOMP': '1',
       'PROOT_TMP_DIR': tmp,
@@ -216,6 +235,11 @@ class ProotProvider implements SandboxProvider {
       'TERM': 'xterm-256color',
       'LANG': 'C.UTF-8',
     };
+    final port = offloadPort ?? OffloadHost.port;
+    if (port != null && port > 0) {
+      env['VAULT_OFFLOAD_PORT'] = '$port';
+    }
+    return env;
   }
 
   @override
@@ -283,8 +307,17 @@ class ProotProvider implements SandboxProvider {
       );
     }
 
-    // Older workspaces may still point at dl-cdn; rewrite on attach.
+    // Older workspaces may still use official CDN / 1.1.1.1; fix on attach.
+    await applyAlpineResolvConfOnHost(rootfs.path);
     await applyAlpineApkMirrorOnHost(rootfs.path);
+
+    // Re-attach: replace live handle without double-acquire.
+    final prior = _live.remove(workspaceId);
+    if (prior != null) {
+      await prior.dispose();
+    }
+
+    final offloadPort = await _ensureOffloadBridge(rootfs.path);
 
     final bins = await _nativeBins();
     final workspace = ProotWorkspace(
@@ -293,9 +326,14 @@ class ProotProvider implements SandboxProvider {
       loaderPath: bins.loader,
       rootfsPath: rootfs.path,
       prootArgs: _prootArgs(rootfs.path),
-      environment: _prootEnv(bins.loader, rootfs.path),
+      environment: _prootEnv(
+        bins.loader,
+        rootfs.path,
+        offloadPort: offloadPort,
+      ),
       onDisposed: () async {
         _live.remove(workspaceId);
+        await OffloadHost.release();
         await _refreshForegroundService();
       },
     );
@@ -308,6 +346,7 @@ class ProotProvider implements SandboxProvider {
   Future<void> destroy(String workspaceId) async {
     final live = _live.remove(workspaceId);
     await live?.dispose();
+    // If there was no live handle, FGS/offload refcount were never acquired.
     await _refreshForegroundService();
 
     final workspaceDir = await _workspaceDir(workspaceId);
@@ -331,7 +370,8 @@ class ProotProvider implements SandboxProvider {
     for (final entry in workspaces.entries) {
       final id = entry.key;
       final data = Map<String, dynamic>.from(entry.value as Map);
-      final rootfsPath = data['rootfs'] as String? ?? (await _rootfsDir(id)).path;
+      final rootfsPath =
+          data['rootfs'] as String? ?? (await _rootfsDir(id)).path;
       final rootfs = Directory(rootfsPath);
       if (!await rootfs.exists()) continue;
 
@@ -344,7 +384,8 @@ class ProotProvider implements SandboxProvider {
         WorkspaceInfo(
           workspaceId: id,
           displayName: 'proot_$id',
-          createdAt: DateTime.tryParse(data['createdAt'] as String? ?? '') ??
+          createdAt:
+              DateTime.tryParse(data['createdAt'] as String? ?? '') ??
               DateTime.fromMillisecondsSinceEpoch(0),
           diskPath: rootfsPath,
           approxDiskBytes: size,
@@ -369,10 +410,7 @@ class ProotProvider implements SandboxProvider {
   Future<CommandResult> runOnce(String workspaceId, String cmd) async {
     final rootfs = await _rootfsDir(workspaceId);
     final bins = await _nativeBins();
-    final args = _prootArgs(
-      rootfs.path,
-      command: ['/bin/sh', '-c', cmd],
-    );
+    final args = _prootArgs(rootfs.path, command: ['/bin/sh', '-c', cmd]);
     final result = await Process.run(
       bins.proot,
       args,
@@ -493,7 +531,11 @@ class ProotWorkspace implements SandboxWorkspace {
   Future<int> get exitCode => _pty.exitCode;
 
   @override
-  Future<CommandResult> run(String cmd) async {
+  Future<CommandResult> run(
+    String cmd, {
+    Map<String, String>? environment,
+  }) async {
+    final guestCmd = withGuestEnvironment(cmd, environment);
     final args = <String>[
       '--link2symlink',
       '--kill-on-exit',
@@ -506,21 +548,27 @@ class ProotWorkspace implements SandboxWorkspace {
       '--bind=$rootfsPath/tmp:/dev/shm',
       '/bin/sh',
       '-c',
-      cmd,
+      guestCmd,
     ];
+    final hostEnv = <String, String>{
+      'PROOT_LOADER': loaderPath,
+      'PROOT_NO_SECCOMP': '1',
+      'PROOT_TMP_DIR': p.join(rootfsPath, 'tmp'),
+      'TMPDIR': p.join(rootfsPath, 'tmp'),
+      'PATH': '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin',
+      'HOME': kGuestHome,
+      'USER': 'root',
+      'LANG': 'C.UTF-8',
+      ...?environment,
+    };
+    final offloadPort = OffloadHost.port;
+    if (offloadPort != null && offloadPort > 0) {
+      hostEnv.putIfAbsent('VAULT_OFFLOAD_PORT', () => '$offloadPort');
+    }
     final result = await Process.run(
       prootPath,
       args,
-      environment: {
-        'PROOT_LOADER': loaderPath,
-        'PROOT_NO_SECCOMP': '1',
-        'PROOT_TMP_DIR': p.join(rootfsPath, 'tmp'),
-        'TMPDIR': p.join(rootfsPath, 'tmp'),
-        'PATH': '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin',
-        'HOME': kGuestHome,
-        'USER': 'root',
-        'LANG': 'C.UTF-8',
-      },
+      environment: hostEnv,
       workingDirectory: rootfsPath,
     );
     return CommandResult(

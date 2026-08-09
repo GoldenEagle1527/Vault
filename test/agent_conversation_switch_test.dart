@@ -29,11 +29,16 @@ class _FakeWorkspace implements SandboxWorkspace {
   Future<int> get exitCode => Future.value(0);
 
   @override
-  Future<CommandResult> run(String cmd) async =>
-      const CommandResult(exitCode: 0, stdout: '', stderr: '');
+  Future<CommandResult> run(
+    String cmd, {
+    Map<String, String>? environment,
+  }) async => const CommandResult(exitCode: 0, stdout: '', stderr: '');
 
   @override
-  Future<void> writeGuestFile(String guestAbsolutePath, List<int> bytes) async {}
+  Future<void> writeGuestFile(
+    String guestAbsolutePath,
+    List<int> bytes,
+  ) async {}
 
   @override
   Future<void> dispose() async {}

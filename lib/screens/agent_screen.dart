@@ -6,6 +6,7 @@ import 'package:vault/agent/agent_inbox.dart';
 import 'package:vault/agent/agent_service.dart';
 import 'package:vault/agent/agent_settings.dart';
 import 'package:vault/agent/conversation_store.dart';
+import 'package:vault/permissions/active_workspace_holder.dart';
 import 'package:vault/sandbox/sandbox_models.dart';
 import 'package:vault/screens/settings_screen.dart';
 import 'package:vault/screens/terminal_screen.dart';
@@ -60,6 +61,7 @@ class _AgentScreenState extends State<AgentScreen> {
     super.initState();
     _settingsStore = widget.settingsStore ?? AgentSettingsStore();
     _conversationStore = widget.conversationStore;
+    ActiveWorkspaceHolder.current = widget.workspace;
     _boot();
   }
 
@@ -77,10 +79,7 @@ class _AgentScreenState extends State<AgentScreen> {
       _hydrateFromService();
       if (!settings.isConfigured) {
         _items.add(
-          _ChatItem(
-            kind: _ChatKind.status,
-            text: '尚未配置 API。请先打开设置填写 Key 与模型。',
-          ),
+          _ChatItem(kind: _ChatKind.status, text: '尚未配置 API。请先打开设置填写 Key 与模型。'),
         );
       }
     } catch (e) {
@@ -157,7 +156,12 @@ class _AgentScreenState extends State<AgentScreen> {
 
   Future<void> _openSettings() async {
     await Navigator.of(context).push(
-      MaterialPageRoute(builder: (_) => SettingsScreen(store: _settingsStore)),
+      MaterialPageRoute(
+        builder: (_) => SettingsScreen(
+          store: _settingsStore,
+          workspaceResolver: () async => widget.workspace,
+        ),
+      ),
     );
     if (!mounted) return;
     await _reloadService();
@@ -431,6 +435,9 @@ class _AgentScreenState extends State<AgentScreen> {
 
   @override
   void dispose() {
+    if (identical(ActiveWorkspaceHolder.current, widget.workspace)) {
+      ActiveWorkspaceHolder.current = null;
+    }
     unawaited(_service?.dispose() ?? Future.value());
     unawaited(widget.workspace.dispose());
     _inputCtrl.dispose();
@@ -609,12 +616,6 @@ class _AgentScreenState extends State<AgentScreen> {
               onPressed: _openSettings,
               icon: const Icon(Icons.settings_outlined),
             ),
-            if (_running)
-              IconButton(
-                tooltip: '取消',
-                onPressed: _cancel,
-                icon: const Icon(Icons.stop_circle_outlined),
-              ),
           ],
         ),
         body: _booting
@@ -741,9 +742,13 @@ class _AgentScreenState extends State<AgentScreen> {
                                         bottom: 2,
                                       ),
                                       child: IconButton.filled(
-                                        tooltip: '发送',
-                                        onPressed: _running ? null : _send,
-                                        icon: const Icon(Icons.send),
+                                        tooltip: _running ? '停止' : '发送',
+                                        onPressed: _running ? _cancel : _send,
+                                        icon: Icon(
+                                          _running
+                                              ? Icons.stop_rounded
+                                              : Icons.send,
+                                        ),
                                       ),
                                     ),
                                   ],

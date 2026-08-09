@@ -1,0 +1,4 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="vault_a11y_service_description">Vault accessibility status stub (Wave4). Enable to allow vault-a11y smoke/status; no UI automation yet.</string>
+</resources>
