@@ -401,6 +401,40 @@ EOF
   }
 
   @override
+  Future<void> stopRunningGuests() async {
+    final names = <String>{};
+    try {
+      final registered = await _registeredDistros();
+      names.addAll(registered.where((n) => n.startsWith(distroPrefix)));
+    } catch (e, st) {
+      stderr.writeln('列举 WSL 发行版失败：$e\n$st');
+    }
+    try {
+      final meta = await _readMeta();
+      final workspaces = Map<String, dynamic>.from(
+        meta['workspaces'] as Map? ?? {},
+      );
+      for (final entry in workspaces.entries) {
+        final data = Map<String, dynamic>.from(entry.value as Map);
+        final distro = data['distro'] as String? ?? distroName(entry.key);
+        if (distro.startsWith(distroPrefix)) names.add(distro);
+      }
+    } catch (e, st) {
+      stderr.writeln('读取工作区元数据失败：$e\n$st');
+    }
+
+    // Per-distro terminate only — never `wsl --shutdown` (would kill
+    // the user's other distros sharing the same WSL2 VM).
+    for (final name in names) {
+      try {
+        await _wsl(['--terminate', name]);
+      } catch (e, st) {
+        stderr.writeln('wsl --terminate $name 失败：$e\n$st');
+      }
+    }
+  }
+
+  @override
   Future<void> destroy(String workspaceId) async {
     final name = distroName(workspaceId);
     final existing = await _registeredDistros();

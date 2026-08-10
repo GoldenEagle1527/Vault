@@ -50,6 +50,12 @@ abstract class SandboxProvider {
 
   /// One-shot non-interactive command as root in the guest (cwd [kGuestHome]).
   Future<CommandResult> runGuestCommand(String workspaceId, String cmd);
+
+  /// Best-effort: stop guest Linux instances this app started.
+  ///
+  /// On Windows, terminates Vault-managed WSL distros (`vault_*`). No-op on
+  /// Android / unsupported backends. Safe to call more than once.
+  Future<void> stopRunningGuests() async {}
 }
 
 SandboxProvider createSandboxProvider() {
