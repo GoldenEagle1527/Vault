@@ -88,6 +88,8 @@ class _AgentScreenState extends State<AgentScreen> {
   String? _status;
   bool _booting = true;
   bool _promptedNewProject = false;
+  /// 0 项目 · 1 会话 · 2 站点 · 3 工具
+  int _sideTabIndex = 0;
 
   String get _activeProjectName {
     final path = _activeProjectPath;
@@ -697,6 +699,444 @@ class _AgentScreenState extends State<AgentScreen> {
     super.dispose();
   }
 
+  void _closeDrawerIfOpen() {
+    final scaffold = _scaffoldKey.currentState;
+    if (scaffold?.isDrawerOpen == true) {
+      Navigator.of(context).maybePop();
+    }
+  }
+
+  Future<void> _onSelectProject(String path) async {
+    _closeDrawerIfOpen();
+    await _switchProject(path);
+  }
+
+  Future<void> _onSelectConversation(String id) async {
+    _closeDrawerIfOpen();
+    await _switchConversation(id);
+  }
+
+  Widget _buildNavPanel({required bool showClose}) {
+    final scheme = Theme.of(context).colorScheme;
+    return SafeArea(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 12, 8, 8),
+            child: Row(
+              children: [
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        widget.title,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: Theme.of(context).textTheme.titleMedium
+                            ?.copyWith(fontWeight: FontWeight.w600),
+                      ),
+                      Text(
+                        '工作区导航',
+                        style: Theme.of(context).textTheme.labelMedium
+                            ?.copyWith(color: scheme.onSurfaceVariant),
+                      ),
+                    ],
+                  ),
+                ),
+                if (showClose)
+                  IconButton(
+                    tooltip: '关闭',
+                    onPressed: () => Navigator.of(context).maybePop(),
+                    icon: const Icon(Icons.close),
+                  ),
+              ],
+            ),
+          ),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(10, 0, 10, 8),
+            child: Row(
+              children: [
+                for (final entry in const [
+                  (0, Icons.folder_outlined, '项目'),
+                  (1, Icons.chat_bubble_outline, '会话'),
+                  (2, Icons.language, '站点'),
+                  (3, Icons.build_outlined, '工具'),
+                ])
+                  Expanded(
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 2),
+                      child: Material(
+                        color: _sideTabIndex == entry.$1
+                            ? scheme.primaryContainer
+                            : Colors.transparent,
+                        borderRadius: BorderRadius.circular(12),
+                        child: InkWell(
+                          borderRadius: BorderRadius.circular(12),
+                          onTap: () => setState(() => _sideTabIndex = entry.$1),
+                          child: Padding(
+                            padding: const EdgeInsets.symmetric(vertical: 8),
+                            child: Column(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Icon(
+                                  entry.$2,
+                                  size: 18,
+                                  color: _sideTabIndex == entry.$1
+                                      ? scheme.onPrimaryContainer
+                                      : scheme.onSurfaceVariant,
+                                ),
+                                const SizedBox(height: 2),
+                                Text(
+                                  entry.$3,
+                                  style: Theme.of(context).textTheme.labelSmall
+                                      ?.copyWith(
+                                        fontWeight: FontWeight.w600,
+                                        color: _sideTabIndex == entry.$1
+                                            ? scheme.onPrimaryContainer
+                                            : scheme.onSurfaceVariant,
+                                      ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+              ],
+            ),
+          ),
+          const Divider(height: 1),
+          Expanded(child: _buildSideTabBody()),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildSideTabBody() {
+    final scheme = Theme.of(context).colorScheme;
+    switch (_sideTabIndex) {
+      case 0:
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(12, 12, 12, 4),
+              child: FilledButton.tonalIcon(
+                onPressed: _booting ? null : _createProject,
+                icon: const Icon(Icons.create_new_folder_outlined),
+                label: const Text('新项目'),
+              ),
+            ),
+            Expanded(
+              child: ListView(
+                children: [
+                  if (_projects.isEmpty)
+                    ListTile(
+                      title: Text(
+                        '暂无项目',
+                        style: TextStyle(color: scheme.onSurfaceVariant),
+                      ),
+                      subtitle: const Text('点击上方「新项目」开始'),
+                    )
+                  else
+                    for (final p in _projects)
+                      ListTile(
+                        selected: p.path == _activeProjectPath,
+                        leading: Icon(
+                          p.path == _activeProjectPath
+                              ? Icons.folder
+                              : Icons.folder_outlined,
+                        ),
+                        title: Text(
+                          p.name,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                        subtitle: Text(
+                          p.urls.isEmpty
+                              ? p.path
+                              : '${p.path} · ${p.urls.length} 个站点',
+                          maxLines: 2,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                        onTap: () => _onSelectProject(p.path),
+                      ),
+                ],
+              ),
+            ),
+          ],
+        );
+      case 1:
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(12, 12, 12, 4),
+              child: FilledButton.tonalIcon(
+                onPressed:
+                    _booting || _activeProjectPath == null
+                        ? null
+                        : _newConversation,
+                icon: const Icon(Icons.add),
+                label: const Text('新会话'),
+              ),
+            ),
+            Expanded(
+              child: ListView(
+                children: [
+                  if (_activeProjectPath == null)
+                    ListTile(
+                      title: Text(
+                        '请先选择或新建项目',
+                        style: TextStyle(color: scheme.onSurfaceVariant),
+                      ),
+                    )
+                  else if (_conversations.isEmpty)
+                    ListTile(
+                      title: Text(
+                        '暂无会话',
+                        style: TextStyle(color: scheme.onSurfaceVariant),
+                      ),
+                    )
+                  else
+                    for (final c in _conversations)
+                      ListTile(
+                        selected: c.id == _activeConversationId,
+                        leading: Icon(
+                          c.id == _activeConversationId
+                              ? Icons.chat_bubble
+                              : Icons.chat_bubble_outline,
+                        ),
+                        title: Text(
+                          c.title,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                        subtitle: Text(
+                          '${_relativeTime(c.updatedAt)}'
+                          '${c.messageCount > 0 ? ' · ${c.messageCount} 条消息' : ''}',
+                        ),
+                        onTap: () => _onSelectConversation(c.id),
+                        trailing: IconButton(
+                          tooltip: '删除会话',
+                          onPressed: () => _deleteConversation(c.id),
+                          icon: const Icon(Icons.delete_outline),
+                        ),
+                      ),
+                ],
+              ),
+            ),
+          ],
+        );
+      case 2:
+        return ListView(
+          children: [
+            if (_activeProjectPath == null)
+              ListTile(
+                title: Text(
+                  '请先选择项目',
+                  style: TextStyle(color: scheme.onSurfaceVariant),
+                ),
+              )
+            else if (_activeProjectUrls.isEmpty)
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 24, 16, 16),
+                child: Text(
+                  '暂无已登记站点。让 Agent 做好网站后会自动出现在此，可一键启动。',
+                  textAlign: TextAlign.center,
+                  style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                    color: scheme.onSurfaceVariant,
+                  ),
+                ),
+              )
+            else
+              for (final site in _activeProjectUrls)
+                ListTile(
+                  leading: const Icon(Icons.language),
+                  title: Text(
+                    site.name,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                  subtitle: Text(
+                    site.url,
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                  trailing: FilledButton.tonal(
+                    onPressed:
+                        _booting || _running ? null : () => _startSite(site),
+                    child: const Text('启动'),
+                  ),
+                ),
+          ],
+        );
+      case 3:
+      default:
+        return ListView(
+          children: [
+            ListTile(
+              leading: const Icon(Icons.terminal),
+              title: const Text('Linux 终端'),
+              subtitle: const Text('高级调试 · 当前工作区'),
+              onTap: () {
+                _closeDrawerIfOpen();
+                unawaited(_openTerminal());
+              },
+            ),
+          ],
+        );
+    }
+  }
+
+  Widget _buildChatColumn(ColorScheme scheme, bool hasChatContent) {
+    return Column(
+      children: [
+        if (_status != null)
+          Padding(
+            padding: const EdgeInsets.fromLTRB(12, 0, 12, 8),
+            child: GlassPanel(
+              borderRadius: 16,
+              tone: GlassTone.regular,
+              padding: const EdgeInsets.symmetric(
+                horizontal: 16,
+                vertical: 10,
+              ),
+              child: SizedBox(
+                width: double.infinity,
+                child: Text(_status!),
+              ),
+            ),
+          ),
+        Expanded(
+          child: Align(
+            alignment: Alignment.topCenter,
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 840),
+              child: _activeProjectPath == null
+                  ? _EmptyProject(onCreate: _createProject)
+                  : !hasChatContent
+                  ? _EmptyChat(
+                      onPrompt: (p) {
+                        _inputCtrl.text = p;
+                        _inputCtrl.selection =
+                            TextSelection.collapsed(offset: p.length);
+                      },
+                    )
+                  : ListView.builder(
+                      controller: _scrollCtrl,
+                      padding: const EdgeInsets.fromLTRB(16, 16, 16, 24),
+                      itemCount: _items.length,
+                      itemBuilder: (context, i) =>
+                          _ChatBubble(item: _items[i]),
+                    ),
+            ),
+          ),
+        ),
+        if (_pendingAttachments.isNotEmpty)
+          SizedBox(
+            height: 44,
+            child: Align(
+              alignment: Alignment.center,
+              child: ConstrainedBox(
+                constraints: const BoxConstraints(maxWidth: 840),
+                child: ListView.separated(
+                  scrollDirection: Axis.horizontal,
+                  padding: const EdgeInsets.symmetric(horizontal: 16),
+                  itemCount: _pendingAttachments.length,
+                  separatorBuilder: (_, _) => const SizedBox(width: 6),
+                  itemBuilder: (context, i) {
+                    final a = _pendingAttachments[i];
+                    return InputChip(
+                      label: Text(a.displayName),
+                      onDeleted: _running
+                          ? null
+                          : () => setState(
+                              () => _pendingAttachments.removeAt(i),
+                            ),
+                    );
+                  },
+                ),
+              ),
+            ),
+          ),
+        SafeArea(
+          top: false,
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(12, 4, 12, 10),
+            child: Align(
+              alignment: Alignment.center,
+              child: ConstrainedBox(
+                constraints: const BoxConstraints(maxWidth: 840),
+                child: Column(
+                  children: [
+                    GlassPanel(
+                      borderRadius: 28,
+                      tone: GlassTone.strong,
+                      padding: const EdgeInsets.fromLTRB(4, 4, 4, 4),
+                      child: Row(
+                        crossAxisAlignment: CrossAxisAlignment.end,
+                        children: [
+                          IconButton(
+                            tooltip: '添加文件',
+                            onPressed: _running ? null : _pickFiles,
+                            icon: const Icon(Icons.attach_file),
+                          ),
+                          Expanded(
+                            child: TextField(
+                              controller: _inputCtrl,
+                              minLines: 1,
+                              maxLines: 5,
+                              enabled: !_running,
+                              decoration: const InputDecoration(
+                                hintText: '继续描述你的需求…',
+                                border: InputBorder.none,
+                                enabledBorder: InputBorder.none,
+                                focusedBorder: InputBorder.none,
+                                filled: false,
+                                contentPadding: EdgeInsets.symmetric(
+                                  horizontal: 4,
+                                  vertical: 12,
+                                ),
+                              ),
+                              onSubmitted: (_) => _send(),
+                            ),
+                          ),
+                          Padding(
+                            padding: const EdgeInsets.only(
+                              right: 4,
+                              bottom: 2,
+                            ),
+                            child: IconButton.filled(
+                              tooltip: _running ? '停止' : '发送',
+                              onPressed: _running ? _cancel : _send,
+                              icon: Icon(
+                                _running ? Icons.stop_rounded : Icons.send,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(height: 6),
+                    Text(
+                      '重要操作执行前会请求确认。',
+                      style: Theme.of(context).textTheme.labelSmall
+                          ?.copyWith(color: scheme.onSurfaceVariant),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
@@ -708,257 +1148,52 @@ class _AgentScreenState extends State<AgentScreen> {
           i.kind == _ChatKind.tool,
     );
 
+    final chatBody = _booting
+        ? const Center(child: CircularProgressIndicator())
+        : _buildChatColumn(scheme, hasChatContent);
+
     return AmbientBackdrop(
       child: Scaffold(
         key: _scaffoldKey,
         backgroundColor: Colors.transparent,
-        endDrawer: Drawer(
-          child: SafeArea(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                Padding(
-                  padding: const EdgeInsets.fromLTRB(16, 12, 8, 8),
-                  child: Row(
-                    children: [
-                      Expanded(
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text(
-                              '项目与会话',
-                              style: Theme.of(context).textTheme.titleLarge,
-                            ),
-                            Text(
-                              widget.title,
-                              style: Theme.of(context).textTheme.labelMedium
-                                  ?.copyWith(color: scheme.onSurfaceVariant),
-                            ),
-                          ],
-                        ),
-                      ),
-                      IconButton(
-                        tooltip: '关闭',
-                        onPressed: () => Navigator.of(context).maybePop(),
-                        icon: const Icon(Icons.close),
-                      ),
-                    ],
-                  ),
-                ),
-                Padding(
-                  padding: const EdgeInsets.fromLTRB(12, 0, 12, 8),
-                  child: Row(
-                    children: [
-                      Expanded(
-                        child: FilledButton.tonalIcon(
-                          onPressed: _booting ? null : _createProject,
-                          icon: const Icon(Icons.create_new_folder_outlined),
-                          label: const Text('新项目'),
-                        ),
-                      ),
-                      const SizedBox(width: 8),
-                      Expanded(
-                        child: FilledButton.tonalIcon(
-                          onPressed: _booting || _activeProjectPath == null
-                              ? null
-                              : _newConversation,
-                          icon: const Icon(Icons.add),
-                          label: const Text('新会话'),
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-                const Divider(height: 1),
-                Expanded(
-                  child: ListView(
-                    children: [
-                      Padding(
-                        padding: const EdgeInsets.fromLTRB(16, 12, 16, 4),
-                        child: Text(
-                          '项目',
-                          style: Theme.of(context).textTheme.labelLarge
-                              ?.copyWith(color: scheme.onSurfaceVariant),
-                        ),
-                      ),
-                      if (_projects.isEmpty)
-                        ListTile(
-                          title: Text(
-                            '暂无项目',
-                            style: TextStyle(color: scheme.onSurfaceVariant),
-                          ),
-                          subtitle: const Text('点击上方「新项目」开始'),
-                        )
-                      else
-                        for (final p in _projects)
-                          ListTile(
-                            selected: p.path == _activeProjectPath,
-                            leading: Icon(
-                              p.path == _activeProjectPath
-                                  ? Icons.folder
-                                  : Icons.folder_outlined,
-                            ),
-                            title: Text(
-                              p.name,
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                            ),
-                            subtitle: Text(
-                              p.urls.isEmpty
-                                  ? p.path
-                                  : '${p.path} · ${p.urls.length} 个站点',
-                            ),
-                            onTap: () => _switchProject(p.path),
-                          ),
-                      const Divider(height: 1),
-                      Padding(
-                        padding: const EdgeInsets.fromLTRB(16, 12, 16, 4),
-                        child: Text(
-                          '站点（一键启动）',
-                          style: Theme.of(context).textTheme.labelLarge
-                              ?.copyWith(color: scheme.onSurfaceVariant),
-                        ),
-                      ),
-                      if (_activeProjectPath == null)
-                        ListTile(
-                          title: Text(
-                            '请先选择项目',
-                            style: TextStyle(color: scheme.onSurfaceVariant),
-                          ),
-                        )
-                      else if (_activeProjectUrls.isEmpty)
-                        ListTile(
-                          title: Text(
-                            '暂无已登记站点',
-                            style: TextStyle(color: scheme.onSurfaceVariant),
-                          ),
-                          subtitle: const Text(
-                            '让 Agent 用 Python 做好网站后会自动登记到这里',
-                          ),
-                        )
-                      else
-                        for (final site in _activeProjectUrls)
-                          ListTile(
-                            leading: const Icon(Icons.language),
-                            title: Text(
-                              site.name,
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                            ),
-                            subtitle: Text(
-                              site.url,
-                              maxLines: 2,
-                              overflow: TextOverflow.ellipsis,
-                            ),
-                            trailing: FilledButton.tonal(
-                              onPressed: _booting || _running
-                                  ? null
-                                  : () => _startSite(site),
-                              child: const Text('启动'),
-                            ),
-                          ),
-                      const Divider(height: 1),
-                      Padding(
-                        padding: const EdgeInsets.fromLTRB(16, 12, 16, 4),
-                        child: Text(
-                          '当前项目会话',
-                          style: Theme.of(context).textTheme.labelLarge
-                              ?.copyWith(color: scheme.onSurfaceVariant),
-                        ),
-                      ),
-                      if (_activeProjectPath == null)
-                        ListTile(
-                          title: Text(
-                            '请先选择或新建项目',
-                            style: TextStyle(color: scheme.onSurfaceVariant),
-                          ),
-                        )
-                      else if (_conversations.isEmpty)
-                        ListTile(
-                          title: Text(
-                            '暂无会话',
-                            style: TextStyle(color: scheme.onSurfaceVariant),
-                          ),
-                        )
-                      else
-                        for (final c in _conversations)
-                          ListTile(
-                            selected: c.id == _activeConversationId,
-                            leading: Icon(
-                              c.id == _activeConversationId
-                                  ? Icons.chat_bubble
-                                  : Icons.chat_bubble_outline,
-                            ),
-                            title: Text(
-                              c.title,
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                            ),
-                            subtitle: Text(
-                              '${_relativeTime(c.updatedAt)}'
-                              '${c.messageCount > 0 ? ' · ${c.messageCount} 条消息' : ''}',
-                            ),
-                            onTap: () => _switchConversation(c.id),
-                            trailing: IconButton(
-                              tooltip: '删除会话',
-                              onPressed: () => _deleteConversation(c.id),
-                              icon: const Icon(Icons.delete_outline),
-                            ),
-                          ),
-                    ],
-                  ),
-                ),
-              ],
-            ),
-          ),
-        ),
+        drawer: wide
+            ? null
+            : Drawer(
+                width: 300,
+                child: _buildNavPanel(showClose: true),
+              ),
         appBar: AppBar(
-          titleSpacing: 0,
-          title: Row(
+          titleSpacing: 8,
+          title: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Tooltip(
-                message: 'Linux 终端',
-                child: InkWell(
-                  onTap: _openTerminal,
-                  customBorder: const CircleBorder(),
-                  child: CircleAvatar(
-                    radius: 18,
-                    backgroundColor:
-                        scheme.primaryContainer.withValues(alpha: 0.9),
-                    foregroundColor: scheme.onPrimaryContainer,
-                    child: const Icon(Icons.smart_toy_outlined, size: 20),
-                  ),
+              Text(
+                _activeProjectPath == null
+                    ? '新建项目以开始'
+                    : _conversationTitle,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                  fontWeight: FontWeight.w600,
                 ),
               ),
-              const SizedBox(width: 10),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      _activeProjectPath == null
-                          ? '新建项目以开始'
-                          : _conversationTitle,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                        fontWeight: FontWeight.w600,
-                      ),
-                    ),
-                    Text(
-                      _activeProjectPath == null
-                          ? '${widget.title} · 工作区'
-                          : '$_activeProjectName · ${widget.title}',
-                      style: Theme.of(context).textTheme.labelSmall?.copyWith(
-                        color: scheme.onSurfaceVariant,
-                      ),
-                    ),
-                  ],
+              Text(
+                _activeProjectPath == null
+                    ? '${widget.title} · 工作区'
+                    : '$_activeProjectName · ${widget.title}',
+                style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                  color: scheme.onSurfaceVariant,
                 ),
               ),
             ],
           ),
           actions: [
+            if (!wide)
+              IconButton(
+                tooltip: '工作区导航',
+                onPressed: () => _scaffoldKey.currentState?.openDrawer(),
+                icon: const Icon(Icons.menu_open),
+              ),
             if (wide)
               Padding(
                 padding: const EdgeInsets.only(right: 4),
@@ -978,176 +1213,31 @@ class _AgentScreenState extends State<AgentScreen> {
                 ),
               ),
             IconButton(
-              tooltip: '新建项目',
-              onPressed: _booting ? null : _createProject,
-              icon: const Icon(Icons.create_new_folder_outlined),
-            ),
-            IconButton(
-              tooltip: '项目与会话',
-              onPressed: () => _scaffoldKey.currentState?.openEndDrawer(),
-              icon: const Icon(Icons.history),
-            ),
-            IconButton(
               tooltip: '设置',
               onPressed: _openSettings,
               icon: const Icon(Icons.settings_outlined),
             ),
           ],
         ),
-        body: _booting
-            ? const Center(child: CircularProgressIndicator())
-            : Column(
+        body: wide
+            ? Row(
                 children: [
-                  if (_status != null)
-                    Padding(
-                      padding: const EdgeInsets.fromLTRB(12, 0, 12, 8),
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(10, 0, 0, 10),
+                    child: SizedBox(
+                      width: 300,
                       child: GlassPanel(
-                        borderRadius: 16,
-                        tone: GlassTone.regular,
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 16,
-                          vertical: 10,
-                        ),
-                        child: SizedBox(
-                          width: double.infinity,
-                          child: Text(_status!),
-                        ),
-                      ),
-                    ),
-                  Expanded(
-                    child: Align(
-                      alignment: Alignment.topCenter,
-                      child: ConstrainedBox(
-                        constraints: const BoxConstraints(maxWidth: 840),
-                        child: _activeProjectPath == null
-                            ? _EmptyProject(
-                                onCreate: _createProject,
-                              )
-                            : !hasChatContent
-                            ? _EmptyChat(
-                                onPrompt: (p) {
-                                  _inputCtrl.text = p;
-                                  _inputCtrl.selection =
-                                      TextSelection.collapsed(offset: p.length);
-                                },
-                              )
-                            : ListView.builder(
-                                controller: _scrollCtrl,
-                                padding: const EdgeInsets.fromLTRB(
-                                  16,
-                                  16,
-                                  16,
-                                  24,
-                                ),
-                                itemCount: _items.length,
-                                itemBuilder: (context, i) =>
-                                    _ChatBubble(item: _items[i]),
-                              ),
+                        borderRadius: 24,
+                        tone: GlassTone.strong,
+                        child: _buildNavPanel(showClose: false),
                       ),
                     ),
                   ),
-                  if (_pendingAttachments.isNotEmpty)
-                    SizedBox(
-                      height: 44,
-                      child: Align(
-                        alignment: Alignment.center,
-                        child: ConstrainedBox(
-                          constraints: const BoxConstraints(maxWidth: 840),
-                          child: ListView.separated(
-                            scrollDirection: Axis.horizontal,
-                            padding: const EdgeInsets.symmetric(horizontal: 16),
-                            itemCount: _pendingAttachments.length,
-                            separatorBuilder: (_, _) =>
-                                const SizedBox(width: 6),
-                            itemBuilder: (context, i) {
-                              final a = _pendingAttachments[i];
-                              return InputChip(
-                                label: Text(a.displayName),
-                                onDeleted: _running
-                                    ? null
-                                    : () => setState(
-                                        () => _pendingAttachments.removeAt(i),
-                                      ),
-                              );
-                            },
-                          ),
-                        ),
-                      ),
-                    ),
-                  SafeArea(
-                    top: false,
-                    child: Padding(
-                      padding: const EdgeInsets.fromLTRB(12, 4, 12, 10),
-                      child: Align(
-                        alignment: Alignment.center,
-                        child: ConstrainedBox(
-                          constraints: const BoxConstraints(maxWidth: 840),
-                          child: Column(
-                            children: [
-                              GlassPanel(
-                                borderRadius: 28,
-                                tone: GlassTone.strong,
-                                padding: const EdgeInsets.fromLTRB(4, 4, 4, 4),
-                                child: Row(
-                                  crossAxisAlignment: CrossAxisAlignment.end,
-                                  children: [
-                                    IconButton(
-                                      tooltip: '添加文件',
-                                      onPressed: _running ? null : _pickFiles,
-                                      icon: const Icon(Icons.attach_file),
-                                    ),
-                                    Expanded(
-                                      child: TextField(
-                                        controller: _inputCtrl,
-                                        minLines: 1,
-                                        maxLines: 5,
-                                        enabled: !_running,
-                                        decoration: const InputDecoration(
-                                          hintText: '继续描述你的需求…',
-                                          border: InputBorder.none,
-                                          enabledBorder: InputBorder.none,
-                                          focusedBorder: InputBorder.none,
-                                          filled: false,
-                                          contentPadding: EdgeInsets.symmetric(
-                                            horizontal: 4,
-                                            vertical: 12,
-                                          ),
-                                        ),
-                                        onSubmitted: (_) => _send(),
-                                      ),
-                                    ),
-                                    Padding(
-                                      padding: const EdgeInsets.only(
-                                        right: 4,
-                                        bottom: 2,
-                                      ),
-                                      child: IconButton.filled(
-                                        tooltip: _running ? '停止' : '发送',
-                                        onPressed: _running ? _cancel : _send,
-                                        icon: Icon(
-                                          _running
-                                              ? Icons.stop_rounded
-                                              : Icons.send,
-                                        ),
-                                      ),
-                                    ),
-                                  ],
-                                ),
-                              ),
-                              const SizedBox(height: 6),
-                              Text(
-                                '重要操作执行前会请求确认。',
-                                style: Theme.of(context).textTheme.labelSmall
-                                    ?.copyWith(color: scheme.onSurfaceVariant),
-                              ),
-                            ],
-                          ),
-                        ),
-                      ),
-                    ),
-                  ),
+                  const SizedBox(width: 8),
+                  Expanded(child: chatBody),
                 ],
-              ),
+              )
+            : chatBody,
       ),
     );
   }

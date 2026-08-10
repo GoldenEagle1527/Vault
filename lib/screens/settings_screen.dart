@@ -180,155 +180,186 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
     final body = _loading
         ? const Center(child: CircularProgressIndicator())
-        : ListView(
-            padding: const EdgeInsets.all(16),
-            children: [
-              if (widget.embedded) ...[
-                Text('设置', style: Theme.of(context).textTheme.headlineSmall),
-                const SizedBox(height: 8),
-              ],
-              Text(
-                'OpenAI 兼容 API（BYO Key）。Base 需带 /v1，例如 https://apihub.example.com/v1。'
-                '密钥不会写入 workspaces.json。',
-                style: Theme.of(context).textTheme.bodyMedium,
-              ),
-              const SizedBox(height: 16),
-              TextField(
-                controller: _baseCtrl,
-                decoration: const InputDecoration(
-                  labelText: 'API Base URL',
-                  hintText: 'https://api.openai.com/v1',
-                ),
-                keyboardType: TextInputType.url,
-                autocorrect: false,
-              ),
-              const SizedBox(height: 12),
-              TextField(
-                controller: _keyCtrl,
-                decoration: InputDecoration(
-                  labelText: 'API Key',
-                  suffixIcon: IconButton(
-                    tooltip: _obscureKey ? '显示' : '隐藏',
-                    onPressed: () => setState(() => _obscureKey = !_obscureKey),
-                    icon: Icon(
-                      _obscureKey ? Icons.visibility : Icons.visibility_off,
+        : Align(
+            alignment: Alignment.topCenter,
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 720),
+              child: ListView(
+                padding: const EdgeInsets.all(16),
+                children: [
+                  if (widget.embedded) ...[
+                    Text(
+                      '设置',
+                      style: Theme.of(context).textTheme.headlineSmall,
+                    ),
+                    const SizedBox(height: 16),
+                  ],
+                  Text(
+                    '模型连接',
+                    style: Theme.of(context).textTheme.titleLarge,
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    'OpenAI 兼容 API。Base 需带 /v1；密钥仅存于安全存储。',
+                    style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                      color: scheme.onSurfaceVariant,
                     ),
                   ),
-                ),
-                obscureText: _obscureKey,
-                autocorrect: false,
-                enableSuggestions: false,
-              ),
-              const SizedBox(height: 12),
-              TextField(
-                controller: _modelCtrl,
-                decoration: const InputDecoration(
-                  labelText: '模型',
-                  hintText: 'gpt-4o-mini',
-                ),
-                autocorrect: false,
-              ),
-              const SizedBox(height: 20),
-              if (_error != null) ...[
-                Text(
-                  _error!,
-                  style: TextStyle(color: Theme.of(context).colorScheme.error),
-                ),
-                const SizedBox(height: 8),
-              ],
-              if (_savedHint != null) ...[
-                Text(
-                  _savedHint!,
-                  style: TextStyle(
-                    color: Theme.of(context).colorScheme.primary,
+                  const SizedBox(height: 16),
+                  TextField(
+                    controller: _baseCtrl,
+                    decoration: const InputDecoration(
+                      labelText: 'API Base URL',
+                      hintText: 'https://api.openai.com/v1',
+                    ),
+                    keyboardType: TextInputType.url,
+                    autocorrect: false,
                   ),
-                ),
-                const SizedBox(height: 8),
-              ],
-              FilledButton.icon(
-                onPressed: _saving ? null : _save,
-                icon: _saving
-                    ? const SizedBox(
-                        width: 16,
-                        height: 16,
-                        child: CircularProgressIndicator(strokeWidth: 2),
-                      )
-                    : const Icon(Icons.save),
-                label: Text(_saving ? '保存中…' : '保存'),
+                  const SizedBox(height: 12),
+                  TextField(
+                    controller: _keyCtrl,
+                    decoration: InputDecoration(
+                      labelText: 'API Key',
+                      suffixIcon: IconButton(
+                        tooltip: _obscureKey ? '显示' : '隐藏',
+                        onPressed: () =>
+                            setState(() => _obscureKey = !_obscureKey),
+                        icon: Icon(
+                          _obscureKey
+                              ? Icons.visibility
+                              : Icons.visibility_off,
+                        ),
+                      ),
+                    ),
+                    obscureText: _obscureKey,
+                    autocorrect: false,
+                    enableSuggestions: false,
+                  ),
+                  const SizedBox(height: 12),
+                  TextField(
+                    controller: _modelCtrl,
+                    decoration: const InputDecoration(
+                      labelText: '模型',
+                      hintText: 'gpt-4o-mini',
+                    ),
+                    autocorrect: false,
+                  ),
+                  const SizedBox(height: 16),
+                  if (_error != null) ...[
+                    Text(
+                      _error!,
+                      style: TextStyle(color: scheme.error),
+                    ),
+                    const SizedBox(height: 8),
+                  ],
+                  if (_savedHint != null) ...[
+                    Text(
+                      _savedHint!,
+                      style: TextStyle(color: scheme.primary),
+                    ),
+                    const SizedBox(height: 8),
+                  ],
+                  FilledButton.icon(
+                    onPressed: _saving ? null : _save,
+                    icon: _saving
+                        ? const SizedBox(
+                            width: 16,
+                            height: 16,
+                            child: CircularProgressIndicator(strokeWidth: 2),
+                          )
+                        : const Icon(Icons.save),
+                    label: Text(_saving ? '保存中…' : '保存'),
+                  ),
+                  const SizedBox(height: 28),
+                  const Divider(),
+                  const SizedBox(height: 16),
+                  Text('外观', style: Theme.of(context).textTheme.titleLarge),
+                  const SizedBox(height: 4),
+                  Text(
+                    '浅色、深色或跟随系统，并选择主题色。',
+                    style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                      color: scheme.onSurfaceVariant,
+                    ),
+                  ),
+                  const SizedBox(height: 16),
+                  const AppearanceControls(showHeader: false),
+                  const SizedBox(height: 28),
+                  const Divider(),
+                  const SizedBox(height: 16),
+                  Text('权限', style: Theme.of(context).textTheme.titleLarge),
+                  const SizedBox(height: 4),
+                  Text(
+                    '控制 guest 内 vault-* CLI 调用宿主能力时的默认策略。',
+                    style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                      color: scheme.onSurfaceVariant,
+                    ),
+                  ),
+                  if (_permsReady) ...[
+                    const SizedBox(height: 12),
+                    SwitchListTile(
+                      contentPadding: EdgeInsets.zero,
+                      title: const Text('配置总开关（vault_config）'),
+                      subtitle: const Text('关闭后拒绝全部 offload API'),
+                      value: widget.permissionManager.vaultConfigEnabled,
+                      onChanged: _onVaultConfigChanged,
+                    ),
+                    const SizedBox(height: 4),
+                    ..._permissionTiles(),
+                  ],
+                  const SizedBox(height: 28),
+                  const Divider(),
+                  const SizedBox(height: 16),
+                  Text('诊断', style: Theme.of(context).textTheme.titleLarge),
+                  const SizedBox(height: 4),
+                  Text(
+                    '运行 API 自检。原生桥尚未接入时部分失败属预期。',
+                    style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                      color: scheme.onSurfaceVariant,
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  FilledButton.tonalIcon(
+                    onPressed: _smokeRunning ? null : _runApiSmoke,
+                    icon: _smokeRunning
+                        ? const SizedBox(
+                            width: 16,
+                            height: 16,
+                            child: CircularProgressIndicator(strokeWidth: 2),
+                          )
+                        : const Icon(Icons.health_and_safety_outlined),
+                    label: Text(_smokeRunning ? '自检运行中…' : '运行全部 API 自检'),
+                  ),
+                  CheckboxListTile(
+                    contentPadding: EdgeInsets.zero,
+                    title: const Text('仅测当前平台已实现项'),
+                    subtitle: const Text('默认开启；桥接未标记前 Wave1 会显示为跳过'),
+                    value: _onlyImplemented,
+                    onChanged: _smokeRunning
+                        ? null
+                        : (v) => setState(() => _onlyImplemented = v ?? true),
+                  ),
+                  CheckboxListTile(
+                    contentPadding: EdgeInsets.zero,
+                    title: const Text('包含高危集成'),
+                    subtitle: const Text('无障碍 / Shizuku（仅 Android）'),
+                    value: _includeIntegrations,
+                    onChanged: _smokeRunning
+                        ? null
+                        : (v) =>
+                            setState(() => _includeIntegrations = v ?? false),
+                  ),
+                ],
               ),
-              const SizedBox(height: 32),
-              const Divider(),
-              const SizedBox(height: 8),
-              Text('外观', style: Theme.of(context).textTheme.titleLarge),
-              const SizedBox(height: 4),
-              Text(
-                '选择浅色、深色或跟随系统，并挑选主题色。',
-                style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                  color: Theme.of(context).colorScheme.onSurfaceVariant,
-                ),
-              ),
-              const SizedBox(height: 16),
-              const AppearanceControls(showHeader: false),
-              const SizedBox(height: 32),
-              const Divider(),
-              const SizedBox(height: 8),
-              Text('权限', style: Theme.of(context).textTheme.titleLarge),
-              const SizedBox(height: 8),
-              Text(
-                '控制 guest 内 vault-* CLI 调用宿主能力时的默认策略。'
-                '原生桥（Android Kotlin / Windows C++）尚未接入时，自检可能失败——属预期。',
-                style: Theme.of(context).textTheme.bodyMedium,
-              ),
-              const SizedBox(height: 12),
-              FilledButton.tonalIcon(
-                onPressed: _smokeRunning ? null : _runApiSmoke,
-                icon: _smokeRunning
-                    ? const SizedBox(
-                        width: 16,
-                        height: 16,
-                        child: CircularProgressIndicator(strokeWidth: 2),
-                      )
-                    : const Icon(Icons.health_and_safety_outlined),
-                label: Text(_smokeRunning ? '自检运行中…' : '运行全部 API 自检'),
-              ),
-              CheckboxListTile(
-                contentPadding: EdgeInsets.zero,
-                title: const Text('仅测当前平台已实现项'),
-                subtitle: const Text('默认开启；桥接未标记前 Wave1 会显示为跳过'),
-                value: _onlyImplemented,
-                onChanged: _smokeRunning
-                    ? null
-                    : (v) => setState(() => _onlyImplemented = v ?? true),
-              ),
-              CheckboxListTile(
-                contentPadding: EdgeInsets.zero,
-                title: const Text('包含高危集成'),
-                subtitle: const Text('无障碍 / Shizuku（仅 Android）'),
-                value: _includeIntegrations,
-                onChanged: _smokeRunning
-                    ? null
-                    : (v) => setState(() => _includeIntegrations = v ?? false),
-              ),
-              if (_permsReady) ...[
-                SwitchListTile(
-                  contentPadding: EdgeInsets.zero,
-                  title: const Text('配置总开关（vault_config）'),
-                  subtitle: const Text('关闭后拒绝全部 offload API'),
-                  value: widget.permissionManager.vaultConfigEnabled,
-                  onChanged: _onVaultConfigChanged,
-                ),
-                const SizedBox(height: 8),
-                ..._permissionTiles(),
-              ],
-            ],
+            ),
           );
 
     if (widget.embedded) return body;
 
     return Scaffold(
-      appBar: AppBar(title: const Text('Agent 设置')),
+      appBar: AppBar(title: const Text('设置')),
       body: body,
     );
   }

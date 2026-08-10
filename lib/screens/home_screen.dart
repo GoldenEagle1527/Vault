@@ -10,7 +10,6 @@ import 'package:vault/permissions/active_workspace_holder.dart';
 import 'package:vault/permissions/offload_permission_dialog.dart';
 import 'package:vault/screens/agent_screen.dart';
 import 'package:vault/screens/settings_screen.dart';
-import 'package:vault/widgets/appearance_sheet.dart';
 import 'package:vault/widgets/glass.dart';
 
 class HomeScreen extends StatefulWidget {
@@ -328,13 +327,11 @@ class _HomeScreenState extends State<HomeScreen> {
     return parts.join(' · ');
   }
 
-  void _openSettings() {
-    Navigator.of(context).push(
-      MaterialPageRoute(
-        builder: (_) =>
-            SettingsScreen(workspaceResolver: _resolveWorkspaceForSmoke),
-      ),
-    );
+  void _selectNav(int i) {
+    setState(() {
+      _navIndex = i;
+      if (i == 1) _settingsVisited = true;
+    });
   }
 
   @override
@@ -343,11 +340,6 @@ class _HomeScreenState extends State<HomeScreen> {
     final scheme = Theme.of(context).colorScheme;
 
     final destinations = const [
-      NavigationDestination(
-        icon: Icon(Icons.dashboard_outlined),
-        selectedIcon: Icon(Icons.dashboard),
-        label: '首页',
-      ),
       NavigationDestination(
         icon: Icon(Icons.workspaces_outlined),
         selectedIcon: Icon(Icons.workspaces),
@@ -374,12 +366,7 @@ class _HomeScreenState extends State<HomeScreen> {
                     tone: GlassTone.strong,
                     child: NavigationRail(
                       selectedIndex: _navIndex,
-                      onDestinationSelected: (i) {
-                        setState(() {
-                          _navIndex = i;
-                          if (i == 2) _settingsVisited = true;
-                        });
-                      },
+                      onDestinationSelected: _selectNav,
                       labelType: NavigationRailLabelType.all,
                       leading: Padding(
                         padding: const EdgeInsets.only(bottom: 16, top: 8),
@@ -388,19 +375,6 @@ class _HomeScreenState extends State<HomeScreen> {
                           backgroundColor: scheme.primary,
                           foregroundColor: scheme.onPrimary,
                           child: const Icon(Icons.shield_outlined),
-                        ),
-                      ),
-                      trailing: Expanded(
-                        child: Align(
-                          alignment: Alignment.bottomCenter,
-                          child: Padding(
-                            padding: const EdgeInsets.only(bottom: 16),
-                            child: IconButton(
-                              tooltip: '外观',
-                              onPressed: () => showAppearanceSheet(context),
-                              icon: const Icon(Icons.palette_outlined),
-                            ),
-                          ),
                         ),
                       ),
                       destinations: [
@@ -419,7 +393,7 @@ class _HomeScreenState extends State<HomeScreen> {
               Expanded(
                 child: Column(
                   children: [
-                    if (_navIndex != 2)
+                    if (_navIndex == 0)
                       SafeArea(
                         bottom: false,
                         child: Padding(
@@ -445,7 +419,7 @@ class _HomeScreenState extends State<HomeScreen> {
                                             ),
                                       ),
                                       Text(
-                                        _navIndex == 1 ? '工作区' : '首页',
+                                        '工作区',
                                         style: Theme.of(
                                           context,
                                         ).textTheme.headlineSmall,
@@ -459,38 +433,27 @@ class _HomeScreenState extends State<HomeScreen> {
                                     child: _EnvChip(caps: _caps!),
                                   ),
                                 IconButton(
-                                  tooltip: '外观',
-                                  onPressed: () => showAppearanceSheet(context),
-                                  icon: const Icon(Icons.palette_outlined),
-                                ),
-                                IconButton(
                                   tooltip: '刷新',
                                   onPressed: _busy ? null : _refresh,
                                   icon: const Icon(Icons.refresh),
                                 ),
-                                if (!wide)
-                                  IconButton(
-                                    tooltip: '设置',
-                                    onPressed: _openSettings,
-                                    icon: const Icon(Icons.settings_outlined),
-                                  ),
                               ],
                             ),
                           ),
                         ),
                       ),
-                    if (_busy)
+                    if (_busy && _navIndex == 0)
                       const Padding(
                         padding: EdgeInsets.symmetric(horizontal: 16),
                         child: LinearProgressIndicator(minHeight: 2),
                       ),
                     Expanded(
                       child: IndexedStack(
-                        index: _navIndex > 1 && !_settingsVisited
+                        index: _navIndex == 1 && !_settingsVisited
                             ? 0
                             : _navIndex,
                         children: [
-                          _HomePane(
+                          _WorkspaceHub(
                             greeting: _greeting(),
                             caps: _caps,
                             busy: _busy,
@@ -502,18 +465,6 @@ class _HomeScreenState extends State<HomeScreen> {
                             onCreate: _busy || _caps?.available != true
                                 ? null
                                 : _createWorkspace,
-                            onOpen: _busy ? null : _openWorkspace,
-                            onDelete: _busy ? null : _destroyWorkspace,
-                            onShowAll: () => setState(() => _navIndex = 1),
-                            workspaceIcon: _workspaceIcon,
-                          ),
-                          _WorkspacesPane(
-                            busy: _busy,
-                            error: _error,
-                            workspaces: _workspaces,
-                            titleFor: _workspaceTitle,
-                            subtitleFor: _workspaceSubtitle,
-                            onDismissError: () => setState(() => _error = null),
                             onOpen: _busy ? null : _openWorkspace,
                             onDelete: _busy ? null : _destroyWorkspace,
                             workspaceIcon: _workspaceIcon,
@@ -542,12 +493,7 @@ class _HomeScreenState extends State<HomeScreen> {
                     tone: GlassTone.strong,
                     child: NavigationBar(
                       selectedIndex: _navIndex,
-                      onDestinationSelected: (i) {
-                        setState(() {
-                          _navIndex = i;
-                          if (i == 2) _settingsVisited = true;
-                        });
-                      },
+                      onDestinationSelected: _selectNav,
                       destinations: destinations,
                     ),
                   ),
@@ -584,8 +530,8 @@ class _EnvChip extends StatelessWidget {
   }
 }
 
-class _HomePane extends StatelessWidget {
-  const _HomePane({
+class _WorkspaceHub extends StatelessWidget {
+  const _WorkspaceHub({
     required this.greeting,
     required this.caps,
     required this.busy,
@@ -597,7 +543,6 @@ class _HomePane extends StatelessWidget {
     required this.onCreate,
     required this.onOpen,
     required this.onDelete,
-    required this.onShowAll,
     required this.workspaceIcon,
   });
 
@@ -612,227 +557,146 @@ class _HomePane extends StatelessWidget {
   final VoidCallback? onCreate;
   final void Function(WorkspaceInfo)? onOpen;
   final void Function(WorkspaceInfo)? onDelete;
-  final VoidCallback onShowAll;
   final IconData Function(String) workspaceIcon;
 
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
-    final recent = workspaces.take(8).toList();
 
-    return ListView(
-      padding: const EdgeInsets.fromLTRB(20, 8, 20, 32),
-      children: [
-        if (error != null) ...[
-          MaterialBanner(
-            content: Text(error!),
-            actions: [
-              TextButton(onPressed: onDismissError, child: const Text('关闭')),
-            ],
-          ),
-          const SizedBox(height: 8),
-        ],
-        if (caps != null && !caps!.available) ...[
-          Card(
-            color: scheme.errorContainer,
-            child: Padding(
-              padding: const EdgeInsets.all(16),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    '环境不可用',
-                    style: Theme.of(context).textTheme.titleSmall?.copyWith(
-                      color: scheme.onErrorContainer,
-                    ),
-                  ),
-                  if (caps!.hint != null) ...[
-                    const SizedBox(height: 8),
-                    Text(
-                      caps!.hint!,
-                      style: TextStyle(color: scheme.onErrorContainer),
-                    ),
-                  ],
-                ],
-              ),
-            ),
-          ),
-          const SizedBox(height: 16),
-        ],
-        FadeSlideIn(
-          child: GlassPanel(
-            borderRadius: 28,
-            tone: GlassTone.tinted,
-            tint: scheme.primaryContainer,
-            padding: const EdgeInsets.all(24),
-            child: LayoutBuilder(
-              builder: (context, constraints) {
-                final stacked = constraints.maxWidth < 520;
-                final text = Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      greeting,
-                      style: Theme.of(context).textTheme.labelLarge?.copyWith(
-                        color: scheme.onPrimaryContainer,
-                      ),
-                    ),
-                    const SizedBox(height: 8),
-                    Text(
-                      '今天想让 Vault 帮你做什么？',
-                      style: Theme.of(context).textTheme.headlineSmall
-                          ?.copyWith(
-                            color: scheme.onPrimaryContainer,
-                            fontWeight: FontWeight.w600,
-                          ),
-                    ),
-                    const SizedBox(height: 8),
-                    Text(
-                      '创建工作区后，可在同一 Linux 环境中开启多轮会话。',
-                      style: TextStyle(color: scheme.onPrimaryContainer),
-                    ),
-                  ],
-                );
-                final button = FilledButton.icon(
-                  onPressed: onCreate,
-                  icon: const Icon(Icons.add),
-                  label: const Text('新建工作区'),
-                );
-                if (stacked) {
-                  return Column(
-                    crossAxisAlignment: CrossAxisAlignment.stretch,
-                    children: [text, const SizedBox(height: 20), button],
-                  );
-                }
-                return Row(
-                  children: [
-                    Expanded(child: text),
-                    const SizedBox(width: 16),
-                    button,
-                  ],
-                );
-              },
-            ),
-          ),
-        ),
-        const SizedBox(height: 28),
-        Row(
+    return Align(
+      alignment: Alignment.topCenter,
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 760),
+        child: ListView(
+          padding: const EdgeInsets.fromLTRB(20, 8, 20, 32),
           children: [
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    '继续工作',
-                    style: Theme.of(context).textTheme.labelLarge?.copyWith(
-                      color: scheme.onSurfaceVariant,
-                    ),
-                  ),
-                  Text('最近工作区', style: Theme.of(context).textTheme.titleLarge),
+            if (error != null) ...[
+              MaterialBanner(
+                content: Text(error!),
+                actions: [
+                  TextButton(onPressed: onDismissError, child: const Text('关闭')),
                 ],
               ),
+              const SizedBox(height: 8),
+            ],
+            if (caps != null && !caps!.available) ...[
+              Card(
+                color: scheme.errorContainer,
+                child: Padding(
+                  padding: const EdgeInsets.all(16),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        '环境不可用',
+                        style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                          color: scheme.onErrorContainer,
+                        ),
+                      ),
+                      if (caps!.hint != null) ...[
+                        const SizedBox(height: 8),
+                        Text(
+                          caps!.hint!,
+                          style: TextStyle(color: scheme.onErrorContainer),
+                        ),
+                      ],
+                    ],
+                  ),
+                ),
+              ),
+              const SizedBox(height: 16),
+            ],
+            FadeSlideIn(
+              child: GlassPanel(
+                borderRadius: 28,
+                tone: GlassTone.tinted,
+                tint: scheme.primaryContainer,
+                padding: const EdgeInsets.all(24),
+                child: LayoutBuilder(
+                  builder: (context, constraints) {
+                    final stacked = constraints.maxWidth < 520;
+                    final text = Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          greeting,
+                          style: Theme.of(context).textTheme.labelLarge
+                              ?.copyWith(color: scheme.onPrimaryContainer),
+                        ),
+                        const SizedBox(height: 8),
+                        Text(
+                          '一个工作区 = 一套独立 Linux 环境',
+                          style: Theme.of(context).textTheme.headlineSmall
+                              ?.copyWith(
+                                color: scheme.onPrimaryContainer,
+                                fontWeight: FontWeight.w600,
+                              ),
+                        ),
+                        const SizedBox(height: 8),
+                        Text(
+                          '创建后即可在同一环境中开启多轮会话。',
+                          style: TextStyle(color: scheme.onPrimaryContainer),
+                        ),
+                      ],
+                    );
+                    final button = FilledButton.icon(
+                      onPressed: onCreate,
+                      icon: const Icon(Icons.add),
+                      label: const Text('新建工作区'),
+                    );
+                    if (stacked) {
+                      return Column(
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                        children: [text, const SizedBox(height: 20), button],
+                      );
+                    }
+                    return Row(
+                      children: [
+                        Expanded(child: text),
+                        const SizedBox(width: 16),
+                        button,
+                      ],
+                    );
+                  },
+                ),
+              ),
             ),
-            TextButton(onPressed: onShowAll, child: const Text('查看全部')),
+            const SizedBox(height: 24),
+            Text(
+              '全部工作区',
+              style: Theme.of(context).textTheme.titleLarge,
+            ),
+            const SizedBox(height: 10),
+            if (workspaces.isEmpty)
+              Padding(
+                padding: const EdgeInsets.symmetric(vertical: 24),
+                child: Text(
+                  busy ? '正在检查环境…' : '还没有工作区。点上方「新建工作区」开始。',
+                  style: Theme.of(context).textTheme.bodyLarge?.copyWith(
+                    color: scheme.onSurfaceVariant,
+                  ),
+                ),
+              )
+            else
+              ...workspaces.asMap().entries.map(
+                (e) => Padding(
+                  padding: const EdgeInsets.only(bottom: 10),
+                  child: FadeSlideIn(
+                    index: e.key,
+                    child: _WorkspaceRow(
+                      title: titleFor(e.value),
+                      subtitle: subtitleFor(e.value),
+                      icon: workspaceIcon(e.value.workspaceId),
+                      onOpen: onOpen == null ? null : () => onOpen!(e.value),
+                      onDelete:
+                          onDelete == null ? null : () => onDelete!(e.value),
+                    ),
+                  ),
+                ),
+              ),
           ],
         ),
-        const SizedBox(height: 8),
-        if (recent.isEmpty)
-          Padding(
-            padding: const EdgeInsets.symmetric(vertical: 24),
-            child: Text(
-              busy ? '正在检查环境…' : '还没有工作区。点上方「新建工作区」开始。',
-              style: Theme.of(
-                context,
-              ).textTheme.bodyLarge?.copyWith(color: scheme.onSurfaceVariant),
-            ),
-          )
-        else
-          ...recent.asMap().entries.map(
-            (e) => Padding(
-              padding: const EdgeInsets.only(bottom: 10),
-              child: FadeSlideIn(
-                index: e.key,
-                child: _WorkspaceRow(
-                  title: titleFor(e.value),
-                  subtitle: subtitleFor(e.value),
-                  icon: workspaceIcon(e.value.workspaceId),
-                  primaryActionLabel: '继续',
-                  onOpen: onOpen == null ? null : () => onOpen!(e.value),
-                  onDelete: onDelete == null ? null : () => onDelete!(e.value),
-                ),
-              ),
-            ),
-          ),
-      ],
-    );
-  }
-}
-
-class _WorkspacesPane extends StatelessWidget {
-  const _WorkspacesPane({
-    required this.busy,
-    required this.error,
-    required this.workspaces,
-    required this.titleFor,
-    required this.subtitleFor,
-    required this.onDismissError,
-    required this.onOpen,
-    required this.onDelete,
-    required this.workspaceIcon,
-  });
-
-  final bool busy;
-  final String? error;
-  final List<WorkspaceInfo> workspaces;
-  final String Function(WorkspaceInfo) titleFor;
-  final String Function(WorkspaceInfo) subtitleFor;
-  final VoidCallback onDismissError;
-  final void Function(WorkspaceInfo)? onOpen;
-  final void Function(WorkspaceInfo)? onDelete;
-  final IconData Function(String) workspaceIcon;
-
-  @override
-  Widget build(BuildContext context) {
-    return ListView(
-      padding: const EdgeInsets.fromLTRB(20, 8, 20, 32),
-      children: [
-        if (error != null) ...[
-          MaterialBanner(
-            content: Text(error!),
-            actions: [
-              TextButton(onPressed: onDismissError, child: const Text('关闭')),
-            ],
-          ),
-          const SizedBox(height: 8),
-        ],
-        if (workspaces.isEmpty)
-          Padding(
-            padding: const EdgeInsets.symmetric(vertical: 32),
-            child: Text(
-              busy ? '加载中…' : '暂无工作区。',
-              style: Theme.of(context).textTheme.bodyLarge?.copyWith(
-                color: Theme.of(context).colorScheme.onSurfaceVariant,
-              ),
-            ),
-          )
-        else
-          ...workspaces.asMap().entries.map(
-            (e) => Padding(
-              padding: const EdgeInsets.only(bottom: 10),
-              child: FadeSlideIn(
-                index: e.key,
-                child: _WorkspaceRow(
-                  title: titleFor(e.value),
-                  subtitle: subtitleFor(e.value),
-                  icon: workspaceIcon(e.value.workspaceId),
-                  primaryActionLabel: '打开',
-                  onOpen: onOpen == null ? null : () => onOpen!(e.value),
-                  onDelete: onDelete == null ? null : () => onDelete!(e.value),
-                ),
-              ),
-            ),
-          ),
-      ],
+      ),
     );
   }
 }
@@ -842,7 +706,6 @@ class _WorkspaceRow extends StatelessWidget {
     required this.title,
     required this.subtitle,
     required this.icon,
-    required this.primaryActionLabel,
     required this.onOpen,
     required this.onDelete,
   });
@@ -850,7 +713,6 @@ class _WorkspaceRow extends StatelessWidget {
   final String title;
   final String subtitle;
   final IconData icon;
-  final String primaryActionLabel;
   final VoidCallback? onOpen;
   final VoidCallback? onDelete;
 
@@ -901,7 +763,7 @@ class _WorkspaceRow extends StatelessWidget {
               const SizedBox(width: 8),
               FilledButton.tonal(
                 onPressed: onOpen,
-                child: Text(primaryActionLabel),
+                child: const Text('打开'),
               ),
             ],
             IconButton(
