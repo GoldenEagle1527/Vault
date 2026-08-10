@@ -1,3 +1,8 @@
+## Unreleased
+
+- Loop termination now requires **20 consecutive identical tool calls** (same name and arguments). Default `toolLoopThreshold` changed from 5 → 20.
+- `StatefulAgent.maxTurns` defaults to `null` (no hard turn cap). Agents no longer stop after 20 unrelated tool turns; set `maxTurns` explicitly if you want a turn ceiling.
+
 ## 2.0.4
 
 - Fix repeated `systemPromptHistory` / `toolsHistory` entries across separate agent runs by initializing prompt/tool hashes from the last recorded state snapshot instead of starting each run from `null`.

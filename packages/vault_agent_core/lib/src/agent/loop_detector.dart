@@ -41,7 +41,7 @@ class DefaultLoopDetector implements LoopDetector {
     required this.state,
     this.client,
     this.modelConfig,
-    this.toolLoopThreshold = 5,
+    this.toolLoopThreshold = 20,
     this.llmCheckAfterTurns = 30,
     this.llmCheckHistorySize = 20,
     this.llmCheckInterval = 10,
@@ -146,7 +146,8 @@ class DefaultLoopDetector implements LoopDetector {
     return LoopDetectorResult(
       isLoop: true,
       message:
-          'Tool call loop detected: Same tool called $toolLoopThreshold times.',
+          'Tool call loop detected: Identical tool call '
+          '(same name and arguments) repeated $toolLoopThreshold times.',
     );
   }
 

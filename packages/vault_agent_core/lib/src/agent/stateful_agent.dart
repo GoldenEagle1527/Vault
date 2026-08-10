@@ -471,7 +471,10 @@ class StatefulAgent {
   late final JavaScriptBridgeRegistry _jsBridgeRegistry;
 
   /// Maximum number of turns (LLM calls) allowed in a single run.
-  final int maxTurns;
+  ///
+  /// `null` means no hard turn cap. Infinite-loop protection relies on
+  /// [loopDetector] (identical tool calls), not on raw turn count.
+  final int? maxTurns;
 
   StatefulAgent({
     required this.name,
@@ -496,7 +499,7 @@ class StatefulAgent {
     this.isSubAgent = false,
     this.disableSubAgents = false,
     this.maxTurnContinuations = 3,
-    this.maxTurns = 20,
+    this.maxTurns,
   }) : assert(
          skills == null ||
              skills.isEmpty ||
@@ -881,7 +884,8 @@ class StatefulAgent {
       state.isRunning = true;
       state.lastError = null;
       while (true) {
-        if (state.currentLoopCount >= currentMaxTurns) {
+        if (currentMaxTurns != null &&
+            state.currentLoopCount >= currentMaxTurns) {
           throw AgentException(
             AgentExceptionCode.loopDetection,
             'Maximum turns reached ($currentMaxTurns). Possible infinite loop.',

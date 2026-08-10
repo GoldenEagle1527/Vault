@@ -38,6 +38,53 @@ void main() {
       }
     });
 
+    test('同一工具不同参数连续多次不触发环路', () async {
+      final state = AgentState.empty();
+      final detector = DefaultLoopDetector(state: state, toolLoopThreshold: 20);
+
+      for (var i = 0; i < 20; i++) {
+        final result = await detector.detect(
+          _msgWithCalls([
+            FunctionCall(
+              id: 'call_$i',
+              name: 'shell',
+              arguments: '{"cmd":"echo $i"}',
+            ),
+          ]),
+        );
+        expect(
+          result.isLoop,
+          isFalse,
+          reason: '同一工具不同参数第 ${i + 1} 次不应触发环路',
+        );
+      }
+    });
+
+    test('默认阈值要求完全一致调用连续 20 次', () async {
+      final state = AgentState.empty();
+      final detector = DefaultLoopDetector(state: state);
+
+      LoopDetectorResult? finalResult;
+      for (var i = 0; i < 20; i++) {
+        finalResult = await detector.detect(
+          _msgWithCalls([
+            FunctionCall(
+              id: 'call_$i',
+              name: 'read',
+              arguments: '{"path":"loop.md"}',
+            ),
+          ]),
+        );
+        if (i < 19) {
+          expect(finalResult.isLoop, isFalse, reason: '第 ${i + 1} 次还不应触发');
+        }
+      }
+
+      expect(finalResult!.isLoop, isTrue);
+      expect(finalResult.message, contains('Identical tool call'));
+      expect(finalResult.message, contains('20'));
+    });
+
     test('工具签名相同 N 次后触发环路检测', () async {
       final state = AgentState.empty();
       final detector = DefaultLoopDetector(state: state, toolLoopThreshold: 5);
@@ -60,6 +107,7 @@ void main() {
 
       expect(finalResult!.isLoop, isTrue);
       expect(finalResult.message, contains('Tool call loop detected'));
+      expect(finalResult.message, contains('Identical tool call'));
       expect(finalResult.message, contains('5'));
     });
 

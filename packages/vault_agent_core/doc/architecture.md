@@ -163,8 +163,10 @@ Cancellation throws `AgentException(AgentExceptionCode.cancelled, ...)`. To susp
 
 `StatefulAgent` automatically creates a `DefaultLoopDetector` unless you supply your own. It uses two mechanisms:
 
-1. **Tool signature tracking**: If the same tool is called with identical arguments `N` consecutive times (default `toolLoopThreshold = 5`), a loop is declared.
+1. **Tool signature tracking**: If the **exact same tool call** (same name **and** same arguments) is repeated `N` consecutive times (default `toolLoopThreshold = 20`), a loop is declared. Calling the same tool with different arguments does not count.
 2. **Periodic LLM diagnosis**: After `llmCheckAfterTurns` turns (default 30), every `llmCheckInterval` turns (default 10), the agent sends recent history to the LLM and asks it to diagnose whether a loop is occurring. A loop is declared if `confidence > 0.8`.
+
+`StatefulAgent.maxTurns` defaults to `null` (no hard turn cap). Turn-count limits are optional; identical-call detection is the primary loop stop.
 
 A detected loop throws `AgentException(AgentExceptionCode.loopDetection, ...)`.
 
@@ -173,11 +175,12 @@ You can customize thresholds or provide a completely different implementation:
 ```dart
 final agent = StatefulAgent(
   ...
+  maxTurns: 100, // optional hard cap; omit for unlimited turns
   loopDetector: DefaultLoopDetector(
     state: state,
     client: client,
     modelConfig: modelConfig,
-    toolLoopThreshold: 3,
+    toolLoopThreshold: 20,
     llmCheckAfterTurns: 20,
     llmCheckInterval: 5,
   ),
