@@ -67,6 +67,9 @@ class _FakeProvider implements SandboxProvider {
   @override
   Future<CommandResult> runGuestCommand(String workspaceId, String cmd) async =>
       const CommandResult(exitCode: 0, stdout: '', stderr: '');
+
+  @override
+  Future<void> stopRunningGuests() async {}
 }
 
 void main() {

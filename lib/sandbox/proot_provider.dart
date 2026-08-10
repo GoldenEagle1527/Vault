@@ -370,6 +370,20 @@ class ProotProvider implements SandboxProvider {
   }
 
   @override
+  Future<void> stopRunningGuests() async {
+    final live = _live.values.toList(growable: false);
+    _live.clear();
+    for (final workspace in live) {
+      try {
+        await workspace.dispose();
+      } catch (e, st) {
+        stderr.writeln('dispose proot workspace on stop failed: $e\n$st');
+      }
+    }
+    await _refreshForegroundService();
+  }
+
+  @override
   Future<void> destroy(String workspaceId) async {
     final live = _live.remove(workspaceId);
     await live?.dispose();
