@@ -11,6 +11,7 @@ import 'package:vault/sandbox/persistent_shell.dart';
 import 'package:vault/sandbox/proot_host.dart';
 import 'package:vault/sandbox/rootfs_extract.dart';
 import 'package:vault/sandbox/sandbox_provider.dart';
+import 'package:vault/sandbox/workspace_bootstrap.dart';
 
 /// 每个工作区一份独立 Alpine rootfs（proot-distro 系，16KB 友好）。
 ///
@@ -264,6 +265,7 @@ class ProotProvider implements SandboxProvider {
     final rootfs = await _rootfsDir(workspaceId);
     await _extractRootfs(rootfs);
     await _installDefaultPackages(rootfs.path);
+    await bootstrapWorkspaceGuest(this, workspaceId);
 
     final meta = await _readMeta();
     final workspaces = Map<String, dynamic>.from(meta['workspaces'] as Map);
@@ -343,8 +345,28 @@ class ProotProvider implements SandboxProvider {
       },
     );
     _live[workspaceId] = workspace;
+    // Older workspaces may lack project dirs / global git config.
+    try {
+      await bootstrapWorkspaceGuest(this, workspaceId);
+    } catch (e, st) {
+      stderr.writeln('工作区 bootstrap 失败（非致命）：$e\n$st');
+    }
     await _refreshForegroundService();
     return workspace;
+  }
+
+  @override
+  Future<String> resolveGuestHostPath(
+    String workspaceId,
+    String guestAbsolutePath,
+  ) async {
+    final file = await _hostFileForGuest(workspaceId, guestAbsolutePath);
+    return file.path;
+  }
+
+  @override
+  Future<CommandResult> runGuestCommand(String workspaceId, String cmd) {
+    return runOnce(workspaceId, cmd);
   }
 
   @override

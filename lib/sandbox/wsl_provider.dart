@@ -10,6 +10,7 @@ import 'package:vault/offload/wsl_offload_install.dart';
 import 'package:vault/sandbox/alpine_mirrors.dart';
 import 'package:vault/sandbox/persistent_shell.dart';
 import 'package:vault/sandbox/sandbox_provider.dart';
+import 'package:vault/sandbox/workspace_bootstrap.dart';
 import 'package:vault/sandbox/wsl_output.dart';
 
 /// 每个工作区对应一个独立的 WSL2 发行版。
@@ -199,6 +200,7 @@ class WslProvider implements SandboxProvider {
     await _configureDistro(name);
     await _installDefaultPackages(name);
     await _installOffloadBridge(name);
+    await bootstrapWorkspaceGuest(this, workspaceId);
     await _wsl(['--terminate', name]);
     // terminate 后稍等，避免立刻 attach 撞到服务未就绪。
     await Future<void>.delayed(const Duration(milliseconds: 800));
@@ -312,7 +314,26 @@ EOF
     await _ensurePipMirror(name);
     // Refresh stubs + port each attach (host port may change across restarts).
     await _installOffloadBridge(name);
+    // Older workspaces may lack project dirs / global git config.
+    try {
+      await bootstrapWorkspaceGuest(this, workspaceId);
+    } catch (e, st) {
+      stderr.writeln('工作区 bootstrap 失败（非致命）：$e\n$st');
+    }
     return WslWorkspace(workspaceId: workspaceId, distroName: name);
+  }
+
+  @override
+  Future<String> resolveGuestHostPath(
+    String workspaceId,
+    String guestAbsolutePath,
+  ) async {
+    return _wslUncFor(workspaceId, guestAbsolutePath);
+  }
+
+  @override
+  Future<CommandResult> runGuestCommand(String workspaceId, String cmd) {
+    return _runInDistro(workspaceId, cmd);
   }
 
   /// Idempotent: rewrite non-default apk hosts (CDN / Aliyun / …) to Tsinghua.

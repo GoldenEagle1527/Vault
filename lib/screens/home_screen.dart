@@ -1,8 +1,11 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:uuid/uuid.dart';
 import 'package:vault/agent/conversation_store.dart';
+import 'package:vault/agent/project_store.dart';
+import 'package:vault/agent/vault_meta_db.dart';
 import 'package:vault/sandbox/sandbox_provider.dart';
-import 'package:vault/sandbox/workspace_guest_fs.dart';
 import 'package:vault/permissions/active_workspace_holder.dart';
 import 'package:vault/permissions/offload_permission_dialog.dart';
 import 'package:vault/screens/agent_screen.dart';
@@ -11,10 +14,18 @@ import 'package:vault/widgets/appearance_sheet.dart';
 import 'package:vault/widgets/glass.dart';
 
 class HomeScreen extends StatefulWidget {
-  const HomeScreen({super.key, required this.provider, this.conversationStore});
+  const HomeScreen({
+    super.key,
+    required this.provider,
+    this.metaDb,
+    this.conversationStore,
+    this.projectStore,
+  });
 
   final SandboxProvider provider;
+  final VaultMetaDb? metaDb;
   final ConversationStore? conversationStore;
+  final ProjectStore? projectStore;
 
   @override
   State<HomeScreen> createState() => _HomeScreenState();
@@ -23,7 +34,10 @@ class HomeScreen extends StatefulWidget {
 class _HomeScreenState extends State<HomeScreen> {
   static const _wideBreakpoint = 720.0;
 
-  late final ConversationStore _conversationStore;
+  VaultMetaDb? _metaDb;
+  ConversationStore? _conversationStore;
+  ProjectStore? _projectStore;
+  bool _storesReady = false;
   SandboxCapabilities? _caps;
   List<WorkspaceInfo> _workspaces = const [];
   Map<String, WorkspaceConversationSummary> _summaries = const {};
@@ -35,12 +49,44 @@ class _HomeScreenState extends State<HomeScreen> {
   @override
   void initState() {
     super.initState();
-    _conversationStore =
-        widget.conversationStore ??
-        ConversationStore(fs: SandboxWorkspaceGuestFs(widget.provider));
     // Settings smoke: temporarily attach first workspace when none is open.
     ActiveWorkspaceHolder.resolver = _resolveWorkspaceForSmoke;
-    _refresh();
+    final injected = widget.metaDb;
+    if (injected != null) {
+      _metaDb = injected;
+      _conversationStore =
+          widget.conversationStore ?? ConversationStore(metaDb: injected);
+      _projectStore = widget.projectStore ??
+          ProjectStore.fromProvider(widget.provider, metaDb: injected);
+      _storesReady = true;
+      unawaited(_refresh());
+    } else {
+      unawaited(_initStores());
+    }
+  }
+
+  Future<void> _initStores() async {
+    try {
+      final metaDb = await VaultMetaDb.openDefault();
+      final conversationStore =
+          widget.conversationStore ?? ConversationStore(metaDb: metaDb);
+      final projectStore = widget.projectStore ??
+          ProjectStore.fromProvider(widget.provider, metaDb: metaDb);
+      if (!mounted) return;
+      setState(() {
+        _metaDb = metaDb;
+        _conversationStore = conversationStore;
+        _projectStore = projectStore;
+        _storesReady = true;
+      });
+      await _refresh();
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _error = '初始化元数据库失败：$e';
+        _storesReady = true;
+      });
+    }
   }
 
   @override
@@ -59,6 +105,9 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   Future<void> _refresh() async {
+    if (!_storesReady || _projectStore == null || _conversationStore == null) {
+      return;
+    }
     setState(() {
       _busy = true;
       _error = null;
@@ -69,9 +118,21 @@ class _HomeScreenState extends State<HomeScreen> {
           ? await widget.provider.list()
           : const <WorkspaceInfo>[];
       final summaries = <String, WorkspaceConversationSummary>{};
+      final projectsStore = _projectStore!;
+      final conversationsStore = _conversationStore!;
       for (final w in workspaces) {
-        summaries[w.workspaceId] = await _conversationStore
-            .peekWorkspaceSummary(w.workspaceId);
+        try {
+          final projects = await projectsStore.list(w.workspaceId);
+          summaries[w.workspaceId] = await conversationsStore.peekProjectsSummary(
+            w.workspaceId,
+            projects.map((p) => p.path).toList(),
+          );
+        } catch (_) {
+          summaries[w.workspaceId] = const WorkspaceConversationSummary(
+            conversationCount: 0,
+            projectCount: 0,
+          );
+        }
       }
       if (!mounted) return;
       setState(() {
@@ -89,6 +150,9 @@ class _HomeScreenState extends State<HomeScreen> {
 
   Future<void> _createWorkspace() async {
     if (_caps?.available != true) return;
+    final conversationStore = _conversationStore;
+    final projectStore = _projectStore;
+    if (conversationStore == null || projectStore == null) return;
     setState(() {
       _busy = true;
       _error = null;
@@ -102,7 +166,8 @@ class _HomeScreenState extends State<HomeScreen> {
           builder: (_) => AgentScreen(
             title: '工作区 $id',
             workspace: workspace,
-            conversationStore: _conversationStore,
+            conversationStore: conversationStore,
+            projectStore: projectStore,
           ),
         ),
       );
@@ -116,6 +181,9 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   Future<void> _openWorkspace(WorkspaceInfo info) async {
+    final conversationStore = _conversationStore;
+    final projectStore = _projectStore;
+    if (conversationStore == null || projectStore == null) return;
     setState(() {
       _busy = true;
       _error = null;
@@ -128,7 +196,8 @@ class _HomeScreenState extends State<HomeScreen> {
           builder: (_) => AgentScreen(
             title: info.displayName,
             workspace: workspace,
-            conversationStore: _conversationStore,
+            conversationStore: conversationStore,
+            projectStore: projectStore,
           ),
         ),
       );
@@ -172,7 +241,7 @@ class _HomeScreenState extends State<HomeScreen> {
     });
     try {
       await widget.provider.destroy(info.workspaceId);
-      await _conversationStore.deleteWorkspace(info.workspaceId);
+      await _metaDb?.deleteWorkspace(info.workspaceId);
       await _refresh();
     } catch (e) {
       if (!mounted) return;
@@ -239,6 +308,10 @@ class _HomeScreenState extends State<HomeScreen> {
       _relativeTime(info.createdAt),
       _formatBytes(info.approxDiskBytes),
     ];
+    final projectCount = summary?.projectCount ?? 0;
+    if (projectCount > 0) {
+      parts.add('$projectCount 个项目');
+    }
     final count = summary?.conversationCount ?? 0;
     if (count > 0) {
       parts.add('$count 个会话');

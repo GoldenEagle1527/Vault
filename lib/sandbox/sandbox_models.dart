@@ -9,8 +9,17 @@ const String kGuestInboxDir = '$kGuestHome/inbox';
 /// Vault-managed metadata inside the guest Linux (conversations, etc.).
 const String kGuestVaultDir = '$kGuestHome/.vault';
 
-/// Agent conversation index + state JSON files live here (inside Linux).
-const String kGuestConversationsDir = '$kGuestVaultDir/conversations';
+/// Dedicated area for user project working trees (timestamp folders + git).
+///
+/// Project / conversation **metadata** lives in the host [VaultMetaDb], not here.
+const String kGuestProjectsDir = '$kGuestHome/projects';
+
+/// Legacy (pre-project) conversation root — migrated into host SQLite on bootstrap.
+const String kGuestLegacyConversationsDir = '$kGuestVaultDir/conversations';
+
+/// Absolute guest path for one project's working directory.
+String guestProjectDir(String projectPath) =>
+    '$kGuestProjectsDir/$projectPath';
 
 /// Result of probing the host for sandbox support.
 class SandboxCapabilities {

@@ -47,6 +47,9 @@ dependencies:
   vault_agent_core:
     path: packages/vault_agent_core
   flutter_markdown_plus: ^1.0.12
+  sqlite3: ^3.5.1
+  sqlite3_flutter_libs: ^0.6.0+eol
+  url_launcher: ^6.3.2
 
 dev_dependencies:
   flutter_test:

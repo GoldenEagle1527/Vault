@@ -8,11 +8,14 @@ import 'package:vault/agent/agent_inbox.dart';
 import 'package:vault/agent/agent_service.dart';
 import 'package:vault/agent/agent_settings.dart';
 import 'package:vault/agent/conversation_store.dart';
+import 'package:vault/agent/project_site_launcher.dart';
+import 'package:vault/agent/project_store.dart';
 import 'package:vault/permissions/active_workspace_holder.dart';
 import 'package:vault/sandbox/sandbox_models.dart';
 import 'package:vault/screens/settings_screen.dart';
 import 'package:vault/screens/terminal_screen.dart';
 import 'package:vault/widgets/glass.dart';
+import 'package:vault/widgets/new_project_dialog.dart';
 
 class AgentScreen extends StatefulWidget {
   const AgentScreen({
@@ -20,12 +23,14 @@ class AgentScreen extends StatefulWidget {
     required this.workspace,
     required this.title,
     required this.conversationStore,
+    required this.projectStore,
     this.settingsStore,
   });
 
   final SandboxWorkspace workspace;
   final String title;
   final ConversationStore conversationStore;
+  final ProjectStore projectStore;
   final AgentSettingsStore? settingsStore;
 
   @override
@@ -67,24 +72,47 @@ enum _ChatKind { user, assistant, tool, status, error }
 class _AgentScreenState extends State<AgentScreen> {
   late final AgentSettingsStore _settingsStore;
   late final ConversationStore _conversationStore;
+  late final ProjectStore _projectStore;
   final _inputCtrl = TextEditingController();
   final _scrollCtrl = ScrollController();
   final List<_ChatItem> _items = [];
   final List<AgentAttachment> _pendingAttachments = [];
   final _scaffoldKey = GlobalKey<ScaffoldState>();
   AgentService? _service;
+  List<ProjectInfo> _projects = const [];
   List<ConversationInfo> _conversations = const [];
+  String? _activeProjectPath;
   String? _activeConversationId;
   String _conversationTitle = kNewConversationTitle;
   bool _running = false;
   String? _status;
   bool _booting = true;
+  bool _promptedNewProject = false;
+
+  String get _activeProjectName {
+    final path = _activeProjectPath;
+    if (path == null) return '未选择项目';
+    for (final p in _projects) {
+      if (p.path == path) return p.name;
+    }
+    return path;
+  }
+
+  List<ProjectUrlEntry> get _activeProjectUrls {
+    final path = _activeProjectPath;
+    if (path == null) return const [];
+    for (final p in _projects) {
+      if (p.path == path) return p.urls;
+    }
+    return const [];
+  }
 
   @override
   void initState() {
     super.initState();
     _settingsStore = widget.settingsStore ?? AgentSettingsStore();
     _conversationStore = widget.conversationStore;
+    _projectStore = widget.projectStore;
     ActiveWorkspaceHolder.current = widget.workspace;
     _boot();
   }
@@ -93,18 +121,54 @@ class _AgentScreenState extends State<AgentScreen> {
     try {
       final settings = await _settingsStore.load();
       if (!mounted) return;
-      final service = await AgentService.open(
-        workspace: widget.workspace,
-        settings: settings,
-        conversationStore: _conversationStore,
-      );
-      _service = service;
-      await _refreshConversationList();
-      _hydrateFromService();
-      if (!settings.isConfigured) {
-        _items.add(
-          _ChatItem(kind: _ChatKind.status, text: '尚未配置 API。请先打开设置填写 Key 与模型。'),
+      await _projectStore.ensureBootstrapped(widget.workspace.workspaceId);
+      await _refreshProjects();
+      if (_projects.isEmpty) {
+        _service = AgentService.withoutProject(
+          workspace: widget.workspace,
+          settings: settings,
+          conversationStore: _conversationStore,
+          projectStore: _projectStore,
         );
+        _conversations = const [];
+        _activeConversationId = null;
+        _conversationTitle = kNewConversationTitle;
+        if (!settings.isConfigured) {
+          _items.add(
+            _ChatItem(
+              kind: _ChatKind.status,
+              text: '尚未配置 API。请先打开设置填写 Key 与模型。',
+            ),
+          );
+        }
+        _items.add(
+          _ChatItem(
+            kind: _ChatKind.status,
+            text: '请先新建一个项目，之后的对话都会保存在该项目下。',
+          ),
+        );
+      } else {
+        final active = _activeProjectPath ?? _projects.first.path;
+        _activeProjectPath = active;
+        await _projectStore.setActive(widget.workspace.workspaceId, active);
+        final service = await AgentService.open(
+          workspace: widget.workspace,
+          settings: settings,
+          conversationStore: _conversationStore,
+          projectStore: _projectStore,
+          projectPath: active,
+        );
+        _service = service;
+        await _refreshConversationList();
+        _hydrateFromService();
+        if (!settings.isConfigured) {
+          _items.add(
+            _ChatItem(
+              kind: _ChatKind.status,
+              text: '尚未配置 API。请先打开设置填写 Key 与模型。',
+            ),
+          );
+        }
       }
     } catch (e) {
       _items.add(_ChatItem(kind: _ChatKind.error, text: '初始化失败：$e'));
@@ -112,12 +176,35 @@ class _AgentScreenState extends State<AgentScreen> {
       if (mounted) {
         setState(() => _booting = false);
         _scrollToEnd();
+        if (_projects.isEmpty && !_promptedNewProject) {
+          _promptedNewProject = true;
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            if (mounted) unawaited(_createProject());
+          });
+        }
       }
     }
   }
 
+  Future<void> _refreshProjects() async {
+    final ws = widget.workspace.workspaceId;
+    _projects = await _projectStore.list(ws);
+    _activeProjectPath = await _projectStore.activePath(ws);
+    if (_activeProjectPath == null && _projects.isNotEmpty) {
+      _activeProjectPath = _projects.first.path;
+    }
+  }
+
   Future<void> _refreshConversationList() async {
-    final index = await _conversationStore.list(widget.workspace.workspaceId);
+    final projectPath = _activeProjectPath ?? _service?.projectPath;
+    if (projectPath == null) {
+      _conversations = const [];
+      _activeConversationId = null;
+      _conversationTitle = kNewConversationTitle;
+      return;
+    }
+    final index =
+        await _conversationStore.list(widget.workspace.workspaceId, projectPath);
     _conversations = index.conversations;
     _activeConversationId =
         _service?.conversationId ?? index.activeConversationId;
@@ -171,15 +258,150 @@ class _AgentScreenState extends State<AgentScreen> {
   Future<void> _reloadService() async {
     final settings = await _settingsStore.load();
     final existing = _service;
+    final projectPath = _activeProjectPath;
     if (existing == null) {
+      if (projectPath == null) {
+        _service = AgentService.withoutProject(
+          workspace: widget.workspace,
+          settings: settings,
+          conversationStore: _conversationStore,
+          projectStore: _projectStore,
+        );
+      } else {
+        _service = await AgentService.open(
+          workspace: widget.workspace,
+          settings: settings,
+          conversationStore: _conversationStore,
+          projectStore: _projectStore,
+          projectPath: projectPath,
+        );
+        _hydrateFromService();
+      }
+    } else {
+      existing.applySettings(settings);
+    }
+  }
+
+  Future<void> _createProject() async {
+    if (_running) {
+      if (!await _confirmLeaveRunning()) return;
+    }
+    if (!mounted) return;
+    final name = await showNewProjectDialog(
+      context,
+      existingNames: _projects.map((p) => p.name),
+    );
+    if (name == null || !mounted) return;
+
+    setState(() => _status = '正在创建项目…');
+    try {
+      final created = await _projectStore.createProject(
+        widget.workspace.workspaceId,
+        name: name,
+        conversationStore: _conversationStore,
+      );
+      final settings = await _settingsStore.load();
+      await _service?.dispose();
       _service = await AgentService.open(
         workspace: widget.workspace,
         settings: settings,
         conversationStore: _conversationStore,
+        projectStore: _projectStore,
+        projectPath: created.path,
       );
+      await _refreshProjects();
+      _activeProjectPath = created.path;
+      await _refreshConversationList();
       _hydrateFromService();
-    } else {
-      existing.applySettings(settings);
+      _pendingAttachments.clear();
+      _items.clear();
+      _items.add(
+        _ChatItem(
+          kind: _ChatKind.status,
+          text: '已创建项目「${created.name}」，目录：${created.guestDir}',
+        ),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      _items.add(_ChatItem(kind: _ChatKind.error, text: '创建项目失败：$e'));
+    } finally {
+      if (mounted) {
+        setState(() => _status = null);
+        _scrollToEnd();
+      }
+    }
+  }
+
+  Future<void> _switchProject(String projectPath) async {
+    if (projectPath == _activeProjectPath) {
+      Navigator.of(context).maybePop();
+      return;
+    }
+    if (!await _confirmLeaveRunning()) return;
+    if (!mounted) return;
+    Navigator.of(context).maybePop();
+    setState(() => _status = '正在切换项目…');
+    try {
+      final service = _service;
+      if (service == null) return;
+      await service.switchProject(projectPath);
+      await _projectStore.setActive(widget.workspace.workspaceId, projectPath);
+      _activeProjectPath = projectPath;
+      await _refreshProjects();
+      await _refreshConversationList();
+      _hydrateFromService();
+      _pendingAttachments.clear();
+    } catch (e) {
+      if (!mounted) return;
+      _items.add(_ChatItem(kind: _ChatKind.error, text: '切换项目失败：$e'));
+    } finally {
+      if (mounted) {
+        setState(() {
+          _running = false;
+          _status = null;
+        });
+        _scrollToEnd();
+      }
+    }
+  }
+
+  Future<void> _startSite(ProjectUrlEntry entry) async {
+    final projectPath = _activeProjectPath;
+    if (projectPath == null) return;
+    setState(() => _status = '正在启动「${entry.name}」…');
+    try {
+      final result = await ProjectSiteLauncher(widget.workspace).start(
+        projectPath: projectPath,
+        entry: entry,
+      );
+      if (!mounted) return;
+      final parts = <String>[
+        if (result.alreadyUp) '服务已在运行',
+        if (result.startedProcess) '已后台启动',
+        if (result.openedUrl) '已打开浏览器',
+        if (!result.openedUrl && entry.url.trim().isNotEmpty)
+          '地址：${entry.url}',
+        if (result.message != null &&
+            result.message != '服务已在运行' &&
+            result.message != '已后台启动')
+          result.message!,
+      ];
+      _items.add(
+        _ChatItem(
+          kind: result.startedProcess || result.alreadyUp || result.openedUrl
+              ? _ChatKind.status
+              : _ChatKind.error,
+          text: parts.isEmpty ? '启动完成' : parts.join(' · '),
+        ),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      _items.add(_ChatItem(kind: _ChatKind.error, text: '启动失败：$e'));
+    } finally {
+      if (mounted) {
+        setState(() => _status = null);
+        _scrollToEnd();
+      }
     }
   }
 
@@ -250,6 +472,10 @@ class _AgentScreenState extends State<AgentScreen> {
   }
 
   Future<void> _newConversation() async {
+    if (_activeProjectPath == null) {
+      await _createProject();
+      return;
+    }
     if (!await _confirmLeaveRunning()) return;
     final service = _service;
     if (service == null) return;
@@ -329,10 +555,14 @@ class _AgentScreenState extends State<AgentScreen> {
       service.cancel();
     }
 
+    final projectPath = _activeProjectPath;
+    if (projectPath == null) return;
+
     try {
       final deletingActive = id == _activeConversationId;
       final next = await _conversationStore.deleteConversation(
         widget.workspace.workspaceId,
+        projectPath,
         id,
       );
       final active = next.activeConversationId;
@@ -357,6 +587,10 @@ class _AgentScreenState extends State<AgentScreen> {
   }
 
   Future<void> _send() async {
+    if (_activeProjectPath == null) {
+      await _createProject();
+      return;
+    }
     final text = _inputCtrl.text.trim();
     if ((text.isEmpty && _pendingAttachments.isEmpty) ||
         _running ||
@@ -408,6 +642,7 @@ class _AgentScreenState extends State<AgentScreen> {
     }
 
     if (!mounted) return;
+    await _refreshProjects();
     await _refreshConversationList();
     setState(() {
       _running = false;
@@ -491,7 +726,7 @@ class _AgentScreenState extends State<AgentScreen> {
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
                             Text(
-                              '会话历史',
+                              '项目与会话',
                               style: Theme.of(context).textTheme.titleLarge,
                             ),
                             Text(
@@ -512,51 +747,166 @@ class _AgentScreenState extends State<AgentScreen> {
                 ),
                 Padding(
                   padding: const EdgeInsets.fromLTRB(12, 0, 12, 8),
-                  child: FilledButton.tonalIcon(
-                    onPressed: _booting ? null : _newConversation,
-                    icon: const Icon(Icons.add),
-                    label: const Text('新会话'),
+                  child: Row(
+                    children: [
+                      Expanded(
+                        child: FilledButton.tonalIcon(
+                          onPressed: _booting ? null : _createProject,
+                          icon: const Icon(Icons.create_new_folder_outlined),
+                          label: const Text('新项目'),
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: FilledButton.tonalIcon(
+                          onPressed: _booting || _activeProjectPath == null
+                              ? null
+                              : _newConversation,
+                          icon: const Icon(Icons.add),
+                          label: const Text('新会话'),
+                        ),
+                      ),
+                    ],
                   ),
                 ),
                 const Divider(height: 1),
                 Expanded(
-                  child: _conversations.isEmpty
-                      ? Center(
-                          child: Text(
+                  child: ListView(
+                    children: [
+                      Padding(
+                        padding: const EdgeInsets.fromLTRB(16, 12, 16, 4),
+                        child: Text(
+                          '项目',
+                          style: Theme.of(context).textTheme.labelLarge
+                              ?.copyWith(color: scheme.onSurfaceVariant),
+                        ),
+                      ),
+                      if (_projects.isEmpty)
+                        ListTile(
+                          title: Text(
+                            '暂无项目',
+                            style: TextStyle(color: scheme.onSurfaceVariant),
+                          ),
+                          subtitle: const Text('点击上方「新项目」开始'),
+                        )
+                      else
+                        for (final p in _projects)
+                          ListTile(
+                            selected: p.path == _activeProjectPath,
+                            leading: Icon(
+                              p.path == _activeProjectPath
+                                  ? Icons.folder
+                                  : Icons.folder_outlined,
+                            ),
+                            title: Text(
+                              p.name,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                            subtitle: Text(
+                              p.urls.isEmpty
+                                  ? p.path
+                                  : '${p.path} · ${p.urls.length} 个站点',
+                            ),
+                            onTap: () => _switchProject(p.path),
+                          ),
+                      const Divider(height: 1),
+                      Padding(
+                        padding: const EdgeInsets.fromLTRB(16, 12, 16, 4),
+                        child: Text(
+                          '站点（一键启动）',
+                          style: Theme.of(context).textTheme.labelLarge
+                              ?.copyWith(color: scheme.onSurfaceVariant),
+                        ),
+                      ),
+                      if (_activeProjectPath == null)
+                        ListTile(
+                          title: Text(
+                            '请先选择项目',
+                            style: TextStyle(color: scheme.onSurfaceVariant),
+                          ),
+                        )
+                      else if (_activeProjectUrls.isEmpty)
+                        ListTile(
+                          title: Text(
+                            '暂无已登记站点',
+                            style: TextStyle(color: scheme.onSurfaceVariant),
+                          ),
+                          subtitle: const Text(
+                            '让 Agent 用 Python 做好网站后会自动登记到这里',
+                          ),
+                        )
+                      else
+                        for (final site in _activeProjectUrls)
+                          ListTile(
+                            leading: const Icon(Icons.language),
+                            title: Text(
+                              site.name,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                            subtitle: Text(
+                              site.url,
+                              maxLines: 2,
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                            trailing: FilledButton.tonal(
+                              onPressed: _booting || _running
+                                  ? null
+                                  : () => _startSite(site),
+                              child: const Text('启动'),
+                            ),
+                          ),
+                      const Divider(height: 1),
+                      Padding(
+                        padding: const EdgeInsets.fromLTRB(16, 12, 16, 4),
+                        child: Text(
+                          '当前项目会话',
+                          style: Theme.of(context).textTheme.labelLarge
+                              ?.copyWith(color: scheme.onSurfaceVariant),
+                        ),
+                      ),
+                      if (_activeProjectPath == null)
+                        ListTile(
+                          title: Text(
+                            '请先选择或新建项目',
+                            style: TextStyle(color: scheme.onSurfaceVariant),
+                          ),
+                        )
+                      else if (_conversations.isEmpty)
+                        ListTile(
+                          title: Text(
                             '暂无会话',
                             style: TextStyle(color: scheme.onSurfaceVariant),
                           ),
                         )
-                      : ListView.builder(
-                          itemCount: _conversations.length,
-                          itemBuilder: (context, i) {
-                            final c = _conversations[i];
-                            final selected = c.id == _activeConversationId;
-                            return ListTile(
-                              selected: selected,
-                              leading: Icon(
-                                selected
-                                    ? Icons.chat_bubble
-                                    : Icons.chat_bubble_outline,
-                              ),
-                              title: Text(
-                                c.title,
-                                maxLines: 1,
-                                overflow: TextOverflow.ellipsis,
-                              ),
-                              subtitle: Text(
-                                '${_relativeTime(c.updatedAt)}'
-                                '${c.messageCount > 0 ? ' · ${c.messageCount} 条消息' : ''}',
-                              ),
-                              onTap: () => _switchConversation(c.id),
-                              trailing: IconButton(
-                                tooltip: '删除会话',
-                                onPressed: () => _deleteConversation(c.id),
-                                icon: const Icon(Icons.delete_outline),
-                              ),
-                            );
-                          },
-                        ),
+                      else
+                        for (final c in _conversations)
+                          ListTile(
+                            selected: c.id == _activeConversationId,
+                            leading: Icon(
+                              c.id == _activeConversationId
+                                  ? Icons.chat_bubble
+                                  : Icons.chat_bubble_outline,
+                            ),
+                            title: Text(
+                              c.title,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                            subtitle: Text(
+                              '${_relativeTime(c.updatedAt)}'
+                              '${c.messageCount > 0 ? ' · ${c.messageCount} 条消息' : ''}',
+                            ),
+                            onTap: () => _switchConversation(c.id),
+                            trailing: IconButton(
+                              tooltip: '删除会话',
+                              onPressed: () => _deleteConversation(c.id),
+                              icon: const Icon(Icons.delete_outline),
+                            ),
+                          ),
+                    ],
+                  ),
                 ),
               ],
             ),
@@ -586,7 +936,9 @@ class _AgentScreenState extends State<AgentScreen> {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Text(
-                      _conversationTitle,
+                      _activeProjectPath == null
+                          ? '新建项目以开始'
+                          : _conversationTitle,
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
                       style: Theme.of(context).textTheme.titleMedium?.copyWith(
@@ -594,7 +946,9 @@ class _AgentScreenState extends State<AgentScreen> {
                       ),
                     ),
                     Text(
-                      '${widget.title} · 工作区',
+                      _activeProjectPath == null
+                          ? '${widget.title} · 工作区'
+                          : '$_activeProjectName · ${widget.title}',
                       style: Theme.of(context).textTheme.labelSmall?.copyWith(
                         color: scheme.onSurfaceVariant,
                       ),
@@ -624,7 +978,12 @@ class _AgentScreenState extends State<AgentScreen> {
                 ),
               ),
             IconButton(
-              tooltip: '会话历史',
+              tooltip: '新建项目',
+              onPressed: _booting ? null : _createProject,
+              icon: const Icon(Icons.create_new_folder_outlined),
+            ),
+            IconButton(
+              tooltip: '项目与会话',
               onPressed: () => _scaffoldKey.currentState?.openEndDrawer(),
               icon: const Icon(Icons.history),
             ),
@@ -660,7 +1019,11 @@ class _AgentScreenState extends State<AgentScreen> {
                       alignment: Alignment.topCenter,
                       child: ConstrainedBox(
                         constraints: const BoxConstraints(maxWidth: 840),
-                        child: !hasChatContent
+                        child: _activeProjectPath == null
+                            ? _EmptyProject(
+                                onCreate: _createProject,
+                              )
+                            : !hasChatContent
                             ? _EmptyChat(
                                 onPrompt: (p) {
                                   _inputCtrl.text = p;
@@ -785,6 +1148,53 @@ class _AgentScreenState extends State<AgentScreen> {
                   ),
                 ],
               ),
+      ),
+    );
+  }
+}
+
+class _EmptyProject extends StatelessWidget {
+  const _EmptyProject({required this.onCreate});
+
+  final VoidCallback onCreate;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(32),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            CircleAvatar(
+              radius: 36,
+              backgroundColor: scheme.primaryContainer,
+              foregroundColor: scheme.onPrimaryContainer,
+              child: const Icon(Icons.create_new_folder_outlined, size: 36),
+            ),
+            const SizedBox(height: 16),
+            Text(
+              '先新建一个项目',
+              style: Theme.of(context).textTheme.headlineSmall,
+              textAlign: TextAlign.center,
+            ),
+            const SizedBox(height: 8),
+            Text(
+              '项目对应 Linux 里的时间戳目录；之后的多轮对话都会保存在该项目下。',
+              textAlign: TextAlign.center,
+              style: Theme.of(context).textTheme.bodyLarge?.copyWith(
+                    color: scheme.onSurfaceVariant,
+                  ),
+            ),
+            const SizedBox(height: 24),
+            FilledButton.icon(
+              onPressed: onCreate,
+              icon: const Icon(Icons.add),
+              label: const Text('新建项目'),
+            ),
+          ],
+        ),
       ),
     );
   }

@@ -1,6 +1,10 @@
+import 'dart:io';
 import 'dart:typed_data';
 
+import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:path/path.dart' as p;
+import 'package:vault/agent/vault_meta_db.dart';
 import 'package:vault/main.dart';
 import 'package:vault/sandbox/sandbox_provider.dart';
 import 'package:vault/theme/theme_controller.dart';
@@ -52,19 +56,44 @@ class _FakeProvider implements SandboxProvider {
     String guestAbsolutePath, {
     bool recursive = false,
   }) async {}
+
+  @override
+  Future<String> resolveGuestHostPath(
+    String workspaceId,
+    String guestAbsolutePath,
+  ) async =>
+      guestAbsolutePath;
+
+  @override
+  Future<CommandResult> runGuestCommand(String workspaceId, String cmd) async =>
+      const CommandResult(exitCode: 0, stdout: '', stderr: '');
 }
 
 void main() {
   testWidgets('Vault 主页渲染欢迎区与空工作区状态', (tester) async {
+    final temp = Directory.systemTemp.createTempSync('vault_widget_');
+    final metaDb = VaultMetaDb.at(p.join(temp.path, 'vault_meta.db'));
+
     await tester.pumpWidget(
-      VaultApp(provider: _FakeProvider(), themeController: ThemeController()),
+      VaultApp(
+        provider: _FakeProvider(),
+        themeController: ThemeController(),
+        metaDb: metaDb,
+      ),
     );
+    // Flush async _refresh started from initState.
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 50));
+
     expect(find.text('Vault'), findsWidgets);
     expect(find.textContaining('今天想让 Vault 帮你做什么'), findsOneWidget);
     expect(find.textContaining('环境不可用'), findsWidgets);
     expect(find.textContaining('还没有工作区'), findsOneWidget);
     expect(find.text('新建工作区'), findsOneWidget);
+
+    await tester.pumpWidget(const SizedBox.shrink());
+    try {
+      temp.deleteSync(recursive: true);
+    } catch (_) {}
   });
 }

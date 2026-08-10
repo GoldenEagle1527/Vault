@@ -39,6 +39,17 @@ abstract class SandboxProvider {
     String guestAbsolutePath, {
     bool recursive = false,
   });
+
+  /// Host filesystem path that maps to [guestAbsolutePath] (for SQLite, etc.).
+  ///
+  /// Android: under the proot rootfs. Windows: `\\wsl$\vault_{id}\…` UNC.
+  Future<String> resolveGuestHostPath(
+    String workspaceId,
+    String guestAbsolutePath,
+  );
+
+  /// One-shot non-interactive command as root in the guest (cwd [kGuestHome]).
+  Future<CommandResult> runGuestCommand(String workspaceId, String cmd);
 }
 
 SandboxProvider createSandboxProvider() {

@@ -5,6 +5,7 @@ import 'package:vault/offload/offload_host_server.dart';
 import 'package:vault/permissions/offload_permission_manager.dart';
 import 'package:vault/sandbox/offload_host.dart';
 import 'package:vault/sandbox/offload_permission_channel.dart';
+import 'package:vault/agent/vault_meta_db.dart';
 import 'package:vault/sandbox/sandbox_provider.dart';
 import 'package:vault/screens/home_screen.dart';
 import 'package:vault/theme/app_theme.dart';
@@ -45,10 +46,12 @@ class VaultApp extends StatelessWidget {
     super.key,
     required this.provider,
     required this.themeController,
+    this.metaDb,
   });
 
   final SandboxProvider provider;
   final ThemeController themeController;
+  final VaultMetaDb? metaDb;
 
   @override
   Widget build(BuildContext context) {
@@ -62,7 +65,7 @@ class VaultApp extends StatelessWidget {
             theme: AppTheme.light(themeController.accent),
             darkTheme: AppTheme.dark(themeController.accent),
             themeMode: themeController.mode,
-            home: HomeScreen(provider: provider),
+            home: HomeScreen(provider: provider, metaDb: metaDb),
           );
         },
       ),

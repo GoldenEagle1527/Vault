@@ -7,8 +7,8 @@ import 'package:vault/sandbox/sandbox_provider.dart';
 
 /// Byte-level guest filesystem access for a workspace (no PTY required).
 ///
-/// Paths must stay under [kGuestHome]. Used for conversation persistence inside
-/// Linux at [kGuestConversationsDir].
+/// Paths must stay under [kGuestHome]. Used for project / conversation
+/// persistence inside the guest Linux.
 abstract class WorkspaceGuestFs {
   Future<Uint8List?> readBytes(String workspaceId, String guestAbsolutePath);
 

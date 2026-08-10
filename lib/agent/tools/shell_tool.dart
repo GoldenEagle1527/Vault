@@ -14,20 +14,26 @@ Tool createShellTool(
   SandboxWorkspace workspace, {
   Duration timeout = kDefaultShellToolTimeout,
   String? chatSessionId,
+  String? projectPath,
 }) {
   final sessionEnv = (chatSessionId == null || chatSessionId.trim().isEmpty)
       ? null
       : <String, String>{'VAULT_CHAT_SESSION_ID': chatSessionId.trim()};
+  final projectDir =
+      projectPath == null ? null : guestProjectDir(projectPath);
+  final cwdHint = projectDir ?? kGuestHome;
 
   return Tool(
     name: 'shell',
     description:
         '在当前工作区的隔离 Alpine Linux 内执行非交互命令（root，$kGuestHome）。'
-        '命令跑在长驻 shell 中：cwd、环境变量与后台进程（如 `uvicorn &`）在同工作区后续调用间保留。'
+        '${projectDir == null ? '' : '当前项目目录：$projectDir；网站与代码请写在这里。'}'
+        '命令跑在长驻 shell 中：cwd、环境变量与后台进程（如 `python3 -m http.server &`）在同工作区后续调用间保留。'
         '返回 exitCode、stdout、stderr。'
         '用于 apk、文件、编译、脚本、本地 HTTP 服务等。'
         '用户附件在 $kGuestInboxDir/。'
-        '不要使用主机路径；不要做需要交互输入的命令。',
+        '不要使用主机路径；不要做需要交互输入的命令。'
+        '网站可用后请再调用 register_project_url。',
     parameterMode: ToolParameterMode.object,
     parameters: {
       'type': 'object',
@@ -38,7 +44,7 @@ Tool createShellTool(
               '在 Linux 沙箱内执行的命令。示例：'
               'pwd; ls -la $kGuestInboxDir; '
               'apk update && apk add curl; '
-              'cd $kGuestHome/work && make',
+              '${projectDir == null ? 'cd $kGuestHome && python3 -m http.server 8080 --bind 127.0.0.1' : 'cd $projectDir && python3 -m http.server 8080 --bind 127.0.0.1'}',
         },
       },
       'required': ['command'],
@@ -70,7 +76,7 @@ Tool createShellTool(
             'stderr': result.stderr.isEmpty
                 ? '命令在 ${timeout.inSeconds} 秒内未完成'
                 : result.stderr,
-            'cwdHint': kGuestHome,
+            'cwdHint': cwdHint,
           });
         }
         return jsonEncode({
@@ -78,7 +84,7 @@ Tool createShellTool(
           'exitCode': result.exitCode,
           'stdout': result.stdout,
           'stderr': result.stderr,
-          'cwdHint': kGuestHome,
+          'cwdHint': cwdHint,
         });
       } catch (e) {
         return jsonEncode({

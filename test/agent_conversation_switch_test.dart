@@ -2,11 +2,13 @@ import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:path/path.dart' as p;
 import 'package:vault/agent/agent_service.dart';
 import 'package:vault/agent/agent_settings.dart';
 import 'package:vault/agent/conversation_store.dart';
+import 'package:vault/agent/project_store.dart';
+import 'package:vault/agent/vault_meta_db.dart';
 import 'package:vault/sandbox/sandbox_models.dart';
-import 'package:vault/sandbox/workspace_guest_fs.dart';
 import 'package:vault_agent_core/vault_agent_core.dart';
 
 class _FakeWorkspace implements SandboxWorkspace {
@@ -33,7 +35,8 @@ class _FakeWorkspace implements SandboxWorkspace {
     String cmd, {
     Map<String, String>? environment,
     Duration? timeout,
-  }) async => const CommandResult(exitCode: 0, stdout: '', stderr: '');
+  }) async =>
+      const CommandResult(exitCode: 0, stdout: '', stderr: '');
 
   @override
   Future<void> writeGuestFile(
@@ -48,10 +51,22 @@ class _FakeWorkspace implements SandboxWorkspace {
 void main() {
   late Directory temp;
   late ConversationStore store;
+  late String projectPath;
 
   setUp(() async {
     temp = await Directory.systemTemp.createTemp('vault_switch_');
-    store = ConversationStore(fs: LocalDirWorkspaceGuestFs(temp.path));
+    final metaPath = p.join(temp.path, 'vault_meta.db');
+    final metaDb = VaultMetaDb.at(metaPath);
+    store = ConversationStore(metaDb: metaDb);
+    final projects = ProjectStore.local(
+      metaDbPath: metaPath,
+      guestRoot: p.join(temp.path, 'guest'),
+    );
+    final created = await projects.createProject(
+      'ws-switch',
+      conversationStore: store,
+    );
+    projectPath = created.path;
   });
 
   tearDown(() async {
@@ -67,18 +82,19 @@ void main() {
   );
 
   test('switchConversation isolates histories per conversation', () async {
-    final a = await store.ensureActive('ws-switch');
+    final a = await store.ensureActive('ws-switch', projectPath);
     a.state.history.messages.add(UserMessage.text('会话甲'));
-    await store.save('ws-switch', a.state);
+    await store.save('ws-switch', projectPath, a.state);
 
-    final b = await store.create('ws-switch');
+    final b = await store.create('ws-switch', projectPath);
     b.state.history.messages.add(UserMessage.text('会话乙'));
-    await store.save('ws-switch', b.state);
+    await store.save('ws-switch', projectPath, b.state);
 
     final service = AgentService(
       workspace: _FakeWorkspace(),
       settings: settings,
       conversationStore: store,
+      projectPath: projectPath,
       conversationId: b.state.sessionId,
       initialState: b.state,
     );
@@ -93,7 +109,7 @@ void main() {
     expect(service.historyMessageCount, 0);
     expect(service.conversationTitle, kNewConversationTitle);
 
-    final index = await store.list('ws-switch');
+    final index = await store.list('ws-switch', projectPath);
     expect(index.conversations.length, greaterThanOrEqualTo(3));
   });
 }

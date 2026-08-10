@@ -6,9 +6,11 @@ import 'package:vault/agent/agent_inbox.dart';
 import 'package:vault/agent/agent_settings.dart';
 import 'package:vault/agent/agent_system_prompt.dart';
 import 'package:vault/agent/conversation_store.dart';
+import 'package:vault/agent/project_store.dart';
+import 'package:vault/agent/tools/project_url_tool.dart';
 import 'package:vault/agent/tools/shell_tool.dart';
+import 'package:vault/agent/vault_meta_db.dart';
 import 'package:vault/sandbox/sandbox_provider.dart';
-import 'package:vault/sandbox/workspace_guest_fs.dart';
 import 'package:vault_agent_core/vault_agent_core.dart';
 
 /// UI-facing chat / tool step for the Agent screen.
@@ -66,39 +68,63 @@ class AgentService {
     Duration shellTimeout = kDefaultShellToolTimeout,
     AgentState? initialState,
     ConversationStore? conversationStore,
+    ProjectStore? projectStore,
     String? conversationId,
+    String? projectPath,
   }) : _workspace = workspace,
        _settings = settings,
        _shellTimeout = shellTimeout,
        _pendingState = initialState,
        _store = conversationStore,
+       _projectStore = projectStore,
+       _projectPath = projectPath ??
+           initialState?.metadata['projectPath'] as String?,
        // AgentState.sessionId is the engine field for conversation id.
        _conversationId = conversationId ?? initialState?.sessionId;
 
-  /// Open the workspace's active conversation (creating one if needed).
+  /// Open the project's active conversation (creating one if needed).
   static Future<AgentService> open({
     required SandboxWorkspace workspace,
     required AgentSettings settings,
+    required String projectPath,
     ConversationStore? conversationStore,
-    SandboxProvider? sandboxProvider,
+    ProjectStore? projectStore,
+    VaultMetaDb? metaDb,
     Duration shellTimeout = kDefaultShellToolTimeout,
   }) async {
-    final store =
-        conversationStore ??
-        (sandboxProvider != null
-            ? ConversationStore(fs: SandboxWorkspaceGuestFs(sandboxProvider))
-            : null);
+    final store = conversationStore ??
+        (metaDb != null ? ConversationStore(metaDb: metaDb) : null);
     if (store == null) {
-      throw StateError('需要 ConversationStore 或 SandboxProvider 以持久化会话');
+      throw StateError('需要 ConversationStore 或 VaultMetaDb 以持久化会话');
     }
-    final opened = await store.ensureActive(workspace.workspaceId);
+    final opened =
+        await store.ensureActive(workspace.workspaceId, projectPath);
     return AgentService(
       workspace: workspace,
       settings: settings,
       shellTimeout: shellTimeout,
       conversationStore: store,
+      projectStore: projectStore,
+      projectPath: projectPath,
       conversationId: opened.state.sessionId,
       initialState: opened.state,
+    );
+  }
+
+  /// Service bound to a workspace with no active project yet.
+  static AgentService withoutProject({
+    required SandboxWorkspace workspace,
+    required AgentSettings settings,
+    ConversationStore? conversationStore,
+    ProjectStore? projectStore,
+    Duration shellTimeout = kDefaultShellToolTimeout,
+  }) {
+    return AgentService(
+      workspace: workspace,
+      settings: settings,
+      shellTimeout: shellTimeout,
+      conversationStore: conversationStore,
+      projectStore: projectStore,
     );
   }
 
@@ -106,17 +132,21 @@ class AgentService {
   AgentSettings _settings;
   final Duration _shellTimeout;
   final ConversationStore? _store;
+  final ProjectStore? _projectStore;
 
   StatefulAgent? _agent;
 
   /// Held between settings reloads / conversation switches until [_ensureAgent].
   AgentState? _pendingState;
   String? _conversationId;
+  String? _projectPath;
   CancelToken? _cancelToken;
   bool _running = false;
 
   /// Sandbox / workspace id (same value as [SandboxWorkspace.workspaceId]).
   String get workspaceId => _workspace.workspaceId;
+
+  String? get projectPath => _projectPath;
 
   String? get conversationId => _conversationId;
 
@@ -164,14 +194,19 @@ class AgentService {
 
   Future<void> _persistIfNeeded(AgentState state) async {
     final store = _store;
-    if (store == null) return;
-    await store.save(workspaceId, state);
+    final projectPath = _projectPath;
+    if (store == null || projectPath == null) return;
+    await store.save(workspaceId, projectPath, state);
   }
 
   void _ensureAgent() {
     if (_agent != null) return;
     if (!_settings.isConfigured) {
       throw StateError('未配置 API Key 或模型');
+    }
+    final projectPath = _projectPath;
+    if (projectPath == null) {
+      throw StateError('请先创建或选择一个项目');
     }
 
     final client = OpenAIClient(
@@ -189,31 +224,71 @@ class AgentService {
         _pendingState ??
         AgentState(
           sessionId: conversationId,
-          metadata: {'workspaceId': workspaceId},
+          metadata: {
+            'workspaceId': workspaceId,
+            'projectPath': projectPath,
+          },
         );
     // Engine AgentState.sessionId == conversationId (not workspace id).
     if (state.sessionId != conversationId) {
       state.sessionId = conversationId;
     }
     state.metadata['workspaceId'] = workspaceId;
+    state.metadata['projectPath'] = projectPath;
     _pendingState = null;
 
-    _agent = StatefulAgent(
-      name: 'vault_${workspaceId}_$conversationId',
-      client: client,
-      tools: [
-        createShellTool(
-          _workspace,
-          timeout: _shellTimeout,
-          chatSessionId: conversationId,
+    final projectStore = _projectStore;
+    final tools = <Tool>[
+      createShellTool(
+        _workspace,
+        timeout: _shellTimeout,
+        chatSessionId: conversationId,
+        projectPath: projectPath,
+      ),
+      if (projectStore != null)
+        ...createProjectUrlTools(
+          projectStore: projectStore,
+          workspaceId: workspaceId,
+          projectPath: projectPath,
         ),
-      ],
+    ];
+
+    _agent = StatefulAgent(
+      name: 'vault_${workspaceId}_${projectPath}_$conversationId',
+      client: client,
+      tools: tools,
       modelConfig: ModelConfig(model: _settings.model),
       state: state,
-      systemPrompts: vaultAgentSystemPrompts(workspaceId: workspaceId),
+      systemPrompts: vaultAgentSystemPrompts(
+        workspaceId: workspaceId,
+        projectPath: projectPath,
+      ),
       controller: AgentController(),
       autoSaveStateFunc: _store == null ? null : (s) => _persistIfNeeded(s),
     );
+  }
+
+  /// Bind to [projectPath] and load its active conversation.
+  Future<void> switchProject(
+    String projectPath, {
+    bool persistCurrent = true,
+  }) async {
+    await _waitUntilIdle();
+    final store = _store;
+    if (store == null) {
+      throw StateError('未配置 ConversationStore，无法切换项目');
+    }
+    if (persistCurrent && _projectPath != null) {
+      final current = _agent?.state ?? _pendingState;
+      if (current != null) {
+        await store.save(workspaceId, _projectPath!, current);
+      }
+    }
+    final opened = await store.ensureActive(workspaceId, projectPath);
+    _projectPath = projectPath;
+    _conversationId = opened.state.sessionId;
+    _pendingState = opened.state;
+    _agent = null;
   }
 
   /// Visible for tests: materialize the agent with current settings/state.
@@ -235,19 +310,23 @@ class AgentService {
     await _waitUntilIdle();
 
     final store = _store;
+    final projectPath = _projectPath;
     if (store == null) {
       throw StateError('未配置 ConversationStore，无法切换会话');
+    }
+    if (projectPath == null) {
+      throw StateError('请先创建或选择一个项目');
     }
 
     if (persistCurrent) {
       final current = _agent?.state ?? _pendingState;
       if (current != null) {
-        await store.save(workspaceId, current);
+        await store.save(workspaceId, projectPath, current);
       }
     }
 
-    final state = await store.load(workspaceId, conversationId);
-    await store.setActive(workspaceId, conversationId);
+    final state = await store.load(workspaceId, projectPath, conversationId);
+    await store.setActive(workspaceId, projectPath, conversationId);
     _conversationId = conversationId;
     _pendingState = state;
     _agent = null;
@@ -256,17 +335,21 @@ class AgentService {
   /// Create a new empty conversation and make it active.
   Future<void> newConversation({bool persistCurrent = true}) async {
     final store = _store;
+    final projectPath = _projectPath;
     if (store == null) {
       throw StateError('未配置 ConversationStore，无法新建会话');
+    }
+    if (projectPath == null) {
+      throw StateError('请先创建或选择一个项目');
     }
     await _waitUntilIdle();
     if (persistCurrent) {
       final current = _agent?.state ?? _pendingState;
       if (current != null) {
-        await store.save(workspaceId, current);
+        await store.save(workspaceId, projectPath, current);
       }
     }
-    final created = await store.create(workspaceId);
+    final created = await store.create(workspaceId, projectPath);
     _conversationId = created.state.sessionId;
     _pendingState = created.state;
     _agent = null;
@@ -319,7 +402,10 @@ class AgentService {
       // a tool-using turn does not prefix the final user-facing reply.
       final buffer = StringBuffer();
 
-      final context = buildAttachmentContextMessage(guestPaths);
+      final context = buildAttachmentContextMessage(
+        guestPaths,
+        projectPath: _projectPath,
+      );
       final prompt = [
         if (context.isNotEmpty) context,
         if (trimmed.isNotEmpty) trimmed else '请查看附件并按我的意图处理（见上方 guest 路径）。',
@@ -469,9 +555,10 @@ class AgentService {
   Future<void> dispose() async {
     cancel();
     final current = _agent?.state ?? _pendingState;
-    if (current != null && _store != null) {
+    final projectPath = _projectPath;
+    if (current != null && _store != null && projectPath != null) {
       try {
-        await _store.save(workspaceId, current);
+        await _store.save(workspaceId, projectPath, current);
       } catch (_) {
         // Best-effort flush on leave.
       }

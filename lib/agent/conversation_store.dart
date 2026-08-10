@@ -1,14 +1,13 @@
 import 'dart:convert';
 
 import 'package:uuid/uuid.dart';
-import 'package:vault/sandbox/sandbox_models.dart';
-import 'package:vault/sandbox/workspace_guest_fs.dart';
+import 'package:vault/agent/vault_meta_db.dart';
 import 'package:vault_agent_core/vault_agent_core.dart';
 
 /// Empty / untitled conversation label shown in the UI.
 const kNewConversationTitle = '新会话';
 
-/// Metadata for one Agent conversation inside a workspace.
+/// Metadata for one Agent conversation inside a project.
 class ConversationInfo {
   const ConversationInfo({
     required this.id,
@@ -59,7 +58,7 @@ class ConversationInfo {
   }
 }
 
-/// Index of conversations for one workspace.
+/// Index of conversations for one project.
 class WorkspaceConversationIndex {
   const WorkspaceConversationIndex({
     required this.activeConversationId,
@@ -96,122 +95,157 @@ class WorkspaceConversationSummary {
     required this.conversationCount,
     this.recentTitle,
     this.recentUpdatedAt,
+    this.projectCount = 0,
   });
 
   final int conversationCount;
   final String? recentTitle;
   final DateTime? recentUpdatedAt;
+  final int projectCount;
 }
 
-/// Persists multi-conversation Agent state **inside** the workspace Linux at
-/// [kGuestConversationsDir] (`/root/.vault/conversations/`).
+/// Persists conversations in the host [VaultMetaDb], scoped by workspace + project.
 ///
-/// Note: [AgentState.sessionId] (engine field) stores the **conversationId**,
-/// not the workspace id. Workspace id lives in `metadata['workspaceId']`.
+/// Note: [AgentState.sessionId] stores the **conversationId**. Workspace /
+/// project ids live in metadata. Agent shell cannot reach this database.
 class ConversationStore {
-  ConversationStore({required WorkspaceGuestFs fs}) : _fs = fs;
+  ConversationStore({required VaultMetaDb metaDb}) : _metaDb = metaDb;
 
-  final WorkspaceGuestFs _fs;
+  final VaultMetaDb _metaDb;
 
-  static const _indexFileName = 'index.json';
   static const _metaWorkspaceId = 'workspaceId';
+  static const _metaProjectPath = 'projectPath';
 
-  String get _indexPath => '$kGuestConversationsDir/$_indexFileName';
+  Map<String, dynamic> _meta(String workspaceId, String projectPath) => {
+        _metaWorkspaceId: workspaceId,
+        _metaProjectPath: projectPath,
+      };
 
-  String _statePath(String conversationId) =>
-      '$kGuestConversationsDir/$conversationId.json';
-
-  Future<WorkspaceConversationIndex> _readIndex(String workspaceId) async {
-    final raw = await _fs.readUtf8(workspaceId, _indexPath);
-    if (raw == null || raw.trim().isEmpty) {
-      return WorkspaceConversationIndex.empty;
-    }
-    try {
-      final json = jsonDecode(raw);
-      if (json is Map<String, dynamic>) {
-        return WorkspaceConversationIndex.fromJson(json);
-      }
-      if (json is Map) {
-        return WorkspaceConversationIndex.fromJson(json.cast<String, dynamic>());
-      }
-    } catch (_) {
-      // Corrupt index — treat as empty; next save will rewrite.
-    }
-    return WorkspaceConversationIndex.empty;
-  }
-
-  Future<void> _writeIndex(
+  Future<WorkspaceConversationIndex> _readIndex(
     String workspaceId,
-    WorkspaceConversationIndex index,
-  ) async {
-    await _fs.writeUtf8(
-      workspaceId,
-      _indexPath,
-      const JsonEncoder.withIndent('  ').convert(index.toJson()),
-    );
+    String projectPath,
+  ) {
+    return _metaDb.withDb((db) {
+      final rows = db.select(
+        'SELECT id, title, created_at, updated_at, message_count '
+        'FROM conversations WHERE workspace_id = ? AND project_path = ? '
+        'ORDER BY updated_at DESC',
+        [workspaceId, projectPath],
+      );
+      final conversations = [
+        for (final row in rows)
+          ConversationInfo(
+            id: row['id'] as String,
+            title: row['title'] as String,
+            createdAt: DateTime.parse(row['created_at'] as String),
+            updatedAt: DateTime.parse(row['updated_at'] as String),
+            messageCount: (row['message_count'] as num).toInt(),
+          ),
+      ];
+      final activeRows = db.select(
+        'SELECT active_conversation_id FROM project_state '
+        'WHERE workspace_id = ? AND project_path = ?',
+        [workspaceId, projectPath],
+      );
+      String? active;
+      if (activeRows.isNotEmpty) {
+        active = activeRows.first['active_conversation_id'] as String?;
+      }
+      if (active != null && !conversations.any((c) => c.id == active)) {
+        active = conversations.isEmpty ? null : conversations.first.id;
+      }
+      return WorkspaceConversationIndex(
+        activeConversationId: active,
+        conversations: conversations,
+      );
+    });
   }
 
-  Future<void> _writeStateFile(String workspaceId, AgentState state) async {
-    await _fs.writeUtf8(
-      workspaceId,
-      _statePath(state.sessionId),
-      jsonEncode(state.toJson()),
-    );
-  }
+  Future<WorkspaceConversationIndex> list(
+    String workspaceId,
+    String projectPath,
+  ) =>
+      _readIndex(workspaceId, projectPath);
 
-  Future<WorkspaceConversationIndex> list(String workspaceId) async {
-    return _readIndex(workspaceId);
-  }
-
-  /// Ensures the workspace has an active conversation; creates one if needed.
+  /// Ensures the project has an active conversation; creates one if needed.
   Future<({WorkspaceConversationIndex index, AgentState state})> ensureActive(
     String workspaceId,
+    String projectPath,
   ) async {
-    var index = await _readIndex(workspaceId);
+    var index = await _readIndex(workspaceId, projectPath);
     final activeId = index.activeConversationId;
-    final known = activeId != null &&
-        index.conversations.any((c) => c.id == activeId);
+    final known =
+        activeId != null && index.conversations.any((c) => c.id == activeId);
 
     if (!known) {
-      return create(workspaceId);
+      return create(workspaceId, projectPath);
     }
 
-    final state = await load(workspaceId, activeId);
+    final state = await load(workspaceId, projectPath, activeId);
     return (index: index, state: state);
   }
 
   Future<({WorkspaceConversationIndex index, AgentState state})> create(
     String workspaceId,
+    String projectPath,
   ) async {
-    final index = await _readIndex(workspaceId);
     final now = DateTime.now().toUtc();
     final id = const Uuid().v4().replaceAll('-', '').substring(0, 12);
-    final info = ConversationInfo(
-      id: id,
-      title: kNewConversationTitle,
-      createdAt: now,
-      updatedAt: now,
-      messageCount: 0,
-    );
-    final next = WorkspaceConversationIndex(
-      activeConversationId: id,
-      conversations: [info, ...index.conversations],
-    );
     final state = AgentState(
       sessionId: id,
-      metadata: {_metaWorkspaceId: workspaceId},
+      metadata: _meta(workspaceId, projectPath),
     );
-    await _writeStateFile(workspaceId, state);
-    await _writeIndex(workspaceId, next);
-    return (index: next, state: state);
+    final stateJson = jsonEncode(state.toJson());
+    final createdAt = now.toIso8601String();
+
+    await _metaDb.withDb((db) {
+      db.execute(
+        'INSERT INTO conversations '
+        '(workspace_id, project_path, id, title, created_at, updated_at, '
+        'message_count, state_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+        [
+          workspaceId,
+          projectPath,
+          id,
+          kNewConversationTitle,
+          createdAt,
+          createdAt,
+          0,
+          stateJson,
+        ],
+      );
+      db.execute(
+        'INSERT INTO project_state '
+        '(workspace_id, project_path, active_conversation_id) VALUES (?, ?, ?) '
+        'ON CONFLICT(workspace_id, project_path) DO UPDATE SET '
+        'active_conversation_id = excluded.active_conversation_id',
+        [workspaceId, projectPath, id],
+      );
+    });
+
+    final index = await _readIndex(workspaceId, projectPath);
+    return (index: index, state: state);
   }
 
-  Future<AgentState> load(String workspaceId, String conversationId) async {
-    final raw = await _fs.readUtf8(workspaceId, _statePath(conversationId));
+  Future<AgentState> load(
+    String workspaceId,
+    String projectPath,
+    String conversationId,
+  ) async {
+    final raw = await _metaDb.withDb((db) {
+      final rows = db.select(
+        'SELECT state_json FROM conversations '
+        'WHERE workspace_id = ? AND project_path = ? AND id = ?',
+        [workspaceId, projectPath, conversationId],
+      );
+      if (rows.isEmpty) return null;
+      return rows.first['state_json'] as String;
+    });
+
     if (raw == null) {
       return AgentState(
         sessionId: conversationId,
-        metadata: {_metaWorkspaceId: workspaceId},
+        metadata: _meta(workspaceId, projectPath),
       );
     }
     try {
@@ -222,82 +256,129 @@ class ConversationStore {
       final state = AgentState.fromJson(map);
       state.sessionId = conversationId;
       state.isRunning = false;
-      state.metadata[_metaWorkspaceId] = workspaceId;
+      state.metadata.addAll(_meta(workspaceId, projectPath));
       return state;
     } catch (_) {
       return AgentState(
         sessionId: conversationId,
-        metadata: {_metaWorkspaceId: workspaceId},
+        metadata: _meta(workspaceId, projectPath),
       );
     }
   }
 
-  Future<void> save(String workspaceId, AgentState state) async {
-    state.metadata[_metaWorkspaceId] = workspaceId;
+  Future<void> save(
+    String workspaceId,
+    String projectPath,
+    AgentState state,
+  ) async {
+    state.metadata.addAll(_meta(workspaceId, projectPath));
     state.isRunning = false;
-    await _writeStateFile(workspaceId, state);
-
-    final index = await _readIndex(workspaceId);
     final title = titleFromMessages(state.history.messages);
     final now = DateTime.now().toUtc();
     final count = state.history.messages.length;
-    final conversations = [...index.conversations];
-    final i = conversations.indexWhere((c) => c.id == state.sessionId);
-    if (i >= 0) {
-      conversations[i] = conversations[i].copyWith(
-        title: title,
-        updatedAt: now,
-        messageCount: count,
+    final stateJson = jsonEncode(state.toJson());
+
+    await _metaDb.withDb((db) {
+      final existing = db.select(
+        'SELECT id, created_at FROM conversations '
+        'WHERE workspace_id = ? AND project_path = ? AND id = ?',
+        [workspaceId, projectPath, state.sessionId],
       );
-    } else {
-      conversations.insert(
-        0,
-        ConversationInfo(
-          id: state.sessionId,
-          title: title,
-          createdAt: now,
-          updatedAt: now,
-          messageCount: count,
-        ),
+      if (existing.isEmpty) {
+        db.execute(
+          'INSERT INTO conversations '
+          '(workspace_id, project_path, id, title, created_at, updated_at, '
+          'message_count, state_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+          [
+            workspaceId,
+            projectPath,
+            state.sessionId,
+            title,
+            now.toIso8601String(),
+            now.toIso8601String(),
+            count,
+            stateJson,
+          ],
+        );
+      } else {
+        db.execute(
+          'UPDATE conversations SET title = ?, updated_at = ?, '
+          'message_count = ?, state_json = ? '
+          'WHERE workspace_id = ? AND project_path = ? AND id = ?',
+          [
+            title,
+            now.toIso8601String(),
+            count,
+            stateJson,
+            workspaceId,
+            projectPath,
+            state.sessionId,
+          ],
+        );
+      }
+      final active = db.select(
+        'SELECT active_conversation_id FROM project_state '
+        'WHERE workspace_id = ? AND project_path = ?',
+        [workspaceId, projectPath],
       );
-    }
-    conversations.sort((a, b) => b.updatedAt.compareTo(a.updatedAt));
-    await _writeIndex(
-      workspaceId,
-      WorkspaceConversationIndex(
-        activeConversationId:
-            index.activeConversationId ?? state.sessionId,
-        conversations: conversations,
-      ),
-    );
+      if (active.isEmpty) {
+        db.execute(
+          'INSERT INTO project_state '
+          '(workspace_id, project_path, active_conversation_id) VALUES (?, ?, ?)',
+          [workspaceId, projectPath, state.sessionId],
+        );
+      }
+    });
   }
 
-  Future<void> setActive(String workspaceId, String conversationId) async {
-    final index = await _readIndex(workspaceId);
-    if (!index.conversations.any((c) => c.id == conversationId)) {
-      throw StateError('会话不存在：$conversationId');
-    }
-    await _writeIndex(
-      workspaceId,
-      WorkspaceConversationIndex(
-        activeConversationId: conversationId,
-        conversations: index.conversations,
-      ),
-    );
+  Future<void> setActive(
+    String workspaceId,
+    String projectPath,
+    String conversationId,
+  ) async {
+    await _metaDb.withDb((db) {
+      final rows = db.select(
+        'SELECT id FROM conversations '
+        'WHERE workspace_id = ? AND project_path = ? AND id = ?',
+        [workspaceId, projectPath, conversationId],
+      );
+      if (rows.isEmpty) {
+        throw StateError('会话不存在：$conversationId');
+      }
+      db.execute(
+        'INSERT INTO project_state '
+        '(workspace_id, project_path, active_conversation_id) VALUES (?, ?, ?) '
+        'ON CONFLICT(workspace_id, project_path) DO UPDATE SET '
+        'active_conversation_id = excluded.active_conversation_id',
+        [workspaceId, projectPath, conversationId],
+      );
+    });
   }
 
   Future<WorkspaceConversationIndex> deleteConversation(
     String workspaceId,
+    String projectPath,
     String conversationId,
   ) async {
-    final index = await _readIndex(workspaceId);
+    final index = await _readIndex(workspaceId, projectPath);
+    await _metaDb.withDb((db) {
+      db.execute(
+        'DELETE FROM conversations '
+        'WHERE workspace_id = ? AND project_path = ? AND id = ?',
+        [workspaceId, projectPath, conversationId],
+      );
+    });
+
     final remaining =
         index.conversations.where((c) => c.id != conversationId).toList();
-    await _fs.deletePath(workspaceId, _statePath(conversationId));
-
     if (remaining.isEmpty) {
-      await _writeIndex(workspaceId, WorkspaceConversationIndex.empty);
-      final created = await create(workspaceId);
+      await _metaDb.withDb((db) {
+        db.execute(
+          'DELETE FROM project_state WHERE workspace_id = ? AND project_path = ?',
+          [workspaceId, projectPath],
+        );
+      });
+      final created = await create(workspaceId, projectPath);
       return created.index;
     }
 
@@ -305,44 +386,63 @@ class ConversationStore {
     if (active == conversationId) {
       active = remaining.first.id;
     }
-
-    final next = WorkspaceConversationIndex(
-      activeConversationId: active,
-      conversations: remaining,
-    );
-    await _writeIndex(workspaceId, next);
-    return next;
+    await setActive(workspaceId, projectPath, active!);
+    return _readIndex(workspaceId, projectPath);
   }
 
-  /// Removes conversation files inside the guest. No-op if the workspace Linux
-  /// is already gone (e.g. after [SandboxProvider.destroy]).
+  /// Removes all host DB rows for [workspaceId].
   Future<void> deleteWorkspace(String workspaceId) async {
-    try {
-      await _fs.deletePath(
-        workspaceId,
-        kGuestConversationsDir,
-        recursive: true,
-      );
-    } catch (_) {
-      // Distro / rootfs may already be destroyed.
-    }
+    await _metaDb.deleteWorkspace(workspaceId);
   }
 
-  Future<WorkspaceConversationSummary> peekWorkspaceSummary(
+  /// Aggregate conversation stats across [projectPaths].
+  Future<WorkspaceConversationSummary> peekProjectsSummary(
     String workspaceId,
+    List<String> projectPaths,
   ) async {
-    final index = await _readIndex(workspaceId);
-    if (index.conversations.isEmpty) {
-      return const WorkspaceConversationSummary(conversationCount: 0);
+    if (projectPaths.isEmpty) {
+      return const WorkspaceConversationSummary(
+        conversationCount: 0,
+        projectCount: 0,
+      );
     }
-    final sorted = [...index.conversations]
-      ..sort((a, b) => b.updatedAt.compareTo(a.updatedAt));
-    final recent = sorted.first;
-    return WorkspaceConversationSummary(
-      conversationCount: index.conversations.length,
-      recentTitle: recent.title,
-      recentUpdatedAt: recent.updatedAt,
-    );
+
+    return _metaDb.withDb((db) {
+      var total = 0;
+      ConversationInfo? recent;
+      for (final path in projectPaths) {
+        final rows = db.select(
+          'SELECT id, title, created_at, updated_at, message_count '
+          'FROM conversations WHERE workspace_id = ? AND project_path = ?',
+          [workspaceId, path],
+        );
+        total += rows.length;
+        for (final row in rows) {
+          final c = ConversationInfo(
+            id: row['id'] as String,
+            title: row['title'] as String,
+            createdAt: DateTime.parse(row['created_at'] as String),
+            updatedAt: DateTime.parse(row['updated_at'] as String),
+            messageCount: (row['message_count'] as num).toInt(),
+          );
+          if (recent == null || c.updatedAt.isAfter(recent.updatedAt)) {
+            recent = c;
+          }
+        }
+      }
+      if (recent == null) {
+        return WorkspaceConversationSummary(
+          conversationCount: total,
+          projectCount: projectPaths.length,
+        );
+      }
+      return WorkspaceConversationSummary(
+        conversationCount: total,
+        recentTitle: recent.title,
+        recentUpdatedAt: recent.updatedAt,
+        projectCount: projectPaths.length,
+      );
+    });
   }
 
   /// Derive a short title from the first user message text.
