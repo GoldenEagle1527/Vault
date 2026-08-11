@@ -1,9 +1,9 @@
 import 'dart:async';
 import 'dart:convert';
 
-import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
+import 'package:vault/util/host_file_picker.dart';
 import 'package:vault/agent/agent_inbox.dart';
 import 'package:vault/agent/agent_service.dart';
 import 'package:vault/agent/agent_settings.dart';
@@ -435,7 +435,10 @@ class _AgentScreenState extends State<AgentScreen> {
 
   Future<void> _pickFiles() async {
     if (_running) return;
-    final result = await FilePicker.platform.pickFiles(
+    // Android: MIME → FileType so the system gallery / video / music
+    // categories appear (not only a generic file manager).
+    final result = await pickHostFilesForUi(
+      context,
       allowMultiple: true,
       withData: false,
     );
