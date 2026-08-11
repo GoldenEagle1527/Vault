@@ -19,6 +19,15 @@ void main() {
     expect(inboxGuestPath('note.md'), '/root/inbox/note.md');
   });
 
+  test('sanitizeInboxFileName keeps CJK and strips illegal chars', () {
+    expect(
+      sanitizeInboxFileName('重金属厚涂风格敏捷机甲头颅设计.png'),
+      '重金属厚涂风格敏捷机甲头颅设计.png',
+    );
+    expect(sanitizeInboxFileName('a:b?.png'), 'a_b_.png');
+    expect(sanitizeInboxFileName('foo/bar.png'), 'bar.png');
+  });
+
   test('system prompt pins Alpine workspace + inbox', () {
     final prompts = vaultAgentSystemPrompts(workspaceId: 'abc123');
     final joined = prompts.join('\n');

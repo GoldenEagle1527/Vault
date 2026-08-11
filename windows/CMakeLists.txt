@@ -1,5 +1,6 @@
 # Project-level configuration.
-cmake_minimum_required(VERSION 3.14)
+# 3.15+: audioplayers_windows / VS 2026 need CMP0091 NEW.
+cmake_minimum_required(VERSION 3.15)
 project(vault LANGUAGES CXX)
 
 # The name of the executable created for the application. Change this to change
@@ -8,7 +9,7 @@ set(BINARY_NAME "vault")
 
 # Explicitly opt in to modern CMake behaviors to avoid warnings with recent
 # versions of CMake.
-cmake_policy(VERSION 3.14...3.25)
+cmake_policy(VERSION 3.15...3.25)
 
 # Define build configuration option.
 get_property(IS_MULTICONFIG GLOBAL PROPERTY GENERATOR_IS_MULTI_CONFIG)

@@ -25,7 +25,7 @@
 | ID | 项 | 优先级 | 状态 |
 |----|----|--------|------|
 | F1 | M4 Agent 编排层 | P0 | ✅ 2026-08-08（引擎=自有 `packages/vault_agent_core`） |
-| F2 | 文件浏览器（会话内） | P0（可跟 F1 一起） | 未开始 |
+| F2 | 文件浏览器（会话内） | P0（可跟 F1 一起） | ✅ 2026-08-10 |
 | F3 | Android M2c 设备矩阵补全 | P1 | 部分（仅一档真机） |
 | F4 | 沙箱层自动化测试 | P1 | 偏薄 |
 | F5 | 工作区/会话持久化增强 | P2 | ✅ 多会话历史 2026-08-09；启动续开/磁盘清理仍缺 |
@@ -83,15 +83,17 @@ lib/screens/
 
 ## F2 — 会话内文件浏览器（P0）
 
+**状态：** ✅ 2026-08-10 已落地。
+
 **目标：** 浏览 / 预览 /（可选）编辑当前会话 rootfs 或工作目录下的文件，服务 Agent 与人工排查。
 
-**建议：**
+**交付：**
 
-- 数据源优先走沙箱内路径（Windows：WSL 发行版内；Android：`files/sessions/<id>/rootfs/...`）  
-- 路径穿越防护：禁止逃出会话 root  
-- MVP：列表 + 文本预览 + 简单写入即可；二进制预览可后置  
+- `SandboxProvider.listGuestDirectory` + `GuestFsEntry`（WSL UNC / proot host 列表，WSL 可 fallback `ls`）
+- [`lib/screens/file_browser_screen.dart`](../lib/screens/file_browser_screen.dart) — 列表、面包屑、文本高亮预览/保存、图片/音视频预览
+- 入口：工作区 [`AgentScreen`](../lib/screens/agent_screen.dart) → 工具 →「文件浏览器」（销毁/离开工作区后入口消失）
 
-**验收：** 在已存在会话上打开文件树，能打开 `/root` 下文本文件，删除会话后入口消失。
+**验收：** 在已存在工作区上打开文件树，能打开 `/root` 下文本文件，删除工作区后入口消失。
 
 ---
 

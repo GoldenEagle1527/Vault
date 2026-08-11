@@ -8,6 +8,7 @@ import 'package:path_provider/path_provider.dart';
 import 'package:vault/offload/offload_host_server.dart';
 import 'package:vault/offload/wsl_offload_install.dart';
 import 'package:vault/sandbox/alpine_mirrors.dart';
+import 'package:vault/sandbox/guest_fs_list.dart';
 import 'package:vault/sandbox/persistent_shell.dart';
 import 'package:vault/sandbox/sandbox_provider.dart';
 import 'package:vault/sandbox/workspace_bootstrap.dart';
@@ -590,6 +591,41 @@ EOF
     final guest = assertGuestPathUnderHome(guestAbsolutePath);
     final flag = recursive ? '-rf' : '-f';
     await _runInDistro(workspaceId, 'rm $flag -- ${shellSingleQuote(guest)}');
+  }
+
+  @override
+  Future<List<GuestFsEntry>> listGuestDirectory(
+    String workspaceId,
+    String guestAbsolutePath,
+  ) async {
+    if (!await _distroRegistered(workspaceId)) {
+      throw StateError('工作区 $workspaceId 的 WSL 发行版不存在');
+    }
+    final guest = assertGuestPathUnderHome(guestAbsolutePath);
+    try {
+      final hostPath = _wslUncFor(workspaceId, guest);
+      return await listGuestDirectoryOnHost(
+        hostPath: hostPath,
+        guestDir: guest,
+      );
+    } catch (_) {
+      // Fall through to guest ls.
+    }
+    final result = await _runInDistro(
+      workspaceId,
+      'if [ -d ${shellSingleQuote(guest)} ]; then '
+      'ls -1Ap -- ${shellSingleQuote(guest)}; '
+      'else exit 2; fi',
+    );
+    if (result.exitCode == 2) {
+      throw StateError('目录不存在：$guest');
+    }
+    if (!result.success) {
+      throw StateError(
+        '无法列出沙箱目录 $guest：${result.stderr}'.trim(),
+      );
+    }
+    return parseLsMinusOneAp(result.stdout, guest);
   }
 
   @override

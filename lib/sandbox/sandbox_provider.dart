@@ -40,6 +40,15 @@ abstract class SandboxProvider {
     bool recursive = false,
   });
 
+  /// List a guest directory under [kGuestHome] (non-recursive).
+  ///
+  /// Entries are sorted directories-first. Throws [ArgumentError] on path escape
+  /// and [StateError] when the path is missing or not a directory.
+  Future<List<GuestFsEntry>> listGuestDirectory(
+    String workspaceId,
+    String guestAbsolutePath,
+  );
+
   /// Host filesystem path that maps to [guestAbsolutePath] (for SQLite, etc.).
   ///
   /// Android: under the proot rootfs. Windows: `\\wsl$\vault_{id}\…` UNC.

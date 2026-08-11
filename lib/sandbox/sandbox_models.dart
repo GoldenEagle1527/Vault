@@ -78,6 +78,54 @@ class CommandResult {
   bool get success => exitCode == 0;
 }
 
+/// One entry from [SandboxProvider.listGuestDirectory].
+class GuestFsEntry {
+  const GuestFsEntry({
+    required this.name,
+    required this.guestPath,
+    required this.isDirectory,
+    this.sizeBytes,
+  });
+
+  final String name;
+  final String guestPath;
+  final bool isDirectory;
+  final int? sizeBytes;
+}
+
+/// Directories first, then case-insensitive name.
+void sortGuestFsEntries(List<GuestFsEntry> entries) {
+  entries.sort((a, b) {
+    if (a.isDirectory != b.isDirectory) {
+      return a.isDirectory ? -1 : 1;
+    }
+    return a.name.toLowerCase().compareTo(b.name.toLowerCase());
+  });
+}
+
+/// Join [dir] + basename [name] under [kGuestHome].
+String guestPathJoin(String dir, String name) {
+  final base = assertGuestPathUnderHome(dir);
+  final trimmed = name.trim();
+  if (trimmed.isEmpty ||
+      trimmed == '.' ||
+      trimmed == '..' ||
+      trimmed.contains('/') ||
+      trimmed.contains('\\')) {
+    throw ArgumentError('invalid guest entry name: $name');
+  }
+  return assertGuestPathUnderHome('$base/$trimmed');
+}
+
+/// Heuristic: treat as text unless NUL bytes appear in the sample.
+bool looksLikeTextBytes(List<int> bytes, {int sampleLimit = 8192}) {
+  final n = bytes.length < sampleLimit ? bytes.length : sampleLimit;
+  for (var i = 0; i < n; i++) {
+    if (bytes[i] == 0) return false;
+  }
+  return true;
+}
+
 /// Interactive PTY-like handle for one workspace. Does not expose [Process].
 abstract class SandboxWorkspace {
   String get workspaceId;
@@ -118,15 +166,60 @@ abstract class SandboxWorkspace {
   Future<void> dispose();
 }
 
-/// Sanitize a user-facing file name for [kGuestInboxDir] (basename only).
+/// Sanitize a user-facing file name for guest paths (basename only).
+///
+/// Keeps Unicode letters (including CJK). Strips path separators, control
+/// characters, and characters that break Windows UNC (`\\wsl$\…`) mapping.
 String sanitizeInboxFileName(String name) {
   var base = name.replaceAll('\\', '/').split('/').last.trim();
   if (base.isEmpty || base == '.' || base == '..') {
     base = 'upload.bin';
   }
-  base = base.replaceAll(RegExp(r'[^\w.\-+=@()\[\]{} ]'), '_');
+
+  final buf = StringBuffer();
+  for (final rune in base.runes) {
+    if (rune < 0x20 || rune == 0x7F) {
+      buf.write('_');
+      continue;
+    }
+    final ch = String.fromCharCode(rune);
+    // Path separators + Windows-illegal filename chars (UNC / Explorer).
+    if (ch == '/' ||
+        ch == '\\' ||
+        ch == '<' ||
+        ch == '>' ||
+        ch == ':' ||
+        ch == '"' ||
+        ch == '|' ||
+        ch == '?' ||
+        ch == '*') {
+      buf.write('_');
+      continue;
+    }
+    buf.write(ch);
+  }
+  base = buf.toString().trim();
+  // Avoid names that are only dots / empty after scrubbing.
+  if (base.isEmpty || base == '.' || base == '..') {
+    base = 'upload.bin';
+  }
+  // Windows trailing dots/spaces are problematic on UNC.
+  while (base.endsWith('.') || base.endsWith(' ')) {
+    base = base.substring(0, base.length - 1);
+  }
+  if (base.isEmpty || base == '.' || base == '..') {
+    base = 'upload.bin';
+  }
   if (base.length > 180) {
-    base = base.substring(base.length - 180);
+    final extDot = base.lastIndexOf('.');
+    if (extDot > 0 && base.length - extDot <= 16) {
+      final ext = base.substring(extDot);
+      final stem = base.substring(0, extDot);
+      final keep = 180 - ext.length;
+      base = '${stem.substring(stem.length - keep)}$ext';
+    } else {
+      base = base.substring(base.length - 180);
+    }
   }
   return base;
 }

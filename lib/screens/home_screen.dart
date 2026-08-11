@@ -164,6 +164,7 @@ class _HomeScreenState extends State<HomeScreen> {
         MaterialPageRoute(
           builder: (_) => AgentScreen(
             title: '工作区 $id',
+            provider: widget.provider,
             workspace: workspace,
             conversationStore: conversationStore,
             projectStore: projectStore,
@@ -194,6 +195,7 @@ class _HomeScreenState extends State<HomeScreen> {
         MaterialPageRoute(
           builder: (_) => AgentScreen(
             title: info.displayName,
+            provider: widget.provider,
             workspace: workspace,
             conversationStore: conversationStore,
             projectStore: projectStore,

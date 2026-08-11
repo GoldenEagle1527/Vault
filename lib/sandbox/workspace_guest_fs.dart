@@ -3,6 +3,7 @@ import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:path/path.dart' as p;
+import 'package:vault/sandbox/guest_fs_list.dart';
 import 'package:vault/sandbox/sandbox_provider.dart';
 
 /// Byte-level guest filesystem access for a workspace (no PTY required).
@@ -23,6 +24,12 @@ abstract class WorkspaceGuestFs {
     String guestAbsolutePath, {
     bool recursive = false,
   });
+
+  /// Non-recursive directory listing under [kGuestHome].
+  Future<List<GuestFsEntry>> listDirectory(
+    String workspaceId,
+    String guestAbsolutePath,
+  );
 
   Future<String?> readUtf8(String workspaceId, String guestAbsolutePath) async {
     final bytes = await readBytes(workspaceId, guestAbsolutePath);
@@ -71,6 +78,14 @@ class SandboxWorkspaceGuestFs extends WorkspaceGuestFs {
       recursive: recursive,
     );
   }
+
+  @override
+  Future<List<GuestFsEntry>> listDirectory(
+    String workspaceId,
+    String guestAbsolutePath,
+  ) {
+    return provider.listGuestDirectory(workspaceId, guestAbsolutePath);
+  }
 }
 
 /// Test backend: maps guest `/root/...` onto `{root}/{workspaceId}/...` on host.
@@ -83,6 +98,12 @@ class LocalDirWorkspaceGuestFs extends WorkspaceGuestFs {
     final guest = assertGuestPathUnderHome(guestAbsolutePath);
     final relative = guest.substring(1); // drop leading /
     return File(p.join(rootDirectory, workspaceId, relative));
+  }
+
+  String _hostPath(String workspaceId, String guestAbsolutePath) {
+    final guest = assertGuestPathUnderHome(guestAbsolutePath);
+    final relative = guest.substring(1);
+    return p.join(rootDirectory, workspaceId, relative);
   }
 
   @override
@@ -122,5 +143,17 @@ class LocalDirWorkspaceGuestFs extends WorkspaceGuestFs {
     } else {
       await File(path).delete();
     }
+  }
+
+  @override
+  Future<List<GuestFsEntry>> listDirectory(
+    String workspaceId,
+    String guestAbsolutePath,
+  ) {
+    final guest = assertGuestPathUnderHome(guestAbsolutePath);
+    return listGuestDirectoryOnHost(
+      hostPath: _hostPath(workspaceId, guest),
+      guestDir: guest,
+    );
   }
 }

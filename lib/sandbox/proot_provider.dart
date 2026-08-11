@@ -5,6 +5,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_pty/flutter_pty.dart';
 import 'package:path/path.dart' as p;
 import 'package:vault/sandbox/alpine_mirrors.dart';
+import 'package:vault/sandbox/guest_fs_list.dart';
 import 'package:vault/sandbox/offload_host.dart';
 import 'package:vault/sandbox/offload_stubs.dart';
 import 'package:vault/sandbox/persistent_shell.dart';
@@ -515,6 +516,16 @@ class ProotProvider implements SandboxProvider {
     } else {
       await File(path).delete();
     }
+  }
+
+  @override
+  Future<List<GuestFsEntry>> listGuestDirectory(
+    String workspaceId,
+    String guestAbsolutePath,
+  ) async {
+    final guest = assertGuestPathUnderHome(guestAbsolutePath);
+    final hostPath = await resolveGuestHostPath(workspaceId, guest);
+    return listGuestDirectoryOnHost(hostPath: hostPath, guestDir: guest);
   }
 }
 

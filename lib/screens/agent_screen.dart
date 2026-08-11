@@ -2,8 +2,8 @@ import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
-import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
 import 'package:vault/util/host_file_picker.dart';
+import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
 import 'package:vault/agent/agent_inbox.dart';
 import 'package:vault/agent/agent_service.dart';
 import 'package:vault/agent/agent_settings.dart';
@@ -11,7 +11,8 @@ import 'package:vault/agent/conversation_store.dart';
 import 'package:vault/agent/project_site_launcher.dart';
 import 'package:vault/agent/project_store.dart';
 import 'package:vault/permissions/active_workspace_holder.dart';
-import 'package:vault/sandbox/sandbox_models.dart';
+import 'package:vault/sandbox/sandbox_provider.dart';
+import 'package:vault/screens/file_browser_screen.dart';
 import 'package:vault/screens/settings_screen.dart';
 import 'package:vault/screens/terminal_screen.dart';
 import 'package:vault/widgets/glass.dart';
@@ -20,6 +21,7 @@ import 'package:vault/widgets/new_project_dialog.dart';
 class AgentScreen extends StatefulWidget {
   const AgentScreen({
     super.key,
+    required this.provider,
     required this.workspace,
     required this.title,
     required this.conversationStore,
@@ -27,6 +29,7 @@ class AgentScreen extends StatefulWidget {
     this.settingsStore,
   });
 
+  final SandboxProvider provider;
   final SandboxWorkspace workspace;
   final String title;
   final ConversationStore conversationStore;
@@ -428,6 +431,21 @@ class _AgentScreenState extends State<AgentScreen> {
           title: widget.title,
           workspace: widget.workspace,
           disposeWorkspace: false,
+        ),
+      ),
+    );
+  }
+
+  Future<void> _openFileBrowser() async {
+    final projectPath = _activeProjectPath;
+    await Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => FileBrowserScreen(
+          provider: widget.provider,
+          workspaceId: widget.workspace.workspaceId,
+          title: widget.title,
+          projectGuestPath:
+              projectPath == null ? null : guestProjectDir(projectPath),
         ),
       ),
     );
@@ -981,6 +999,15 @@ class _AgentScreenState extends State<AgentScreen> {
       default:
         return ListView(
           children: [
+            ListTile(
+              leading: const Icon(Icons.folder_open_outlined),
+              title: const Text('文件浏览器'),
+              subtitle: const Text('浏览 / 预览当前工作区文件'),
+              onTap: () {
+                _closeDrawerIfOpen();
+                unawaited(_openFileBrowser());
+              },
+            ),
             ListTile(
               leading: const Icon(Icons.terminal),
               title: const Text('Linux 终端'),
