@@ -360,9 +360,8 @@ class _FileBrowserScreenState extends State<FileBrowserScreen> {
   }
 
   Future<void> _pickAndImport() async {
-    // Android: category sheet → MIME → FileType so system media pickers show.
+    // file_picker 11 + FileType.image → DocumentsUI categories (raincurtain).
     final result = await pickHostFilesForUi(
-      context,
       allowMultiple: true,
       withData: false,
     );

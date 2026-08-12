@@ -4,7 +4,13 @@ import 'package:vault/util/host_file_picker.dart';
 
 void main() {
   group('resolveHostFilePickerType', () {
-    test('all image/* → FileType.image (no extensions)', () {
+    test('empty MIME → FileType.image (raincurtain every() on empty)', () {
+      final s = resolveHostFilePickerType();
+      expect(s.type, FileType.image);
+      expect(s.allowedExtensions, isNull);
+    });
+
+    test('all image/* → FileType.image (clears extensions)', () {
       final s = resolveHostFilePickerType(
         mimeTypes: ['image/*', 'image/png'],
         allowedExtensions: ['png', 'jpg'],
@@ -33,32 +39,18 @@ void main() {
       expect(s.allowedExtensions, isNull);
     });
 
-    test('extensions only → FileType.custom (strips dots)', () {
+    test('extensions only (non-media MIME path) → FileType.custom', () {
       final s = resolveHostFilePickerType(
-        allowedExtensions: ['.png', 'JPG', ''],
+        mimeTypes: ['application/pdf'],
+        allowedExtensions: ['.pdf', 'txt'],
       );
       expect(s.type, FileType.custom);
-      expect(s.allowedExtensions, ['png', 'jpg']);
+      expect(s.allowedExtensions, ['pdf', 'txt']);
     });
 
-    test('unrestricted → FileType.any', () {
-      final s = resolveHostFilePickerType();
-      expect(s.type, FileType.any);
-      expect(s.allowedExtensions, isNull);
-    });
-
-    test('mixed non-media MIME falls back to custom when extensions given', () {
+    test('mixed non-media without extensions → FileType.any', () {
       final s = resolveHostFilePickerType(
-        mimeTypes: ['application/pdf', 'image/png'],
-        allowedExtensions: ['pdf', 'png'],
-      );
-      expect(s.type, FileType.custom);
-      expect(s.allowedExtensions, ['pdf', 'png']);
-    });
-
-    test('mixed non-media MIME without extensions → any', () {
-      final s = resolveHostFilePickerType(
-        mimeTypes: ['application/pdf', 'image/png'],
+        mimeTypes: ['application/pdf', 'text/plain'],
       );
       expect(s.type, FileType.any);
     });

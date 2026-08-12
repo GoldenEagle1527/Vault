@@ -1,13 +1,6 @@
 import 'package:file_picker/file_picker.dart';
-import 'package:flutter/foundation.dart';
-import 'package:flutter/material.dart';
 
-/// Resolved [FilePicker.platform.pickFiles] args after MIME → [FileType] mapping.
-///
-/// On Android, [FileType.image] / [FileType.video] / [FileType.audio] /
-/// [FileType.media] cause `file_picker` to send media MIME Intents so the
-/// system DocumentsUI / gallery apps show album / video / music categories
-/// instead of a generic file manager.
+/// Resolved [FilePicker.pickFiles] args after MIME → [FileType] mapping.
 class HostFilePickerSelection {
   const HostFilePickerSelection({
     required this.type,
@@ -18,15 +11,12 @@ class HostFilePickerSelection {
   final List<String>? allowedExtensions;
 }
 
-/// Map Open File Picker–style MIME types (+ optional extensions) to [FileType].
+/// Map Open File Picker–style MIME types to [FileType] (raincurtain rules).
 ///
-/// Mapping (same rules as the webview `filesystem_handler` reference):
-/// - all `image/*` → [FileType.image]
-/// - all `video/*` → [FileType.video]
-/// - all `audio/*` → [FileType.audio]
-/// - mix of image + video → [FileType.media]
-/// - only extensions → [FileType.custom]
-/// - otherwise → [FileType.any]
+/// With `file_picker` ≥ 11, [FileType.image] / video / audio use
+/// `ACTION_GET_CONTENT` so Android DocumentsUI shows sidebar categories
+/// (最近 / 图片 / 音频 / 文档 / 下载). Empty MIME set → [FileType.image]
+/// (same as raincurtain `mimeTypes.every(...)` on an empty set).
 HostFilePickerSelection resolveHostFilePickerType({
   Iterable<String>? mimeTypes,
   List<String>? allowedExtensions,
@@ -46,19 +36,17 @@ HostFilePickerSelection resolveHostFilePickerType({
       .toList();
   if (exts != null && exts.isEmpty) exts = null;
 
-  if (mimes.isNotEmpty && mimes.every((m) => m.startsWith('image/'))) {
+  // Note: [].every(...) is true — unrestricted / empty → FileType.image.
+  if (mimes.every((m) => m.startsWith('image/'))) {
     return const HostFilePickerSelection(type: FileType.image);
   }
-  if (mimes.isNotEmpty && mimes.every((m) => m.startsWith('video/'))) {
+  if (mimes.every((m) => m.startsWith('video/'))) {
     return const HostFilePickerSelection(type: FileType.video);
   }
-  if (mimes.isNotEmpty && mimes.every((m) => m.startsWith('audio/'))) {
+  if (mimes.every((m) => m.startsWith('audio/'))) {
     return const HostFilePickerSelection(type: FileType.audio);
   }
-  if (mimes.isNotEmpty &&
-      mimes.every(
-        (m) => m.startsWith('image/') || m.startsWith('video/'),
-      )) {
+  if (mimes.every((m) => m.startsWith('image/') || m.startsWith('video/'))) {
     return const HostFilePickerSelection(type: FileType.media);
   }
   if (exts != null) {
@@ -97,7 +85,7 @@ HostFilePickerSelection resolveHostFilePickerType({
   return (mimeTypes: mimeTypes, allowedExtensions: extensions);
 }
 
-/// Pick files with MIME → [FileType] mapping (optional `showOpenFilePicker` types).
+/// Pick files with raincurtain-compatible MIME → [FileType] mapping.
 Future<FilePickerResult?> pickHostFiles({
   bool allowMultiple = false,
   bool withData = false,
@@ -118,7 +106,8 @@ Future<FilePickerResult?> pickHostFiles({
     mimeTypes: mimes,
     allowedExtensions: exts,
   );
-  return FilePicker.platform.pickFiles(
+  // Same API surface as raincurtain (`FilePicker.pickFiles`).
+  return FilePicker.pickFiles(
     allowMultiple: allowMultiple,
     type: selection.type,
     allowedExtensions: selection.allowedExtensions,
@@ -126,78 +115,17 @@ Future<FilePickerResult?> pickHostFiles({
   );
 }
 
-enum _HostPickerCategory {
-  image(mimeTypes: ['image/*'], label: '图片', icon: Icons.photo_library_outlined),
-  video(mimeTypes: ['video/*'], label: '视频', icon: Icons.video_library_outlined),
-  audio(mimeTypes: ['audio/*'], label: '音频', icon: Icons.library_music_outlined),
-  media(
-    mimeTypes: ['image/*', 'video/*'],
-    label: '图片和视频',
-    icon: Icons.perm_media_outlined,
-  ),
-  any(mimeTypes: null, label: '所有文件', icon: Icons.folder_open_outlined);
-
-  const _HostPickerCategory({
-    required this.mimeTypes,
-    required this.label,
-    required this.icon,
-  });
-
-  final List<String>? mimeTypes;
-  final String label;
-  final IconData icon;
-}
-
-/// UI entry: on Android ask for a media category so the system picker shows
-/// album / video / music; elsewhere open a generic picker in one step.
-Future<FilePickerResult?> pickHostFilesForUi(
-  BuildContext context, {
+/// UI entry: no MIME → [FileType.image] (DocumentsUI categories on Android 11+
+/// `file_picker`).
+Future<FilePickerResult?> pickHostFilesForUi({
   bool allowMultiple = true,
   bool withData = false,
-}) async {
-  final useCategorySheet =
-      !kIsWeb && defaultTargetPlatform == TargetPlatform.android;
-  if (!useCategorySheet) {
-    return pickHostFiles(
-      allowMultiple: allowMultiple,
-      withData: withData,
-    );
-  }
-
-  final category = await showModalBottomSheet<_HostPickerCategory>(
-    context: context,
-    showDragHandle: true,
-    builder: (ctx) {
-      return SafeArea(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            Padding(
-              padding: const EdgeInsets.fromLTRB(20, 4, 20, 8),
-              child: Text(
-                '选择文件类型',
-                style: Theme.of(ctx).textTheme.titleMedium,
-              ),
-            ),
-            for (final c in _HostPickerCategory.values)
-              ListTile(
-                leading: Icon(c.icon),
-                title: Text(c.label),
-                onTap: () => Navigator.pop(ctx, c),
-              ),
-            const SizedBox(height: 8),
-          ],
-        ),
-      );
-    },
-  );
-  if (category == null) return null;
-  if (!context.mounted) return null;
-
+}) {
   return pickHostFiles(
     allowMultiple: allowMultiple,
     withData: withData,
-    mimeTypes: category.mimeTypes,
+    // Explicit image/* so mapping stays FileType.image even if empty-set
+    // semantics change.
+    mimeTypes: const ['image/*'],
   );
 }
