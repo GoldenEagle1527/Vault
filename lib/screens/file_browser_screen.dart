@@ -45,6 +45,18 @@ class _GuestClipboard {
   final bool isCut;
 }
 
+class _ImportProgress {
+  const _ImportProgress({
+    required this.current,
+    required this.total,
+    required this.name,
+  });
+
+  final int current;
+  final int total;
+  final String name;
+}
+
 class _FileBrowserScreenState extends State<FileBrowserScreen> {
   late String _cwd;
   String? _projectPath;
@@ -209,10 +221,71 @@ class _FileBrowserScreenState extends State<FileBrowserScreen> {
   Future<void> _importHostPaths(List<({String path, String name})> files) async {
     if (files.isEmpty) return;
     setState(() => _busy = true);
+
+    final progress = ValueNotifier<_ImportProgress>(
+      _ImportProgress(current: 0, total: files.length, name: files.first.name),
+    );
+    var dialogOpen = true;
+    unawaited(
+      showDialog<void>(
+        context: context,
+        barrierDismissible: false,
+        useRootNavigator: true,
+        builder: (ctx) {
+          return PopScope(
+            canPop: false,
+            child: AlertDialog(
+              title: const Text('正在导入'),
+              content: ValueListenableBuilder<_ImportProgress>(
+                valueListenable: progress,
+                builder: (context, value, _) {
+                  final label = value.total <= 0
+                      ? '准备中…'
+                      : '${value.current.clamp(0, value.total)} / ${value.total}';
+                  return Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      const Center(child: CircularProgressIndicator()),
+                      const SizedBox(height: 20),
+                      Text(
+                        label,
+                        textAlign: TextAlign.center,
+                        style: Theme.of(context).textTheme.titleMedium,
+                      ),
+                      const SizedBox(height: 8),
+                      Text(
+                        value.name.isEmpty ? '请稍候…' : value.name,
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                        textAlign: TextAlign.center,
+                        style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                          color: Theme.of(context).colorScheme.onSurfaceVariant,
+                        ),
+                      ),
+                    ],
+                  );
+                },
+              ),
+            ),
+          );
+        },
+      ).whenComplete(() => dialogOpen = false),
+    );
+
+    // Let the dialog paint before heavy IO.
+    await Future<void>.delayed(Duration.zero);
+
     var ok = 0;
     var failed = 0;
     try {
-      for (final f in files) {
+      for (var i = 0; i < files.length; i++) {
+        final f = files[i];
+        progress.value = _ImportProgress(
+          current: i + 1,
+          total: files.length,
+          name: f.name,
+        );
         try {
           final type = await FileSystemEntity.type(f.path, followLinks: false);
           if (type == FileSystemEntityType.directory) {
@@ -240,6 +313,10 @@ class _FileBrowserScreenState extends State<FileBrowserScreen> {
         _snack('导入完成：成功 $ok，失败 $failed', error: failed == files.length);
       }
     } finally {
+      if (mounted && dialogOpen) {
+        Navigator.of(context, rootNavigator: true).pop();
+      }
+      progress.dispose();
       if (mounted) setState(() => _busy = false);
     }
   }
