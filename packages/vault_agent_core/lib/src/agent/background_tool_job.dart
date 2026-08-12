@@ -9,7 +9,7 @@ const String kBackgroundJobsReminderKey = 'background_jobs';
 enum BackgroundToolJobStatus { running, completed, failed }
 
 /// Event kind emitted by [BackgroundToolJobRegistry].
-enum BackgroundToolJobEventKind { backgrounded, completed }
+enum BackgroundToolJobEventKind { backgrounded, completed, notified }
 
 /// A tool invocation detached from the agent loop after the background threshold.
 class BackgroundToolJob {
@@ -22,6 +22,7 @@ class BackgroundToolJob {
     this.status = BackgroundToolJobStatus.running,
     this.result,
     this.error,
+    this.notifyRegex,
   });
 
   final String jobId;
@@ -32,6 +33,9 @@ class BackgroundToolJob {
   BackgroundToolJobStatus status;
   FunctionExecutionResult? result;
   Object? error;
+
+  /// Optional shell output pattern that can wake the model without stopping the job.
+  final String? notifyRegex;
 
   bool get isRunning => status == BackgroundToolJobStatus.running;
 
@@ -56,10 +60,19 @@ class BackgroundToolJob {
 
 /// Registry notification for UI / AgentService listeners.
 class BackgroundToolJobEvent {
-  const BackgroundToolJobEvent({required this.kind, required this.job});
+  const BackgroundToolJobEvent({
+    required this.kind,
+    required this.job,
+    this.notifyText,
+    this.notifyRegex,
+  });
 
   final BackgroundToolJobEventKind kind;
   final BackgroundToolJob job;
+
+  /// Matched excerpt when [kind] is [BackgroundToolJobEventKind.notified].
+  final String? notifyText;
+  final String? notifyRegex;
 }
 
 /// Tracks tool Futures that were released from the think-act loop.
@@ -83,6 +96,7 @@ class BackgroundToolJobRegistry {
     required String toolName,
     required String arguments,
     DateTime? startedAt,
+    String? notifyRegex,
   }) {
     final job = BackgroundToolJob(
       jobId: jobId,
@@ -90,6 +104,7 @@ class BackgroundToolJobRegistry {
       toolName: toolName,
       arguments: arguments,
       startedAt: startedAt ?? DateTime.now(),
+      notifyRegex: notifyRegex,
     );
     _jobs[jobId] = job;
     _controller.add(
@@ -99,6 +114,25 @@ class BackgroundToolJobRegistry {
       ),
     );
     return job;
+  }
+
+  /// Wake listeners because shell output matched a notify pattern.
+  /// Does **not** change job status — the process keeps running.
+  void notifyMatch(
+    String jobId, {
+    required String text,
+    required String regex,
+  }) {
+    final job = _jobs[jobId];
+    if (job == null || !job.isRunning) return;
+    _controller.add(
+      BackgroundToolJobEvent(
+        kind: BackgroundToolJobEventKind.notified,
+        job: job,
+        notifyText: text,
+        notifyRegex: regex,
+      ),
+    );
   }
 
   void complete(String jobId, FunctionExecutionResult result) {
@@ -141,11 +175,18 @@ class BackgroundToolJobRegistry {
     }
     final buffer = StringBuffer()
       ..writeln('The following tool calls are still running in the background:')
-      ..writeln('You will receive <background-task-result> when each finishes.');
+      ..writeln(
+        'You will receive <background-task-result> when each finishes, '
+        'or <shell-notify> when notify_regex matches (process keeps running).',
+      );
     for (final job in running) {
+      final notify = job.notifyRegex == null
+          ? ''
+          : ' notify_regex=${job.notifyRegex}';
       buffer.writeln(
         '- jobId=${job.jobId} tool=${job.toolName} callId=${job.callId} '
-        'started=${job.startedAt.toIso8601String()} args=${job.argumentsSummary}',
+        'started=${job.startedAt.toIso8601String()}$notify '
+        'args=${job.argumentsSummary}',
       );
     }
     systemReminders[kBackgroundJobsReminderKey] = buffer.toString().trim();
@@ -202,4 +243,28 @@ String buildBackgroundTaskResultMessage(List<BackgroundToolJob> jobs) {
     buffer.writeln('</background-task-result>');
   }
   return buffer.toString().trim();
+}
+
+/// User-turn payload when shell output matches notify_regex (process still alive).
+String buildShellNotifyMessage({
+  required String jobId,
+  required String callId,
+  required String toolName,
+  required String regex,
+  required String matchText,
+}) {
+  return '''
+以下 shell 输出已匹配你设置的 notify_regex（进程仍在运行，未被终止），请查看并决定下一步：
+<shell-notify job_id="$jobId" tool="$toolName" call_id="$callId" regex="${_xmlEscape(regex)}" still_running="true">
+$matchText
+</shell-notify>
+'''.trim();
+}
+
+String _xmlEscape(String value) {
+  return value
+      .replaceAll('&', '&amp;')
+      .replaceAll('"', '&quot;')
+      .replaceAll('<', '&lt;')
+      .replaceAll('>', '&gt;');
 }

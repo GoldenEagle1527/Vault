@@ -72,9 +72,14 @@ class GlassPanel extends StatelessWidget {
               borderRadius: radius,
               border: Border.all(color: GlassTokens.glassBorder(brightness)),
             ),
-            child: padding == null
-                ? child
-                : Padding(padding: padding!, child: child),
+            // ListTile / InkWell paint onto the nearest Material; without this,
+            // GlassPanel's fill DecoratedBox hides their splash & selected bg.
+            child: Material(
+              type: MaterialType.transparency,
+              child: padding == null
+                  ? child
+                  : Padding(padding: padding!, child: child),
+            ),
           ),
         ),
       ),

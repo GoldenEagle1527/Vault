@@ -50,6 +50,12 @@ class _ChatItem {
     this.toolCallId,
     this.toolJobId,
     this.toolBackgrounded = false,
+    this.thinkingPlaceholder = false,
+    this.promptTokens,
+    this.completionTokens,
+    this.totalTokens,
+    this.duration,
+    this.at,
   });
 
   factory _ChatItem.tool({
@@ -72,6 +78,14 @@ class _ChatItem {
     );
   }
 
+  factory _ChatItem.thinking() {
+    return _ChatItem(
+      kind: _ChatKind.assistant,
+      text: 'Agent 正在思考…',
+      thinkingPlaceholder: true,
+    );
+  }
+
   final _ChatKind kind;
   String text;
   final String? toolName;
@@ -80,6 +94,12 @@ class _ChatItem {
   String? toolCallId;
   String? toolJobId;
   bool toolBackgrounded;
+  bool thinkingPlaceholder;
+  int? promptTokens;
+  int? completionTokens;
+  int? totalTokens;
+  Duration? duration;
+  DateTime? at;
 }
 
 enum _ChatKind { user, assistant, tool, status, error }
@@ -249,13 +269,15 @@ class _AgentScreenState extends State<AgentScreen> {
     _backgroundUiSub = service.backgroundUiEvents.listen((event) {
       if (!mounted) return;
       if (event is AgentUiStatus &&
-          event.message == '后台任务结果已送达，正在继续…') {
+          (event.message == '后台任务结果已送达，正在继续…' ||
+              event.message == 'shell 匹配通知已送达，正在继续…')) {
         _running = true;
       }
       _applyLiveEvent(event);
       if (event is AgentUiStatus && event.message == '已完成') {
         _running = false;
         _status = null;
+        _discardThinkingPlaceholder();
       }
       _conversationTitle = service.conversationTitle;
       setState(() {});
@@ -265,12 +287,50 @@ class _AgentScreenState extends State<AgentScreen> {
 
   void _applyRestoredEvent(AgentUiEvent event) {
     switch (event) {
-      case AgentUiUserMessage(:final text):
-        _items.add(_ChatItem(kind: _ChatKind.user, text: text));
-      case AgentUiAssistantFinal(:final text):
-        _items.add(_ChatItem(kind: _ChatKind.assistant, text: text));
+      case AgentUiUserMessage(:final text, :final promptTokens, :final at):
+        _items.add(
+          _ChatItem(
+            kind: _ChatKind.user,
+            text: text,
+            promptTokens: promptTokens,
+            at: at,
+          ),
+        );
+      case AgentUiAssistantFinal(
+        :final text,
+        :final promptTokens,
+        :final completionTokens,
+        :final totalTokens,
+        :final duration,
+        :final at,
+      ):
+        _items.add(
+          _ChatItem(
+            kind: _ChatKind.assistant,
+            text: text,
+            promptTokens: promptTokens,
+            completionTokens: completionTokens,
+            totalTokens: totalTokens,
+            duration: duration,
+            at: at,
+          ),
+        );
       case AgentUiAssistantDelta(:final text):
         _items.add(_ChatItem(kind: _ChatKind.assistant, text: text));
+      case AgentUiModelUsage(
+        :final promptTokens,
+        :final completionTokens,
+        :final totalTokens,
+        :final duration,
+        :final at,
+      ):
+        _applyModelUsage(
+          promptTokens: promptTokens,
+          completionTokens: completionTokens,
+          totalTokens: totalTokens,
+          duration: duration,
+          at: at,
+        );
       case AgentUiToolCall(:final name, :final arguments, :final callId):
         _items.add(
           _ChatItem.tool(name: name, arguments: arguments, callId: callId),
@@ -302,6 +362,8 @@ class _AgentScreenState extends State<AgentScreen> {
           jobId: jobId,
           clearBackgrounded: true,
         );
+      case AgentUiShellNotify():
+        break;
       case AgentUiError(:final message):
         _items.add(_ChatItem(kind: _ChatKind.error, text: message));
       case AgentUiStatus():
@@ -310,22 +372,104 @@ class _AgentScreenState extends State<AgentScreen> {
     }
   }
 
+  bool _isThinkingStatus(String message) {
+    return message == '正在思考…' ||
+        message == '正在调用模型…' ||
+        message == '运行中…' ||
+        message == '后台任务结果已送达，正在继续…' ||
+        message == 'shell 匹配通知已送达，正在继续…' ||
+        message == 'shell 输出已匹配，准备唤醒模型…';
+  }
+
+  void _ensureThinkingPlaceholder() {
+    if (_items.isNotEmpty &&
+        _items.last.kind == _ChatKind.assistant &&
+        _items.last.thinkingPlaceholder) {
+      return;
+    }
+    _items.add(_ChatItem.thinking());
+  }
+
+  void _discardThinkingPlaceholder() {
+    while (_items.isNotEmpty &&
+        _items.last.kind == _ChatKind.assistant &&
+        _items.last.thinkingPlaceholder) {
+      _items.removeLast();
+    }
+  }
+
   void _applyLiveEvent(AgentUiEvent event) {
     switch (event) {
-      case AgentUiUserMessage(:final text):
-        _items.add(_ChatItem(kind: _ChatKind.user, text: text));
+      case AgentUiUserMessage(:final text, :final promptTokens, :final at):
+        _items.add(
+          _ChatItem(
+            kind: _ChatKind.user,
+            text: text,
+            promptTokens: promptTokens,
+            at: at ?? DateTime.now(),
+          ),
+        );
       case AgentUiAssistantDelta(:final text):
         if (_items.isNotEmpty && _items.last.kind == _ChatKind.assistant) {
-          _items.last.text += text;
+          if (_items.last.thinkingPlaceholder) {
+            _items.last.thinkingPlaceholder = false;
+            _items.last.text = text;
+          } else {
+            _items.last.text += text;
+          }
         } else {
           _items.add(_ChatItem(kind: _ChatKind.assistant, text: text));
         }
-      case AgentUiAssistantFinal(:final text):
+      case AgentUiAssistantFinal(
+        :final text,
+        :final promptTokens,
+        :final completionTokens,
+        :final totalTokens,
+        :final duration,
+        :final at,
+      ):
         if (_items.isNotEmpty && _items.last.kind == _ChatKind.assistant) {
-          _items.last.text = text;
+          final item = _items.last;
+          item.thinkingPlaceholder = false;
+          item.text = text;
+          _mergeUsageInto(
+            item,
+            promptTokens: promptTokens,
+            completionTokens: completionTokens,
+            totalTokens: totalTokens,
+            duration: duration,
+            at: at,
+          );
         } else {
-          _items.add(_ChatItem(kind: _ChatKind.assistant, text: text));
+          _items.add(
+            _ChatItem(
+              kind: _ChatKind.assistant,
+              text: text,
+              promptTokens: promptTokens,
+              completionTokens: completionTokens,
+              totalTokens: totalTokens,
+              duration: duration,
+              at: at,
+            ),
+          );
         }
+        if (promptTokens != null && promptTokens > 0) {
+          _attachPromptTokensToLastUser(promptTokens);
+        }
+      case AgentUiModelUsage(
+        :final promptTokens,
+        :final completionTokens,
+        :final totalTokens,
+        :final duration,
+        :final at,
+      ):
+        _applyModelUsage(
+          promptTokens: promptTokens,
+          completionTokens: completionTokens,
+          totalTokens: totalTokens,
+          duration: duration,
+          at: at,
+        );
       case AgentUiDiscardDraftAssistant():
         _discardBlankAssistantDraft();
       case AgentUiToolCall(:final name, :final arguments, :final callId):
@@ -360,10 +504,78 @@ class _AgentScreenState extends State<AgentScreen> {
           jobId: jobId,
           clearBackgrounded: true,
         );
+      case AgentUiShellNotify(:final regex):
+        _status = 'shell 匹配通知：$regex';
       case AgentUiError(:final message):
+        _discardThinkingPlaceholder();
         _items.add(_ChatItem(kind: _ChatKind.error, text: message));
       case AgentUiStatus(:final message):
-        _status = message;
+        if (message == '已完成') {
+          _status = null;
+          _discardThinkingPlaceholder();
+        } else if (_isThinkingStatus(message)) {
+          _status = null;
+          _ensureThinkingPlaceholder();
+        } else {
+          _status = message;
+        }
+    }
+  }
+
+  void _mergeUsageInto(
+    _ChatItem item, {
+    int? promptTokens,
+    int? completionTokens,
+    int? totalTokens,
+    Duration? duration,
+    DateTime? at,
+  }) {
+    if (promptTokens != null && promptTokens > 0) {
+      item.promptTokens = promptTokens;
+    }
+    if (completionTokens != null && completionTokens > 0) {
+      item.completionTokens = completionTokens;
+    }
+    if (totalTokens != null && totalTokens > 0) {
+      item.totalTokens = totalTokens;
+    }
+    if (duration != null) item.duration = duration;
+    if (at != null) item.at = at;
+  }
+
+  void _attachPromptTokensToLastUser(int promptTokens) {
+    for (var i = _items.length - 1; i >= 0; i--) {
+      final item = _items[i];
+      if (item.kind != _ChatKind.user) continue;
+      item.promptTokens ??= promptTokens;
+      return;
+    }
+  }
+
+  void _applyModelUsage({
+    required int promptTokens,
+    required int completionTokens,
+    int? totalTokens,
+    Duration? duration,
+    DateTime? at,
+  }) {
+    if (promptTokens > 0) {
+      _attachPromptTokensToLastUser(promptTokens);
+    }
+    for (var i = _items.length - 1; i >= 0; i--) {
+      final item = _items[i];
+      if (item.kind != _ChatKind.assistant || item.thinkingPlaceholder) {
+        continue;
+      }
+      _mergeUsageInto(
+        item,
+        promptTokens: promptTokens,
+        completionTokens: completionTokens,
+        totalTokens: totalTokens,
+        duration: duration,
+        at: at,
+      );
+      return;
     }
   }
 
@@ -630,10 +842,9 @@ class _AgentScreenState extends State<AgentScreen> {
 
   Future<void> _pickFiles() async {
     if (_running) return;
-    // Android: MIME → FileType so the system gallery / video / music
-    // categories appear (not only a generic file manager).
+    // file_picker 11 + FileType.image → ACTION_GET_CONTENT DocumentsUI
+    // (最近/图片/音频/文档), matching raincurtain.
     final result = await pickHostFilesForUi(
-      context,
       allowMultiple: true,
       withData: false,
     );
@@ -804,7 +1015,7 @@ class _AgentScreenState extends State<AgentScreen> {
     setState(() {
       _pendingAttachments.clear();
       _running = true;
-      _status = '运行中…';
+      _status = null;
     });
 
     await for (final event in service.run(text, attachments: attachments)) {
@@ -821,13 +1032,15 @@ class _AgentScreenState extends State<AgentScreen> {
     setState(() {
       _running = false;
       _status = null;
+      _discardThinkingPlaceholder();
     });
   }
 
   void _discardBlankAssistantDraft() {
     while (_items.isNotEmpty &&
         _items.last.kind == _ChatKind.assistant &&
-        _items.last.text.trim().isEmpty) {
+        (_items.last.thinkingPlaceholder ||
+            _items.last.text.trim().isEmpty)) {
       _items.removeLast();
     }
   }
@@ -1629,7 +1842,19 @@ class _ChatBubble extends StatelessWidget {
       ),
     };
 
-    final md = _ChatMarkdown(data: item.text, color: fg);
+    final thinking = item.thinkingPlaceholder;
+    final contentColor =
+        thinking ? fg.withValues(alpha: 0.62) : fg;
+    final Widget body = thinking
+        ? Text(
+            item.text,
+            style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+              color: contentColor,
+              fontStyle: FontStyle.italic,
+              height: 1.35,
+            ),
+          )
+        : _ChatMarkdown(data: item.text, color: contentColor);
 
     final bubble = solid
         ? DecoratedBox(
@@ -1647,7 +1872,7 @@ class _ChatBubble extends StatelessWidget {
             ),
             child: Padding(
               padding: const EdgeInsets.all(14),
-              child: md,
+              child: body,
             ),
           )
         : GlassPanel(
@@ -1655,9 +1880,10 @@ class _ChatBubble extends StatelessWidget {
             tone: GlassTone.regular,
             tint: tint,
             padding: const EdgeInsets.all(14),
-            child: md,
+            child: body,
           );
 
+    final meta = _ChatBubbleMeta(item: item);
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 6),
       child: Column(
@@ -1669,10 +1895,127 @@ class _ChatBubble extends StatelessWidget {
             ),
             child: bubble,
           ),
+          if (meta.hasContent)
+            Padding(
+              padding: const EdgeInsets.only(top: 4, left: 4, right: 4),
+              child: meta,
+            ),
         ],
       ),
     );
   }
+}
+
+/// Token arrows + wall-clock time under a chat bubble.
+class _ChatBubbleMeta extends StatelessWidget {
+  const _ChatBubbleMeta({required this.item});
+
+  /// Teal = input (↑), orange = output (↓).
+  static const _inColor = Color(0xFF2A9D8F);
+  static const _outColor = Color(0xFFE07A3D);
+
+  final _ChatItem item;
+
+  bool get hasContent {
+    if (item.thinkingPlaceholder) return false;
+    if (item.kind != _ChatKind.user && item.kind != _ChatKind.assistant) {
+      return false;
+    }
+    final showIn = item.promptTokens != null && item.promptTokens! > 0;
+    final showOut = item.kind == _ChatKind.assistant &&
+        item.completionTokens != null &&
+        item.completionTokens! > 0;
+    return showIn || showOut || item.at != null;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final base = Theme.of(context).textTheme.labelSmall?.copyWith(
+      color: scheme.onSurfaceVariant.withValues(alpha: 0.75),
+      height: 1.1,
+    );
+    final children = <Widget>[];
+
+    void addSep() {
+      if (children.isEmpty) return;
+      children.add(
+        Text(' · ', style: base),
+      );
+    }
+
+    if (item.promptTokens != null && item.promptTokens! > 0) {
+      children.add(
+        _tokenChip(
+          icon: Icons.arrow_upward_rounded,
+          color: _inColor,
+          label: _formatTokenCount(item.promptTokens!),
+          style: base,
+        ),
+      );
+    }
+    if (item.kind == _ChatKind.assistant &&
+        item.completionTokens != null &&
+        item.completionTokens! > 0) {
+      addSep();
+      children.add(
+        _tokenChip(
+          icon: Icons.arrow_downward_rounded,
+          color: _outColor,
+          label: _formatTokenCount(item.completionTokens!),
+          style: base,
+        ),
+      );
+    }
+    if (item.at != null) {
+      addSep();
+      children.add(
+        Text(_formatClockTime(item.at!), style: base),
+      );
+    }
+
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: children,
+    );
+  }
+
+  Widget _tokenChip({
+    required IconData icon,
+    required Color color,
+    required String label,
+    required TextStyle? style,
+  }) {
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Icon(icon, size: 12, color: color),
+        const SizedBox(width: 2),
+        Text(
+          label,
+          style: style?.copyWith(color: color, fontWeight: FontWeight.w600),
+        ),
+      ],
+    );
+  }
+}
+
+String _formatTokenCount(int n) {
+  if (n >= 10000) return '${(n / 1000).round()}k';
+  if (n >= 1000) {
+    final v = n / 1000;
+    final s = v.toStringAsFixed(1);
+    return s.endsWith('.0') ? '${v.round()}k' : '${s}k';
+  }
+  return '$n';
+}
+
+String _formatClockTime(DateTime at) {
+  final local = at.toLocal();
+  final hh = local.hour.toString().padLeft(2, '0');
+  final mm = local.minute.toString().padLeft(2, '0');
+  final ss = local.second.toString().padLeft(2, '0');
+  return '$hh:$mm:$ss';
 }
 
 class _ChatMarkdown extends StatelessWidget {

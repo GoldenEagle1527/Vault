@@ -218,7 +218,8 @@ lib/screens/
 3. 任务结束：模型空闲则自动注入 `<background-task-result>` 并重开一轮；忙碌则排队，当前轮结束后再注入  
 4. Shell 墙钟超时提高到 60 分钟（高于后台阈值），避免后台任务被误杀  
 5. Shell 以 guest **分离任务 + 短轮询**执行：长命令不占用 PersistentShell 队列，后续 `shell` 可并行  
-6. **不新增** Android FGS
+6. Shell `notify_regex`：输出匹配时注入 `<shell-notify>` 唤醒模型且不终止进程（长效监控）  
+7. **不新增** Android FGS
 
 **关键文件：** `packages/vault_agent_core/.../background_tool_job.dart`、`stateful_agent.dart`；`lib/agent/agent_service.dart`、`shell_tool.dart`、`shell_job.dart`、`agent_screen.dart`
 

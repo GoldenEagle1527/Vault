@@ -355,12 +355,16 @@ class AgentCallToolContext {
   final AgentState state;
   final StatefulAgent agent;
   final String batchCallId;
+  final String callId;
+  final String toolName;
   final CancelToken? cancelToken;
 
   AgentCallToolContext({
     required this.state,
     required this.agent,
     required this.batchCallId,
+    required this.callId,
+    required this.toolName,
     this.cancelToken,
   });
 }
@@ -1949,6 +1953,8 @@ class StatefulAgent {
             state: state,
             agent: this,
             batchCallId: batchCallId,
+            callId: call.id,
+            toolName: call.name,
             cancelToken: cancelToken,
           ),
         },

@@ -114,7 +114,8 @@ class _DetachedJobWorkspace implements SandboxWorkspace {
         }
         return CommandResult(
           exitCode: 0,
-          stdout: '$kShellJobRunningMarker\n99\n',
+          stdout: '$kShellJobRunningMarker\n99\n$kShellJobOutMarker\n'
+              'still-running\n$kShellJobEndMarker\n',
           stderr: '',
         );
       }
@@ -159,9 +160,31 @@ void main() {
     expect(done.exitCode, 0);
     expect(done.output, 'hello');
 
-    final running = parseShellJobPollStdout('$kShellJobRunningMarker\n42\n');
+    final running = parseShellJobPollStdout(
+      '$kShellJobRunningMarker\n42\n$kShellJobOutMarker\npartial\n'
+      '$kShellJobEndMarker\n',
+    );
     expect(running.done, isFalse);
     expect(running.pid, '42');
+    expect(running.output, 'partial');
+  });
+
+  test('findNotifyMatch finds pattern after scanned offset', () {
+    final hit = findNotifyMatch(
+      output: 'aaa Listening on :8080 bbb',
+      pattern: RegExp('Listening on'),
+      alreadyScanned: 0,
+    );
+    expect(hit, isNotNull);
+    expect(hit!.match, contains('Listening on'));
+    expect(
+      findNotifyMatch(
+        output: 'aaa Listening on :8080 bbb',
+        pattern: RegExp('Listening on'),
+        alreadyScanned: hit.scannedThrough,
+      ),
+      isNull,
+    );
   });
 
   test('shell tool returns exitCode/stdout/stderr json via detached job', () async {

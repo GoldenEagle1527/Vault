@@ -40,6 +40,36 @@ void main() {
     expect((events[4] as AgentUiAssistantFinal).text, '完成了');
   });
 
+  test('uiEventsFromHistory maps usage onto assistant and prior user', () {
+    const t0 = 1 * 1000 * 1000;
+    const t1 = 3 * 1000 * 1000;
+    final events = AgentService.uiEventsFromHistory([
+      UserMessage([TextPart('问')], timestamp: t0),
+      ModelMessage(
+        model: 'm',
+        textOutput: '答',
+        timestamp: t1,
+        usage: ModelUsage(
+          promptTokens: 1200,
+          completionTokens: 45,
+          totalTokens: 1245,
+          timestamp: t1,
+        ),
+      ),
+    ]);
+
+    expect(events, hasLength(2));
+    final user = events[0] as AgentUiUserMessage;
+    expect(user.promptTokens, 1200);
+    expect(user.at, DateTime.fromMicrosecondsSinceEpoch(t0));
+
+    final assistant = events[1] as AgentUiAssistantFinal;
+    expect(assistant.promptTokens, 1200);
+    expect(assistant.completionTokens, 45);
+    expect(assistant.totalTokens, 1245);
+    expect(assistant.duration, const Duration(seconds: 2));
+  });
+
   test('uiEventsFromHistory maps background tool stub', () {
     final events = AgentService.uiEventsFromHistory([
       ModelMessage(

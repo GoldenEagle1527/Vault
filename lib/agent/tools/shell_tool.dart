@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:vault/agent/tools/shell_job.dart';
@@ -21,6 +22,9 @@ const Duration kDefaultShellToolTimeout = Duration(minutes: 60);
 /// PersistentShell calls, so a long `shell` does not block the agent shell
 /// queue — other shell tool calls can run in parallel.
 ///
+/// Optional [notify_regex]: when output matches, wake the model without
+/// killing the process (ideal for long-lived monitors).
+///
 /// When [chatSessionId] is set, injects `VAULT_CHAT_SESSION_ID` into the guest
 /// environment for each command (offload permission / bridge correlation).
 Tool createShellTool(
@@ -43,6 +47,7 @@ Tool createShellTool(
         '在当前工作区的隔离 Alpine Linux 内执行非交互命令（root，$kGuestHome）。'
         '${projectDir == null ? '' : '当前项目目录：$projectDir；网站与代码请写在这里。'}'
         '命令以 guest 后台任务启动并轮询结果：长任务不阻塞后续 shell 调用（可并行）。'
+        '长效监控可传 notify_regex：输出匹配时在不终止进程的情况下唤醒你并附上片段。'
         '主 shell 的 cwd / 导出变量在启动瞬间被继承；返回 exitCode、stdout、stderr。'
         '用于 apk、文件、编译、脚本、本地 HTTP 服务等。'
         '用户附件在 $kGuestInboxDir/。'
@@ -60,6 +65,18 @@ Tool createShellTool(
               'apk update && apk add curl; '
               '${projectDir == null ? 'cd $kGuestHome && python3 -m http.server 8080 --bind 127.0.0.1' : 'cd $projectDir && python3 -m http.server 8080 --bind 127.0.0.1'}',
         },
+        'notify_regex': {
+          'type': 'string',
+          'description':
+              '可选。Dart/JS 风格正则，匹配命令累计输出时立即唤醒模型（进程不终止）。'
+              '适合长效监控，例如：Listening on|ERROR|Build succeeded。'
+              '传入后本工具会立刻返回监控中状态，匹配时注入 <shell-notify>。',
+        },
+        'notify_once': {
+          'type': 'boolean',
+          'description':
+              '默认 true：仅首次匹配通知。false：每次出现新匹配都通知（仍不终止进程）。',
+        },
       },
       'required': ['command'],
     },
@@ -75,7 +92,38 @@ Tool createShellTool(
         });
       }
 
+      final notifyRegexRaw = (args['notify_regex'] as String?)?.trim() ?? '';
+      final notifyOnce = args['notify_once'] != false;
+      RegExp? notifyPattern;
+      if (notifyRegexRaw.isNotEmpty) {
+        try {
+          notifyPattern = RegExp(notifyRegexRaw, multiLine: true);
+        } catch (e) {
+          return jsonEncode({
+            'ok': false,
+            'error': 'notify_regex 无效',
+            'exitCode': -1,
+            'stdout': '',
+            'stderr': e.toString(),
+          });
+        }
+      }
+
       try {
+        if (notifyPattern != null) {
+          return await _startMonitoredShellJob(
+            workspace,
+            command: command,
+            environment: sessionEnv,
+            timeout: timeout,
+            pollInterval: pollInterval,
+            notifyPattern: notifyPattern,
+            notifyRegexRaw: notifyRegexRaw,
+            notifyOnce: notifyOnce,
+            cwdHint: cwdHint,
+          );
+        }
+
         final result = await runDetachedShellJob(
           workspace,
           command: command,
@@ -83,25 +131,7 @@ Tool createShellTool(
           timeout: timeout,
           pollInterval: pollInterval,
         );
-        if (result.exitCode == 124) {
-          return jsonEncode({
-            'ok': false,
-            'error': '命令超时',
-            'exitCode': 124,
-            'stdout': result.stdout,
-            'stderr': result.stderr.isEmpty
-                ? '命令在 ${timeout.inSeconds} 秒内未完成'
-                : result.stderr,
-            'cwdHint': cwdHint,
-          });
-        }
-        return jsonEncode({
-          'ok': result.success,
-          'exitCode': result.exitCode,
-          'stdout': result.stdout,
-          'stderr': result.stderr,
-          'cwdHint': cwdHint,
-        });
+        return _encodeCommandResult(result, timeout: timeout, cwdHint: cwdHint);
       } catch (e) {
         return jsonEncode({
           'ok': false,
@@ -113,6 +143,265 @@ Tool createShellTool(
       }
     },
   );
+}
+
+String _encodeCommandResult(
+  CommandResult result, {
+  required Duration timeout,
+  required String cwdHint,
+}) {
+  if (result.exitCode == 124) {
+    return jsonEncode({
+      'ok': false,
+      'error': '命令超时',
+      'exitCode': 124,
+      'stdout': result.stdout,
+      'stderr': result.stderr.isEmpty
+          ? '命令在 ${timeout.inSeconds} 秒内未完成'
+          : result.stderr,
+      'cwdHint': cwdHint,
+    });
+  }
+  return jsonEncode({
+    'ok': result.success,
+    'exitCode': result.exitCode,
+    'stdout': result.stdout,
+    'stderr': result.stderr,
+    'cwdHint': cwdHint,
+  });
+}
+
+/// Start + register background monitor; return immediately to free the model.
+Future<String> _startMonitoredShellJob(
+  SandboxWorkspace workspace, {
+  required String command,
+  Map<String, String>? environment,
+  required Duration timeout,
+  required Duration pollInterval,
+  required RegExp notifyPattern,
+  required String notifyRegexRaw,
+  required bool notifyOnce,
+  required String cwdHint,
+}) async {
+  final ctx = AgentCallToolContext.current;
+  final agent = ctx?.agent;
+  final jobId = newShellJobId();
+  final callId = ctx?.callId ?? jobId;
+
+  final start = await workspace.run(
+    buildStartDetachedShellJobCommand(
+      jobId: jobId,
+      command: command,
+      environment: environment,
+    ),
+    timeout: const Duration(seconds: 30),
+  );
+  if (!start.success) {
+    return jsonEncode({
+      'ok': false,
+      'error': '无法启动后台 shell 任务',
+      'exitCode': start.exitCode == 0 ? -1 : start.exitCode,
+      'stdout': start.stdout,
+      'stderr': start.stderr,
+      'cwdHint': cwdHint,
+    });
+  }
+
+  if (agent != null) {
+    agent.backgroundJobs.register(
+      jobId: jobId,
+      callId: callId,
+      toolName: 'shell',
+      arguments: jsonEncode({
+        'command': command,
+        'notify_regex': notifyRegexRaw,
+        'notify_once': notifyOnce,
+      }),
+      notifyRegex: notifyRegexRaw,
+    );
+    agent.backgroundJobs.syncReminders(agent.state.systemReminders);
+  }
+
+  unawaited(
+    _monitorDetachedShellJob(
+      workspace,
+      jobId: jobId,
+      callId: callId,
+      agent: agent,
+      timeout: timeout,
+      pollInterval: pollInterval,
+      notifyPattern: notifyPattern,
+      notifyRegexRaw: notifyRegexRaw,
+      notifyOnce: notifyOnce,
+    ),
+  );
+
+  return jsonEncode({
+    'ok': true,
+    'monitoring': true,
+    'background': true,
+    'jobId': jobId,
+    'callId': callId,
+    'notify_regex': notifyRegexRaw,
+    'notify_once': notifyOnce,
+    'cwdHint': cwdHint,
+    'message':
+        '已启动长效 shell 监控（进程在 guest 后台运行）。'
+        '输出匹配 notify_regex 时会以 <shell-notify> 唤醒你且不终止进程；'
+        '进程结束后另有 <background-task-result>。',
+  });
+}
+
+Future<void> _monitorDetachedShellJob(
+  SandboxWorkspace workspace, {
+  required String jobId,
+  required String callId,
+  required StatefulAgent? agent,
+  required Duration timeout,
+  required Duration pollInterval,
+  required RegExp notifyPattern,
+  required String notifyRegexRaw,
+  required bool notifyOnce,
+}) async {
+  final deadline = DateTime.now().add(timeout);
+  var previousOutput = '';
+  var notified = false;
+
+  try {
+    while (true) {
+      final remaining = deadline.difference(DateTime.now());
+      if (remaining <= Duration.zero) {
+        try {
+          await workspace.run(
+            buildKillDetachedShellJobCommand(jobId),
+            timeout: const Duration(seconds: 10),
+          );
+        } catch (_) {}
+        String partial = '';
+        try {
+          final last = await workspace.run(
+            buildPollDetachedShellJobCommand(jobId),
+            timeout: const Duration(seconds: 10),
+          );
+          final parsed = parseShellJobPollStdout(last.stdout);
+          partial = parsed.output ?? '';
+        } catch (_) {}
+        _completeMonitor(
+          agent,
+          jobId: jobId,
+          callId: callId,
+          result: CommandResult(
+            exitCode: 124,
+            stdout: partial,
+            stderr: '命令在 ${timeout.inSeconds} 秒内未完成',
+          ),
+          isError: true,
+        );
+        return;
+      }
+
+      final poll = await workspace.run(
+        buildPollDetachedShellJobCommand(jobId),
+        timeout: const Duration(seconds: 15),
+      );
+      final parsed = parseShellJobPollStdout(poll.stdout);
+      final output = parsed.output ?? '';
+
+      if ((!notifyOnce || !notified) &&
+          output.isNotEmpty &&
+          output != previousOutput) {
+        final searchRegion = _shellOutputDelta(previousOutput, output);
+        if (searchRegion.isNotEmpty && notifyPattern.hasMatch(searchRegion)) {
+          final hit = findNotifyMatch(
+            output: output,
+            pattern: notifyPattern,
+            alreadyScanned: 0,
+          );
+          agent?.backgroundJobs.notifyMatch(
+            jobId,
+            text: hit?.match ?? searchRegion,
+            regex: notifyRegexRaw,
+          );
+          notified = true;
+        }
+      }
+      previousOutput = output;
+
+      if (parsed.done) {
+        _completeMonitor(
+          agent,
+          jobId: jobId,
+          callId: callId,
+          result: CommandResult(
+            exitCode: parsed.exitCode ?? -1,
+            stdout: output,
+            stderr: '',
+          ),
+          isError: (parsed.exitCode ?? -1) != 0,
+        );
+        return;
+      }
+
+      await Future<void>.delayed(pollInterval);
+    }
+  } catch (e) {
+    _completeMonitor(
+      agent,
+      jobId: jobId,
+      callId: callId,
+      result: CommandResult(
+        exitCode: -1,
+        stdout: '',
+        stderr: e.toString(),
+      ),
+      isError: true,
+    );
+  }
+}
+
+/// New content since [previous], tolerant of poll windows that only return a tail.
+String _shellOutputDelta(String previous, String current) {
+  if (previous.isEmpty) return current;
+  if (current.startsWith(previous)) {
+    return current.substring(previous.length);
+  }
+  // Sliding tail: longest suffix of previous that is a prefix of current.
+  final max = previous.length < current.length ? previous.length : current.length;
+  for (var len = max; len > 0; len--) {
+    if (current.startsWith(previous.substring(previous.length - len))) {
+      return current.substring(len);
+    }
+  }
+  return current;
+}
+
+void _completeMonitor(
+  StatefulAgent? agent, {
+  required String jobId,
+  required String callId,
+  required CommandResult result,
+  required bool isError,
+}) {
+  if (agent == null) return;
+  final payload = jsonEncode({
+    'ok': result.success,
+    'exitCode': result.exitCode,
+    'stdout': result.stdout,
+    'stderr': result.stderr,
+    'jobId': jobId,
+  });
+  agent.backgroundJobs.complete(
+    jobId,
+    FunctionExecutionResult(
+      id: callId,
+      name: 'shell',
+      isError: isError,
+      arguments: jsonEncode({'jobId': jobId}),
+      content: [TextPart(payload)],
+      metadata: {'jobId': jobId, 'callId': callId},
+    ),
+  );
+  agent.backgroundJobs.syncReminders(agent.state.systemReminders);
 }
 
 /// Start [command] detached in the guest and poll until done or [timeout].
@@ -157,16 +446,13 @@ Future<CommandResult> runDetachedShellJob(
           timeout: const Duration(seconds: 10),
         );
       } catch (_) {}
-      // Best-effort final poll for partial output.
       try {
         final last = await workspace.run(
           buildPollDetachedShellJobCommand(id),
           timeout: const Duration(seconds: 10),
         );
         final parsed = parseShellJobPollStdout(last.stdout);
-        if (parsed.done) {
-          partialOut = parsed.output;
-        }
+        partialOut = parsed.output;
       } catch (_) {}
       return CommandResult(
         exitCode: 124,

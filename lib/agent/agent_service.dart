@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:dio/dio.dart';
 import 'package:uuid/uuid.dart';
@@ -19,8 +20,14 @@ sealed class AgentUiEvent {
 }
 
 class AgentUiUserMessage extends AgentUiEvent {
-  const AgentUiUserMessage(this.text);
+  const AgentUiUserMessage(
+    this.text, {
+    this.promptTokens,
+    this.at,
+  });
   final String text;
+  final int? promptTokens;
+  final DateTime? at;
 }
 
 class AgentUiAssistantDelta extends AgentUiEvent {
@@ -29,8 +36,36 @@ class AgentUiAssistantDelta extends AgentUiEvent {
 }
 
 class AgentUiAssistantFinal extends AgentUiEvent {
-  const AgentUiAssistantFinal(this.text);
+  const AgentUiAssistantFinal(
+    this.text, {
+    this.promptTokens,
+    this.completionTokens,
+    this.totalTokens,
+    this.duration,
+    this.at,
+  });
   final String text;
+  final int? promptTokens;
+  final int? completionTokens;
+  final int? totalTokens;
+  final Duration? duration;
+  final DateTime? at;
+}
+
+/// Token / latency stats for the latest model call (live stream).
+class AgentUiModelUsage extends AgentUiEvent {
+  const AgentUiModelUsage({
+    required this.promptTokens,
+    required this.completionTokens,
+    this.totalTokens,
+    this.duration,
+    this.at,
+  });
+  final int promptTokens;
+  final int completionTokens;
+  final int? totalTokens;
+  final Duration? duration;
+  final DateTime? at;
 }
 
 /// Drop a trailing whitespace-only assistant draft (common before tool calls).
@@ -88,6 +123,31 @@ class AgentUiToolBackgroundCompleted extends AgentUiEvent {
   final String callId;
   final String result;
   final bool isError;
+}
+
+/// Shell notify_regex matched; process still running.
+class AgentUiShellNotify extends AgentUiEvent {
+  const AgentUiShellNotify({
+    required this.jobId,
+    required this.callId,
+    required this.regex,
+    required this.matchText,
+  });
+  final String jobId;
+  final String callId;
+  final String regex;
+  final String matchText;
+}
+
+class _PendingShellNotify {
+  const _PendingShellNotify({
+    required this.job,
+    required this.matchText,
+    required this.regex,
+  });
+  final BackgroundToolJob job;
+  final String matchText;
+  final String regex;
 }
 
 class AgentUiError extends AgentUiEvent {
@@ -182,11 +242,16 @@ class AgentService {
   String? _projectPath;
   CancelToken? _cancelToken;
   bool _running = false;
+  DateTime? _modelCallStartedAt;
   StreamSubscription<BackgroundToolJobEvent>? _backgroundSub;
   final List<BackgroundToolJob> _pendingCompletions = [];
+  final List<_PendingShellNotify> _pendingNotifies = [];
   final StreamController<AgentUiEvent> _backgroundUi =
       StreamController<AgentUiEvent>.broadcast();
   bool _reactivationScheduled = false;
+
+  bool get _hasPendingBackgroundWakeups =>
+      _pendingCompletions.isNotEmpty || _pendingNotifies.isNotEmpty;
 
   /// Sandbox / workspace id (same value as [SandboxWorkspace.workspaceId]).
   String get workspaceId => _workspace.workspaceId;
@@ -328,24 +393,45 @@ class AgentService {
   }
 
   void _onBackgroundJobEvent(BackgroundToolJobEvent event) {
-    if (event.kind != BackgroundToolJobEventKind.completed) return;
     final job = event.job;
-    _pendingCompletions.add(job);
-    if (!_backgroundUi.isClosed) {
-      _backgroundUi.add(
-        AgentUiToolBackgroundCompleted(
-          name: job.toolName,
-          jobId: job.jobId,
-          callId: job.callId,
-          result: job.resultText(),
-          isError: job.status == BackgroundToolJobStatus.failed ||
-              (job.result?.isError ?? false),
-        ),
-      );
-      final n = runningBackgroundJobCount;
-      _backgroundUi.add(
-        AgentUiStatus(n == 0 ? '后台任务已完成' : '后台任务进行中：$n'),
-      );
+    switch (event.kind) {
+      case BackgroundToolJobEventKind.backgrounded:
+        return;
+      case BackgroundToolJobEventKind.notified:
+        final text = event.notifyText ?? '';
+        final regex = event.notifyRegex ?? job.notifyRegex ?? '';
+        _pendingNotifies.add(
+          _PendingShellNotify(job: job, matchText: text, regex: regex),
+        );
+        if (!_backgroundUi.isClosed) {
+          _backgroundUi.add(
+            AgentUiShellNotify(
+              jobId: job.jobId,
+              callId: job.callId,
+              regex: regex,
+              matchText: text,
+            ),
+          );
+          _backgroundUi.add(const AgentUiStatus('shell 输出已匹配，准备唤醒模型…'));
+        }
+      case BackgroundToolJobEventKind.completed:
+        _pendingCompletions.add(job);
+        if (!_backgroundUi.isClosed) {
+          _backgroundUi.add(
+            AgentUiToolBackgroundCompleted(
+              name: job.toolName,
+              jobId: job.jobId,
+              callId: job.callId,
+              result: job.resultText(),
+              isError: job.status == BackgroundToolJobStatus.failed ||
+                  (job.result?.isError ?? false),
+            ),
+          );
+          final n = runningBackgroundJobCount;
+          _backgroundUi.add(
+            AgentUiStatus(n == 0 ? '后台任务已完成' : '后台任务进行中：$n'),
+          );
+        }
     }
     if (!_running) {
       unawaited(_scheduleIdleReactivation());
@@ -357,15 +443,19 @@ class AgentService {
     _reactivationScheduled = true;
     try {
       await Future<void>.delayed(Duration.zero);
-      while (!_running && _pendingCompletions.isNotEmpty) {
+      while (!_running && _hasPendingBackgroundWakeups) {
         if (!_settings.isConfigured) {
           _pendingCompletions.clear();
+          _pendingNotifies.clear();
           return;
         }
         _running = true;
         _cancelToken = CancelToken();
         try {
-          await for (final event in _reactivateWithBackgroundResults()) {
+          final stream = _pendingNotifies.isNotEmpty
+              ? _reactivateWithShellNotifies()
+              : _reactivateWithBackgroundResults();
+          await for (final event in stream) {
             if (!_backgroundUi.isClosed) {
               _backgroundUi.add(event);
             }
@@ -381,10 +471,48 @@ class AgentService {
       }
     } finally {
       _reactivationScheduled = false;
-      if (!_running && _pendingCompletions.isNotEmpty) {
+      if (!_running && _hasPendingBackgroundWakeups) {
         unawaited(_scheduleIdleReactivation());
       }
     }
+  }
+
+  Stream<AgentUiEvent> _reactivateWithShellNotifies() async* {
+    final items = List<_PendingShellNotify>.from(_pendingNotifies);
+    _pendingNotifies.clear();
+    if (items.isEmpty) return;
+
+    _ensureAgent();
+    final agent = _agent!;
+    final bufferMsg = StringBuffer()
+      ..writeln('以下 shell 监控触发了 notify_regex（进程仍在运行）：');
+    for (final item in items) {
+      bufferMsg.writeln(
+        buildShellNotifyMessage(
+          jobId: item.job.jobId,
+          callId: item.job.callId,
+          toolName: item.job.toolName,
+          regex: item.regex,
+          matchText: item.matchText,
+        ),
+      );
+    }
+    final prompt = bufferMsg.toString().trim();
+    yield AgentUiUserMessage(prompt);
+    yield const AgentUiStatus('shell 匹配通知已送达，正在继续…');
+
+    final buffer = StringBuffer();
+    await for (final event in agent.runStream([
+      UserMessage.text(prompt),
+    ], cancelToken: _cancelToken)) {
+      yield* _mapStreamingEvent(event, buffer);
+    }
+    if (buffer.isNotEmpty) {
+      yield AgentUiAssistantFinal(buffer.toString());
+    }
+    // Jobs stay registered — process still running until completion.
+    agent.backgroundJobs.syncReminders(agent.state.systemReminders);
+    yield const AgentUiStatus('已完成');
   }
 
   Stream<AgentUiEvent> _reactivateWithBackgroundResults() async* {
@@ -433,6 +561,22 @@ class AgentService {
           buffer.write(text);
           yield AgentUiAssistantDelta(text);
         }
+        final usage = full.usage;
+        final at = DateTime.fromMicrosecondsSinceEpoch(full.timestamp);
+        final started = _modelCallStartedAt;
+        final prompt = usage?.promptTokens ?? 0;
+        final completion = usage?.completionTokens ?? 0;
+        yield AgentUiModelUsage(
+          promptTokens: prompt,
+          completionTokens: completion,
+          totalTokens: usage == null
+              ? null
+              : (usage.totalTokens > 0
+                  ? usage.totalTokens
+                  : prompt + completion),
+          duration: started == null ? null : at.difference(started),
+          at: at,
+        );
       case StreamingEventType.functionCallRequest:
         for (final ui in _flushTurnBeforeTools(buffer)) {
           yield ui;
@@ -473,12 +617,31 @@ class AgentService {
         final data = event.data;
         if (data is FunctionExecutionResultMessage) {
           for (final r in data.results) {
-            final isBackground = r.metadata?['background'] == true;
-            if (isBackground) continue;
             final text = r.content
                 .whereType<TextPart>()
                 .map((p) => p.text)
                 .join('\n');
+            final meta = r.metadata;
+            final isBackground = meta?['background'] == true ||
+                text.contains('"monitoring":true') ||
+                text.contains('"background":true');
+            if (isBackground) {
+              final jobId =
+                  meta?['jobId']?.toString() ??
+                  _jobIdFromToolJson(text) ??
+                  r.id;
+              yield AgentUiToolBackgrounded(
+                name: r.name,
+                jobId: jobId,
+                callId: r.id,
+                stubResult: text,
+              );
+              final n = runningBackgroundJobCount;
+              if (n > 0) {
+                yield AgentUiStatus('工具已转后台：$n 个进行中');
+              }
+              continue;
+            }
             yield AgentUiToolResult(name: r.name, result: text, callId: r.id);
           }
         }
@@ -487,9 +650,11 @@ class AgentService {
         break;
       case StreamingEventType.modelRetrying:
         buffer.clear();
+        _modelCallStartedAt = DateTime.now();
         yield const AgentUiDiscardDraftAssistant();
         yield const AgentUiStatus('正在调用模型…');
       case StreamingEventType.beforeCallModel:
+        _modelCallStartedAt = DateTime.now();
         yield const AgentUiStatus('正在调用模型…');
     }
   }
@@ -647,10 +812,14 @@ class AgentService {
         yield AgentUiAssistantFinal(buffer.toString());
       }
 
-      // Drain completions that finished during this turn before releasing the lock.
-      while (_pendingCompletions.isNotEmpty) {
+      // Drain wakeups that arrived during this turn before releasing the lock.
+      while (_hasPendingBackgroundWakeups) {
         if (_cancelToken?.isCancelled ?? false) break;
-        yield* _reactivateWithBackgroundResults();
+        if (_pendingNotifies.isNotEmpty) {
+          yield* _reactivateWithShellNotifies();
+        } else {
+          yield* _reactivateWithBackgroundResults();
+        }
       }
 
       yield const AgentUiStatus('已完成');
@@ -667,10 +836,20 @@ class AgentService {
     } finally {
       _running = false;
       _cancelToken = null;
-      if (_pendingCompletions.isNotEmpty) {
+      if (_hasPendingBackgroundWakeups) {
         unawaited(_scheduleIdleReactivation());
       }
     }
+  }
+
+  static String? _jobIdFromToolJson(String text) {
+    try {
+      final decoded = jsonDecode(text);
+      if (decoded is Map && decoded['jobId'] != null) {
+        return decoded['jobId'].toString();
+      }
+    } catch (_) {}
+    return null;
   }
 
   /// Close the current UI turn buffer when the model switches to tools.
@@ -692,6 +871,7 @@ class AgentService {
   /// Map persisted [LLMMessage] history into UI events for rehydrate.
   static List<AgentUiEvent> uiEventsFromHistory(List<LLMMessage> messages) {
     final out = <AgentUiEvent>[];
+    LLMMessage? prev;
     for (final m in messages) {
       if (m is UserMessage) {
         final text = m.contents
@@ -700,12 +880,49 @@ class AgentService {
             .join('\n')
             .trim();
         if (text.isNotEmpty) {
-          out.add(AgentUiUserMessage(text));
+          out.add(
+            AgentUiUserMessage(
+              text,
+              at: DateTime.fromMicrosecondsSinceEpoch(m.timestamp),
+            ),
+          );
         }
       } else if (m is ModelMessage) {
+        final usage = m.usage;
+        final at = DateTime.fromMicrosecondsSinceEpoch(m.timestamp);
+        final duration = _durationBetween(prev, m);
         final text = m.textOutput?.trim();
         if (text != null && text.isNotEmpty) {
-          out.add(AgentUiAssistantFinal(text));
+          out.add(
+            AgentUiAssistantFinal(
+              text,
+              promptTokens: usage?.promptTokens,
+              completionTokens: usage?.completionTokens,
+              totalTokens: usage == null
+                  ? null
+                  : (usage.totalTokens > 0
+                      ? usage.totalTokens
+                      : usage.promptTokens + usage.completionTokens),
+              duration: duration,
+              at: at,
+            ),
+          );
+        } else if (usage != null &&
+            (usage.promptTokens > 0 || usage.completionTokens > 0)) {
+          out.add(
+            AgentUiModelUsage(
+              promptTokens: usage.promptTokens,
+              completionTokens: usage.completionTokens,
+              totalTokens: usage.totalTokens > 0
+                  ? usage.totalTokens
+                  : usage.promptTokens + usage.completionTokens,
+              duration: duration,
+              at: at,
+            ),
+          );
+        }
+        if (usage != null && usage.promptTokens > 0) {
+          _attachPromptTokensToLastUserEvent(out, usage.promptTokens);
         }
         for (final call in m.functionCalls) {
           out.add(
@@ -740,8 +957,39 @@ class AgentService {
           }
         }
       }
+      prev = m;
     }
     return out;
+  }
+
+  static Duration? _durationBetween(LLMMessage? prev, ModelMessage next) {
+    if (prev == null) return null;
+    final prevTs = switch (prev) {
+      UserMessage(:final timestamp) => timestamp,
+      ModelMessage(:final timestamp) => timestamp,
+      FunctionExecutionResultMessage(:final timestamp) => timestamp,
+      _ => null,
+    };
+    if (prevTs == null || next.timestamp <= prevTs) return null;
+    return Duration(microseconds: next.timestamp - prevTs);
+  }
+
+  static void _attachPromptTokensToLastUserEvent(
+    List<AgentUiEvent> events,
+    int promptTokens,
+  ) {
+    for (var i = events.length - 1; i >= 0; i--) {
+      final e = events[i];
+      if (e is AgentUiUserMessage) {
+        if (e.promptTokens != null) return;
+        events[i] = AgentUiUserMessage(
+          e.text,
+          promptTokens: promptTokens,
+          at: e.at,
+        );
+        return;
+      }
+    }
   }
 
   void cancel() {
@@ -756,6 +1004,7 @@ class AgentService {
     await _backgroundSub?.cancel();
     _backgroundSub = null;
     _pendingCompletions.clear();
+    _pendingNotifies.clear();
     final current = _agent?.state ?? _pendingState;
     final projectPath = _projectPath;
     if (current != null && _store != null && projectPath != null) {

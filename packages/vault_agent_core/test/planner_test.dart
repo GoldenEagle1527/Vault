@@ -193,6 +193,8 @@ void main() {
         state: state,
         agent: agent,
         batchCallId: 'batch-1',
+        callId: 'call-1',
+        toolName: 'write_todos',
       );
       return runZoned<Future<AgentToolResult>>(
         () async => await (writeTodos.executable as Function)(todos),

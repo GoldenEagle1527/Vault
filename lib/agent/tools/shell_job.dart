@@ -11,6 +11,9 @@ const String kShellJobRunningMarker = '__VAULT_JOB_RUNNING__';
 /// How often the agent shell tool polls a detached guest job.
 const Duration kShellJobPollInterval = Duration(milliseconds: 400);
 
+/// Max chars of job output returned in a poll (tail). Keeps marker frames small.
+const int kShellJobPollOutputTailChars = 120000;
+
 String guestShellJobBase(String jobId) => '$kGuestShellJobsDir/$jobId';
 
 /// Start [command] as a guest background job so PersistentShell is freed immediately.
@@ -36,22 +39,33 @@ printf '%s\\n' "\$_pid"
 '''.trim();
 }
 
-/// Poll script: prints DONE markers + exit/out, or RUNNING + pid.
+/// Poll script: prints DONE or RUNNING, always with current output body.
 String buildPollDetachedShellJobCommand(String jobId) {
   final base = guestShellJobBase(jobId);
   final out = shellSingleQuote('$base.out');
   final exitF = shellSingleQuote('$base.exit');
   final pidF = shellSingleQuote('$base.pid');
+  // Prefer tail of large logs so notify_regex can still see recent lines.
+  final tail = kShellJobPollOutputTailChars;
   return '''
+_out() {
+  if [ -f $out ]; then
+    # BusyBox/coreutils: try tail bytes; fall back to full cat.
+    tail -c $tail $out 2>/dev/null || cat $out 2>/dev/null || true
+  fi
+}
 if [ -f $exitF ]; then
   printf '%s\\n' '$kShellJobDoneMarker'
   cat $exitF
   printf '\\n%s\\n' '$kShellJobOutMarker'
-  cat $out 2>/dev/null || true
+  _out
   printf '\\n%s\\n' '$kShellJobEndMarker'
 else
   printf '%s\\n' '$kShellJobRunningMarker'
-  if [ -f $pidF ]; then cat $pidF; fi
+  if [ -f $pidF ]; then cat $pidF; else printf '\\n'; fi
+  printf '\\n%s\\n' '$kShellJobOutMarker'
+  _out
+  printf '\\n%s\\n' '$kShellJobEndMarker'
 fi
 '''.trim();
 }
@@ -73,10 +87,9 @@ fi
 }
 
 class ShellJobPollResult {
-  const ShellJobPollResult.running({this.pid})
+  const ShellJobPollResult.running({this.pid, this.output})
     : done = false,
-      exitCode = null,
-      output = null;
+      exitCode = null;
 
   const ShellJobPollResult.done({
     required int this.exitCode,
@@ -88,6 +101,21 @@ class ShellJobPollResult {
   final int? exitCode;
   final String? output;
   final String? pid;
+}
+
+String? _extractMarkedOutput(String afterStatus) {
+  final parts = afterStatus.split(kShellJobOutMarker);
+  if (parts.length < 2) return null;
+  var output = parts.sublist(1).join(kShellJobOutMarker);
+  final endIdx = output.indexOf(kShellJobEndMarker);
+  if (endIdx >= 0) {
+    output = output.substring(0, endIdx);
+  }
+  if (output.startsWith('\n')) output = output.substring(1);
+  if (output.endsWith('\n')) {
+    output = output.substring(0, output.length - 1);
+  }
+  return output;
 }
 
 /// Parse stdout from [buildPollDetachedShellJobCommand].
@@ -102,31 +130,56 @@ ShellJobPollResult parseShellJobPollStdout(String stdout) {
         .map((l) => l.trim())
         .firstWhere((l) => l.isNotEmpty, orElse: () => '');
     final exitCode = int.tryParse(exitLine) ?? -1;
-    var output = '';
-    if (parts.length > 1) {
-      output = parts.sublist(1).join(kShellJobOutMarker);
-      final endIdx = output.indexOf(kShellJobEndMarker);
-      if (endIdx >= 0) {
-        output = output.substring(0, endIdx);
-      }
-      if (output.startsWith('\n')) output = output.substring(1);
-      if (output.endsWith('\n')) {
-        output = output.substring(0, output.length - 1);
-      }
-    }
+    final output = _extractMarkedOutput(afterDone) ?? '';
     return ShellJobPollResult.done(exitCode: exitCode, output: output);
   }
   if (text.contains(kShellJobRunningMarker)) {
-    final after = text.split(kShellJobRunningMarker).last.trim();
-    final pidLines = after
+    final after = text.split(kShellJobRunningMarker).last;
+    final beforeOut = after.split(kShellJobOutMarker).first.trim();
+    final pidLines = beforeOut
         .split('\n')
         .map((l) => l.trim())
         .where((l) => l.isNotEmpty);
     final pid = pidLines.isEmpty ? null : pidLines.first;
-    return ShellJobPollResult.running(pid: pid);
+    final output = _extractMarkedOutput(after);
+    return ShellJobPollResult.running(pid: pid, output: output);
   }
   // Unknown — treat as still running so we keep polling.
   return const ShellJobPollResult.running();
+}
+
+/// Find [pattern] in [output] only for matches ending after [alreadyScanned].
+///
+/// Returns the matched substring and the new scan cursor, or null if no match.
+({String match, int scannedThrough})? findNotifyMatch({
+  required String output,
+  required RegExp pattern,
+  required int alreadyScanned,
+}) {
+  if (alreadyScanned < 0) alreadyScanned = 0;
+  if (alreadyScanned > output.length) alreadyScanned = output.length;
+  // Keep a small overlap so patterns spanning the previous boundary still match,
+  // but skip hits that end at/before the previous cursor.
+  var searchFrom = alreadyScanned > 256 ? alreadyScanned - 256 : 0;
+  while (searchFrom <= output.length) {
+    final window = output.substring(searchFrom);
+    final m = pattern.firstMatch(window);
+    if (m == null) return null;
+    final absoluteStart = searchFrom + m.start;
+    final absoluteEnd = searchFrom + m.end;
+    if (absoluteEnd <= alreadyScanned) {
+      searchFrom = absoluteStart + 1;
+      continue;
+    }
+    final excerptStart = absoluteStart > 200 ? absoluteStart - 200 : 0;
+    final excerptEnd =
+        absoluteEnd + 400 < output.length ? absoluteEnd + 400 : output.length;
+    var excerpt = output.substring(excerptStart, excerptEnd);
+    if (excerptStart > 0) excerpt = '…$excerpt';
+    if (excerptEnd < output.length) excerpt = '$excerpt…';
+    return (match: excerpt, scannedThrough: absoluteEnd);
+  }
+  return null;
 }
 
 String newShellJobId() {
