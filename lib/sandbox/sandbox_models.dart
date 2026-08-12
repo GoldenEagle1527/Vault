@@ -47,6 +47,28 @@ class SandboxCapabilities {
 
 enum SandboxBackend { wsl, proot, unsupported }
 
+/// Progress while creating / initializing a new workspace sandbox.
+class WorkspaceInitProgress {
+  const WorkspaceInitProgress({
+    required this.step,
+    required this.totalSteps,
+    required this.label,
+  });
+
+  /// 1-based current step (0 means not started / preparing).
+  final int step;
+  final int totalSteps;
+  final String label;
+
+  double get fraction {
+    if (totalSteps <= 0) return 0;
+    if (step <= 0) return 0;
+    return (step / totalSteps).clamp(0.0, 1.0);
+  }
+}
+
+typedef WorkspaceInitProgressCallback = void Function(WorkspaceInitProgress progress);
+
 /// Metadata for one isolated Linux workspace (WSL distro or proot rootfs).
 class WorkspaceInfo {
   const WorkspaceInfo({

@@ -249,12 +249,26 @@ class ProotProvider implements SandboxProvider {
   }
 
   @override
-  Future<SandboxWorkspace> create(String workspaceId) async {
+  Future<SandboxWorkspace> create(
+    String workspaceId, {
+    WorkspaceInitProgressCallback? onProgress,
+  }) async {
     if (!RegExp(r'^[A-Za-z0-9_-]+$').hasMatch(workspaceId)) {
       throw ArgumentError.value(
         workspaceId,
         'workspaceId',
         '只能包含字母、数字、下划线或连字符',
+      );
+    }
+
+    const totalSteps = 4;
+    void report(int step, String label) {
+      onProgress?.call(
+        WorkspaceInitProgress(
+          step: step,
+          totalSteps: totalSteps,
+          label: label,
+        ),
       );
     }
 
@@ -264,8 +278,14 @@ class ProotProvider implements SandboxProvider {
     }
 
     final rootfs = await _rootfsDir(workspaceId);
+    report(1, '正在解压 Linux 环境…');
     await _extractRootfs(rootfs);
+    report(
+      2,
+      '正在安装 ${kDefaultAlpinePackages.join('、')}…',
+    );
     await _installDefaultPackages(rootfs.path);
+    report(3, '正在初始化工作区…');
     await bootstrapWorkspaceGuest(this, workspaceId);
 
     final meta = await _readMeta();
@@ -277,6 +297,7 @@ class ProotProvider implements SandboxProvider {
     meta['workspaces'] = workspaces;
     await _writeMeta(meta);
 
+    report(4, '正在启动工作区…');
     return attach(workspaceId);
   }
 

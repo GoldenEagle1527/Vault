@@ -12,7 +12,13 @@ export 'package:vault/sandbox/sandbox_models.dart';
 abstract class SandboxProvider {
   Future<SandboxCapabilities> probe();
 
-  Future<SandboxWorkspace> create(String workspaceId);
+  /// Create and initialize a new workspace.
+  ///
+  /// Optional [onProgress] reports coarse steps (extract, packages, bootstrap…).
+  Future<SandboxWorkspace> create(
+    String workspaceId, {
+    WorkspaceInitProgressCallback? onProgress,
+  });
 
   Future<SandboxWorkspace> attach(String workspaceId);
 

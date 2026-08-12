@@ -5,12 +5,14 @@ import 'package:uuid/uuid.dart';
 import 'package:vault/agent/conversation_store.dart';
 import 'package:vault/agent/project_store.dart';
 import 'package:vault/agent/vault_meta_db.dart';
+import 'package:vault/sandbox/network_reachability.dart';
 import 'package:vault/sandbox/sandbox_provider.dart';
 import 'package:vault/permissions/active_workspace_holder.dart';
 import 'package:vault/permissions/offload_permission_dialog.dart';
 import 'package:vault/screens/agent_screen.dart';
 import 'package:vault/screens/settings_screen.dart';
 import 'package:vault/widgets/glass.dart';
+import 'package:vault/widgets/workspace_init_dialog.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({
@@ -158,7 +160,18 @@ class _HomeScreenState extends State<HomeScreen> {
     });
     final id = const Uuid().v4().replaceAll('-', '').substring(0, 12);
     try {
-      final workspace = await widget.provider.create(id);
+      final online = await hasOutboundNetwork();
+      if (!mounted) return;
+      if (!online) {
+        setState(() {
+          _error = '当前无法联网，已取消初始化工作区。请连接网络后重试。';
+        });
+        return;
+      }
+      final workspace = await runWithWorkspaceInitDialog(
+        context: context,
+        action: (report) => widget.provider.create(id, onProgress: report),
+      );
       if (!mounted) return;
       await Navigator.of(context).push(
         MaterialPageRoute(

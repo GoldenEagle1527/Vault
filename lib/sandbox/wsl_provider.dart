@@ -158,12 +158,26 @@ class WslProvider implements SandboxProvider {
   }
 
   @override
-  Future<SandboxWorkspace> create(String workspaceId) async {
+  Future<SandboxWorkspace> create(
+    String workspaceId, {
+    WorkspaceInitProgressCallback? onProgress,
+  }) async {
     if (!RegExp(r'^[A-Za-z0-9_-]+$').hasMatch(workspaceId)) {
       throw ArgumentError.value(
         workspaceId,
         'workspaceId',
         '只能包含字母、数字、下划线或连字符',
+      );
+    }
+
+    const totalSteps = 6;
+    void report(int step, String label) {
+      onProgress?.call(
+        WorkspaceInitProgress(
+          step: step,
+          totalSteps: totalSteps,
+          label: label,
+        ),
       );
     }
 
@@ -180,7 +194,9 @@ class WslProvider implements SandboxProvider {
     }
     await installDir.create(recursive: true);
 
+    report(1, '正在准备 rootfs 镜像…');
     final tarPath = await _materializeRootfsTar();
+    report(2, '正在导入 WSL 发行版…');
     final import = await _wsl([
       '--import',
       name,
@@ -198,8 +214,14 @@ class WslProvider implements SandboxProvider {
 
     // 硬化：不自动挂载 Windows 盘；也不把 Windows PATH 拼进 Linux
     // （automount=false 时翻译 Windows PATH 会失败，交互启动常因此 RPC 报错）。
+    report(3, '正在配置发行版…');
     await _configureDistro(name);
+    report(
+      4,
+      '正在安装 ${kDefaultAlpinePackages.join('、')}…',
+    );
     await _installDefaultPackages(name);
+    report(5, '正在初始化工作区…');
     await _installOffloadBridge(name);
     await bootstrapWorkspaceGuest(this, workspaceId);
     await _wsl(['--terminate', name]);
@@ -216,6 +238,7 @@ class WslProvider implements SandboxProvider {
     meta['workspaces'] = workspaces;
     await _writeMeta(meta);
 
+    report(6, '正在启动工作区…');
     return attach(workspaceId);
   }
 
