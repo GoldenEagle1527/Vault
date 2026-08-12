@@ -19,6 +19,7 @@ export 'src/llm/claude_client.dart';
 export 'src/agent/state_storage.dart';
 export 'src/agent/file_state_storage.dart';
 export 'src/agent/stateful_agent.dart';
+export 'src/agent/background_tool_job.dart';
 export 'src/agent/skill.dart';
 export 'src/agent/planner.dart';
 export 'src/agent/context_compressor.dart';

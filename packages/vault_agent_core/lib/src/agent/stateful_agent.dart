@@ -16,6 +16,7 @@ import 'package:logging/logging.dart';
 import '../core/llm_client.dart';
 import '../core/message.dart';
 import '../core/tool.dart';
+import 'background_tool_job.dart';
 import 'context_compressor.dart';
 import 'planner.dart';
 import 'memory.dart';
@@ -103,12 +104,31 @@ class _ToolCallPhase {
   final FunctionExecutionResultMessage message;
   final List<LLMMessage> injectedMessages;
   final bool shouldStop;
+  final List<BackgroundToolJob> backgroundedJobs;
 
   const _ToolCallPhase({
     required this.message,
     required this.injectedMessages,
     required this.shouldStop,
+    this.backgroundedJobs = const [],
   });
+}
+
+class _ExecuteToolsOutcome {
+  final List<ExecutionToolResult> results;
+  final List<BackgroundToolJob> backgroundedJobs;
+
+  const _ExecuteToolsOutcome({
+    this.results = const [],
+    this.backgroundedJobs = const [],
+  });
+}
+
+class _ToolRaceOutcome {
+  final ExecutionToolResult result;
+  final BackgroundToolJob? backgroundedJob;
+
+  const _ToolRaceOutcome({required this.result, this.backgroundedJob});
 }
 
 class _ModelMessageAccumulator {
@@ -476,6 +496,15 @@ class StatefulAgent {
   /// [loopDetector] (identical tool calls), not on raw turn count.
   final int? maxTurns;
 
+  /// Wall-clock threshold after which an in-flight tool is detached from the
+  /// agent loop (Cursor-style background task).
+  ///
+  /// `null` or [Duration.zero] disables auto-backgrounding.
+  final Duration? toolBackgroundAfter;
+
+  /// Jobs detached via [toolBackgroundAfter].
+  final BackgroundToolJobRegistry backgroundJobs = BackgroundToolJobRegistry();
+
   StatefulAgent({
     required this.name,
     List<String>? systemPrompts,
@@ -500,6 +529,7 @@ class StatefulAgent {
     this.disableSubAgents = false,
     this.maxTurnContinuations = 3,
     this.maxTurns,
+    this.toolBackgroundAfter = const Duration(minutes: 1),
   }) : assert(
          skills == null ||
              skills.isEmpty ||
@@ -1124,6 +1154,13 @@ class StatefulAgent {
           cancelToken: cancelToken,
         );
 
+        for (final job in toolPhase.backgroundedJobs) {
+          yield StreamingEvent(
+            eventType: StreamingEventType.toolBackgrounded,
+            data: job,
+          );
+        }
+
         yield StreamingEvent(
           eventType: StreamingEventType.functionCallResult,
           data: toolPhase.message,
@@ -1513,15 +1550,15 @@ class StatefulAgent {
       }
     }
 
-    final executedResults = callsToExecute.isEmpty
-        ? <ExecutionToolResult>[]
+    final executed = callsToExecute.isEmpty
+        ? const _ExecuteToolsOutcome()
         : await _executeTools(
             callsToExecute,
             availableTools,
             state,
             cancelToken: cancelToken,
           );
-    final executedById = {for (final r in executedResults) r.id: r};
+    final executedById = {for (final r in executed.results) r.id: r};
     final toolExecutionResults = toolCalls
         .map((c) => executedById[c.id] ?? syntheticResults[c.id]!)
         .toList();
@@ -1574,6 +1611,7 @@ class StatefulAgent {
       injectedMessages: injectedMessages,
       shouldStop:
           stopByHook || toolExecutionResults.any((result) => result.stopFlag),
+      backgroundedJobs: executed.backgroundedJobs,
     );
   }
 
@@ -1669,7 +1707,7 @@ class StatefulAgent {
     _logger.info(buffer.toString());
   }
 
-  Future<List<ExecutionToolResult>> _executeTools(
+  Future<_ExecuteToolsOutcome> _executeTools(
     List<FunctionCall> calls,
     List<Tool>? tools,
     AgentState state, {
@@ -1679,163 +1717,285 @@ class StatefulAgent {
     // should be integrated here, because this is the central tool-call execution path.
     // We intentionally do not execute scripts for mobile runtime in this iteration.
     final batchCallId = uuid.v4();
+    final threshold = toolBackgroundAfter;
+    final backgroundEnabled =
+        threshold != null && threshold > Duration.zero;
+
     final futures = calls.map((call) async {
-      final tool = tools?.firstWhere(
-        (t) => t.name == call.name,
-        orElse: () => Tool(name: 'unknown', description: '', parameters: {}),
+      final work = _executeSingleTool(
+        call,
+        tools,
+        state,
+        batchCallId: batchCallId,
+        cancelToken: cancelToken,
       );
-      if (tool == null || tool.executable == null) {
-        return ExecutionToolResult(
-          id: call.id,
-          name: call.name,
-          arguments: call.arguments,
-          content: [TextPart('Function ${call.name} failed or not found.')],
-          isError: true,
-        );
+      if (!backgroundEnabled) {
+        return _ToolRaceOutcome(result: await work);
       }
-
-      try {
-        // Handle positional and named arguments
-        final positionalArgs = <dynamic>[];
-        final namedArgs = <Symbol, dynamic>{};
-
-        Map<String, dynamic> decodedArgs;
-        try {
-          if (call.arguments.trim().isEmpty) {
-            decodedArgs = {};
-          } else {
-            decodedArgs = (jsonDecode(call.arguments) as Map)
-                .cast<String, dynamic>();
-          }
-        } catch (e) {
-          return ExecutionToolResult(
-            id: call.id,
-            name: call.name,
-            arguments: call.arguments,
-            content: [TextPart('Error decoding arguments: $e')],
-            isError: true,
-          );
-        }
-
-        // We need to know which parameters are named and their types.
-        final properties = (tool.parameters['properties'] as Map? ?? {})
-            .cast<String, dynamic>();
-
-        void addArgument(String key, dynamic value) {
-          dynamic castedValue = value;
-          final prop = (properties[key] as Map?)?.cast<String, dynamic>();
-
-          if (prop != null) {
-            final type = prop['type'];
-
-            if (value is List && type == 'array') {
-              final items = (prop['items'] as Map?)?.cast<String, dynamic>();
-              if (items != null) {
-                final itemType = items['type'];
-                if (itemType == 'string') {
-                  castedValue = value.cast<String>();
-                } else if (itemType == 'integer') {
-                  castedValue = value.cast<int>();
-                } else if (itemType == 'number') {
-                  castedValue = value
-                      .map((e) => (e as num).toDouble())
-                      .toList();
-                } else if (itemType == 'boolean') {
-                  castedValue = value.cast<bool>();
-                }
-              }
-            } else if (type == 'integer' && value is num) {
-              castedValue = value.toInt();
-            } else if (type == 'number' && value is num) {
-              castedValue = value.toDouble();
-            }
-          }
-
-          if (tool.namedParameters.contains(key)) {
-            namedArgs[Symbol(key)] = castedValue;
-          } else {
-            positionalArgs.add(castedValue);
-          }
-        }
-
-        // Logic: Iterate over keys defined in Schema (ordered)
-        for (var key in properties.keys) {
-          if (decodedArgs.containsKey(key)) {
-            addArgument(key, decodedArgs[key]);
-          } else {
-            // Missing argument handling
-            if (!tool.namedParameters.contains(key)) {
-              // Vital: Positional arg missing in JSON. Must pad with null to maintain alignment.
-              positionalArgs.add(null);
-            }
-          }
-        }
-
-        final result = runZoned(
-          () {
-            if (tool.parameterMode == ToolParameterMode.object) {
-              // Object parameter mode: pass the decoded args Map directly
-              return tool.executable!(decodedArgs);
-            }
-            // Function parameter mode: use Function.apply with positional and named args
-            return Function.apply(tool.executable!, positionalArgs, namedArgs);
-          },
-          zoneValues: {
-            AgentCallToolContext.zoneKey: AgentCallToolContext(
-              state: state,
-              agent: this,
-              batchCallId: batchCallId,
-              cancelToken: cancelToken,
-            ),
-          },
-        );
-
-        dynamic resultValue;
-        // Handle Futures if the tool returns a Future
-        if (result is Future) {
-          resultValue = (await result);
-        } else {
-          resultValue = result;
-        }
-        bool stopFlag = false;
-        List<UserContentPart> resultContent = [];
-        Map<String, dynamic>? metadata;
-        if (resultValue is AgentToolResult) {
-          if (resultValue.content != null) {
-            resultContent.add(resultValue.content!);
-          }
-          if (resultValue.contents != null) {
-            resultContent.addAll(resultValue.contents!);
-          }
-          stopFlag = resultValue.stopFlag;
-          metadata = resultValue.metadata;
-        } else {
-          resultContent.add(TextPart(resultValue.toString()));
-        }
-        return ExecutionToolResult(
-          id: call.id,
-          name: call.name,
-          arguments: call.arguments,
-          content: resultContent,
-          stopFlag: stopFlag,
-          isError: false,
-          metadata: metadata,
-        );
-      } catch (e) {
-        _logger.severe(
-          '[$name] ❌ Error executing ${call.name} with args ${call.arguments}: $e',
-        );
-        return ExecutionToolResult(
-          id: call.id,
-          name: call.name,
-          arguments: call.arguments,
-          content: [TextPart('Error executing ${call.name}: $e')],
-          isError: true,
-        );
-      }
+      return _raceToolAgainstBackground(call, work, threshold);
     });
 
-    return Future.wait(futures);
+    final raced = await Future.wait(futures);
+    final results = <ExecutionToolResult>[];
+    final backgrounded = <BackgroundToolJob>[];
+    for (final item in raced) {
+      results.add(item.result);
+      final job = item.backgroundedJob;
+      if (job != null) backgrounded.add(job);
+    }
+    return _ExecuteToolsOutcome(
+      results: results,
+      backgroundedJobs: backgrounded,
+    );
+  }
+
+  Future<_ToolRaceOutcome> _raceToolAgainstBackground(
+    FunctionCall call,
+    Future<ExecutionToolResult> work,
+    Duration threshold,
+  ) async {
+    final gate = Completer<ExecutionToolResult>();
+    var backgrounded = false;
+    late final String jobId;
+
+    work.then(
+      (result) {
+        if (backgrounded) {
+          _finishBackgroundJob(jobId, result);
+        } else if (!gate.isCompleted) {
+          gate.complete(result);
+        }
+      },
+      onError: (Object error, StackTrace stack) {
+        final failed = ExecutionToolResult(
+          id: call.id,
+          name: call.name,
+          arguments: call.arguments,
+          content: [TextPart('Error executing ${call.name}: $error')],
+          isError: true,
+        );
+        if (backgrounded) {
+          backgroundJobs.fail(jobId, error, result: _toFunctionResult(failed));
+          backgroundJobs.syncReminders(state.systemReminders);
+        } else if (!gate.isCompleted) {
+          gate.complete(failed);
+        }
+      },
+    );
+
+    final raced = await Future.any<ExecutionToolResult?>([
+      gate.future,
+      Future<ExecutionToolResult?>.delayed(threshold, () => null),
+    ]);
+
+    if (raced != null) {
+      return _ToolRaceOutcome(result: raced);
+    }
+    if (gate.isCompleted) {
+      return _ToolRaceOutcome(result: await gate.future);
+    }
+
+    backgrounded = true;
+    jobId = uuid.v4();
+    final job = backgroundJobs.register(
+      jobId: jobId,
+      callId: call.id,
+      toolName: call.name,
+      arguments: call.arguments,
+    );
+    backgroundJobs.syncReminders(state.systemReminders);
+
+    final stub = ExecutionToolResult(
+      id: call.id,
+      name: call.name,
+      arguments: call.arguments,
+      content: [
+        TextPart(
+          buildBackgroundToolStubText(
+            toolName: call.name,
+            jobId: jobId,
+            callId: call.id,
+            threshold: threshold,
+            runningJobs: backgroundJobs.runningJobs,
+          ),
+        ),
+      ],
+      metadata: {
+        'background': true,
+        'jobId': jobId,
+        'callId': call.id,
+      },
+    );
+    return _ToolRaceOutcome(result: stub, backgroundedJob: job);
+  }
+
+  void _finishBackgroundJob(String jobId, ExecutionToolResult result) {
+    backgroundJobs.complete(jobId, _toFunctionResult(result));
+    backgroundJobs.syncReminders(state.systemReminders);
+  }
+
+  FunctionExecutionResult _toFunctionResult(ExecutionToolResult result) {
+    return FunctionExecutionResult(
+      id: result.id,
+      name: result.name,
+      isError: result.isError,
+      arguments: result.arguments,
+      content: result.content,
+      metadata: result.metadata,
+    );
+  }
+
+  Future<ExecutionToolResult> _executeSingleTool(
+    FunctionCall call,
+    List<Tool>? tools,
+    AgentState state, {
+    required String batchCallId,
+    CancelToken? cancelToken,
+  }) async {
+    final tool = tools?.firstWhere(
+      (t) => t.name == call.name,
+      orElse: () => Tool(name: 'unknown', description: '', parameters: {}),
+    );
+    if (tool == null || tool.executable == null) {
+      return ExecutionToolResult(
+        id: call.id,
+        name: call.name,
+        arguments: call.arguments,
+        content: [TextPart('Function ${call.name} failed or not found.')],
+        isError: true,
+      );
+    }
+
+    try {
+      final positionalArgs = <dynamic>[];
+      final namedArgs = <Symbol, dynamic>{};
+
+      Map<String, dynamic> decodedArgs;
+      try {
+        if (call.arguments.trim().isEmpty) {
+          decodedArgs = {};
+        } else {
+          decodedArgs =
+              (jsonDecode(call.arguments) as Map).cast<String, dynamic>();
+        }
+      } catch (e) {
+        return ExecutionToolResult(
+          id: call.id,
+          name: call.name,
+          arguments: call.arguments,
+          content: [TextPart('Error decoding arguments: $e')],
+          isError: true,
+        );
+      }
+
+      final properties =
+          (tool.parameters['properties'] as Map? ?? {}).cast<String, dynamic>();
+
+      void addArgument(String key, dynamic value) {
+        dynamic castedValue = value;
+        final prop = (properties[key] as Map?)?.cast<String, dynamic>();
+
+        if (prop != null) {
+          final type = prop['type'];
+
+          if (value is List && type == 'array') {
+            final items = (prop['items'] as Map?)?.cast<String, dynamic>();
+            if (items != null) {
+              final itemType = items['type'];
+              if (itemType == 'string') {
+                castedValue = value.cast<String>();
+              } else if (itemType == 'integer') {
+                castedValue = value.cast<int>();
+              } else if (itemType == 'number') {
+                castedValue =
+                    value.map((e) => (e as num).toDouble()).toList();
+              } else if (itemType == 'boolean') {
+                castedValue = value.cast<bool>();
+              }
+            }
+          } else if (type == 'integer' && value is num) {
+            castedValue = value.toInt();
+          } else if (type == 'number' && value is num) {
+            castedValue = value.toDouble();
+          }
+        }
+
+        if (tool.namedParameters.contains(key)) {
+          namedArgs[Symbol(key)] = castedValue;
+        } else {
+          positionalArgs.add(castedValue);
+        }
+      }
+
+      for (var key in properties.keys) {
+        if (decodedArgs.containsKey(key)) {
+          addArgument(key, decodedArgs[key]);
+        } else {
+          if (!tool.namedParameters.contains(key)) {
+            positionalArgs.add(null);
+          }
+        }
+      }
+
+      final result = runZoned(
+        () {
+          if (tool.parameterMode == ToolParameterMode.object) {
+            return tool.executable!(decodedArgs);
+          }
+          return Function.apply(tool.executable!, positionalArgs, namedArgs);
+        },
+        zoneValues: {
+          AgentCallToolContext.zoneKey: AgentCallToolContext(
+            state: state,
+            agent: this,
+            batchCallId: batchCallId,
+            cancelToken: cancelToken,
+          ),
+        },
+      );
+
+      dynamic resultValue;
+      if (result is Future) {
+        resultValue = await result;
+      } else {
+        resultValue = result;
+      }
+      var stopFlag = false;
+      final resultContent = <UserContentPart>[];
+      Map<String, dynamic>? metadata;
+      if (resultValue is AgentToolResult) {
+        if (resultValue.content != null) {
+          resultContent.add(resultValue.content!);
+        }
+        if (resultValue.contents != null) {
+          resultContent.addAll(resultValue.contents!);
+        }
+        stopFlag = resultValue.stopFlag;
+        metadata = resultValue.metadata;
+      } else {
+        resultContent.add(TextPart(resultValue.toString()));
+      }
+      return ExecutionToolResult(
+        id: call.id,
+        name: call.name,
+        arguments: call.arguments,
+        content: resultContent,
+        stopFlag: stopFlag,
+        isError: false,
+        metadata: metadata,
+      );
+    } catch (e) {
+      _logger.severe(
+        '[$name] ❌ Error executing ${call.name} with args ${call.arguments}: $e',
+      );
+      return ExecutionToolResult(
+        id: call.id,
+        name: call.name,
+        arguments: call.arguments,
+        content: [TextPart('Error executing ${call.name}: $e')],
+        isError: true,
+      );
+    }
   }
 
   bool isSuspend(DioException error) {

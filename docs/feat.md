@@ -32,6 +32,7 @@
 | F6 | Differencing VHD（Windows 磁盘） | P3 / 延后 | 明确不做于 MVP |
 | F7 | Docker 后端 / 桌面 Linux / iOS | 不做（当前） | 计划外 |
 | F8 | Native Offload + API 权限组 | P1 | Wave0–4 已落地（Wave4=Android a11y/shizuku 骨架，默认 NOT_ALLOWED） |
+| F9 | Agent 工具自动后台（Cursor 模式） | P1 | ✅ 2026-08-11：超 1 分钟转后台，空闲注入结果并重开一轮 |
 
 ---
 
@@ -203,6 +204,23 @@ lib/screens/
 | **4** | Android `a11y`、`shizuku`（可选）；统测扩表 | 骨架已落地（status/smoke；默认 NOT_ALLOWED） |
 
 **不要做：** 见 [`vault-permission-api.md`](./vault-permission-api.md) Non-goals；尤其不要做 iOS、不要把 OS 权限弹窗逻辑塞进 guest、不要另起一套与注册表无关的 ad-hoc MethodChannel。
+
+---
+
+## F9 — Agent 工具自动后台（Cursor 模式）（P1）
+
+**状态：** ✅ 2026-08-11 已落地。
+
+**行为：**
+
+1. `StatefulAgent.toolBackgroundAfter`（默认 1 分钟）内未完成的工具 → 立即向模型返回「已转后台」stub（含 `jobId`），工具 Future 继续跑  
+2. Agent 轮次与 UI `_running` 释放，用户可继续对话  
+3. 任务结束：模型空闲则自动注入 `<background-task-result>` 并重开一轮；忙碌则排队，当前轮结束后再注入  
+4. Shell 墙钟超时提高到 60 分钟（高于后台阈值），避免后台任务被误杀  
+5. Shell 以 guest **分离任务 + 短轮询**执行：长命令不占用 PersistentShell 队列，后续 `shell` 可并行  
+6. **不新增** Android FGS
+
+**关键文件：** `packages/vault_agent_core/.../background_tool_job.dart`、`stateful_agent.dart`；`lib/agent/agent_service.dart`、`shell_tool.dart`、`shell_job.dart`、`agent_screen.dart`
 
 ---
 

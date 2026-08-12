@@ -39,15 +39,55 @@ class AgentUiDiscardDraftAssistant extends AgentUiEvent {
 }
 
 class AgentUiToolCall extends AgentUiEvent {
-  const AgentUiToolCall({required this.name, required this.arguments});
+  const AgentUiToolCall({
+    required this.name,
+    required this.arguments,
+    this.callId,
+  });
   final String name;
   final String arguments;
+  final String? callId;
 }
 
 class AgentUiToolResult extends AgentUiEvent {
-  const AgentUiToolResult({required this.name, required this.result});
+  const AgentUiToolResult({
+    required this.name,
+    required this.result,
+    this.callId,
+  });
   final String name;
   final String result;
+  final String? callId;
+}
+
+/// Tool exceeded the background threshold and is still running.
+class AgentUiToolBackgrounded extends AgentUiEvent {
+  const AgentUiToolBackgrounded({
+    required this.name,
+    required this.jobId,
+    required this.callId,
+    required this.stubResult,
+  });
+  final String name;
+  final String jobId;
+  final String callId;
+  final String stubResult;
+}
+
+/// Previously backgrounded tool finished (UI card update; model may react next).
+class AgentUiToolBackgroundCompleted extends AgentUiEvent {
+  const AgentUiToolBackgroundCompleted({
+    required this.name,
+    required this.jobId,
+    required this.callId,
+    required this.result,
+    required this.isError,
+  });
+  final String name;
+  final String jobId;
+  final String callId;
+  final String result;
+  final bool isError;
 }
 
 class AgentUiError extends AgentUiEvent {
@@ -142,9 +182,21 @@ class AgentService {
   String? _projectPath;
   CancelToken? _cancelToken;
   bool _running = false;
+  StreamSubscription<BackgroundToolJobEvent>? _backgroundSub;
+  final List<BackgroundToolJob> _pendingCompletions = [];
+  final StreamController<AgentUiEvent> _backgroundUi =
+      StreamController<AgentUiEvent>.broadcast();
+  bool _reactivationScheduled = false;
 
   /// Sandbox / workspace id (same value as [SandboxWorkspace.workspaceId]).
   String get workspaceId => _workspace.workspaceId;
+
+  /// Events from idle background-task reactivation (listen alongside [run]).
+  Stream<AgentUiEvent> get backgroundUiEvents => _backgroundUi.stream;
+
+  /// Tools still running after the agent loop released them.
+  int get runningBackgroundJobCount =>
+      _agent?.backgroundJobs.runningJobs.length ?? 0;
 
   String? get projectPath => _projectPath;
 
@@ -265,7 +317,181 @@ class AgentService {
       ),
       controller: AgentController(),
       autoSaveStateFunc: _store == null ? null : (s) => _persistIfNeeded(s),
+      toolBackgroundAfter: kAgentToolBackgroundAfter,
     );
+    _attachBackgroundJobListener(_agent!);
+  }
+
+  void _attachBackgroundJobListener(StatefulAgent agent) {
+    unawaited(_backgroundSub?.cancel());
+    _backgroundSub = agent.backgroundJobs.events.listen(_onBackgroundJobEvent);
+  }
+
+  void _onBackgroundJobEvent(BackgroundToolJobEvent event) {
+    if (event.kind != BackgroundToolJobEventKind.completed) return;
+    final job = event.job;
+    _pendingCompletions.add(job);
+    if (!_backgroundUi.isClosed) {
+      _backgroundUi.add(
+        AgentUiToolBackgroundCompleted(
+          name: job.toolName,
+          jobId: job.jobId,
+          callId: job.callId,
+          result: job.resultText(),
+          isError: job.status == BackgroundToolJobStatus.failed ||
+              (job.result?.isError ?? false),
+        ),
+      );
+      final n = runningBackgroundJobCount;
+      _backgroundUi.add(
+        AgentUiStatus(n == 0 ? '后台任务已完成' : '后台任务进行中：$n'),
+      );
+    }
+    if (!_running) {
+      unawaited(_scheduleIdleReactivation());
+    }
+  }
+
+  Future<void> _scheduleIdleReactivation() async {
+    if (_reactivationScheduled) return;
+    _reactivationScheduled = true;
+    try {
+      await Future<void>.delayed(Duration.zero);
+      while (!_running && _pendingCompletions.isNotEmpty) {
+        if (!_settings.isConfigured) {
+          _pendingCompletions.clear();
+          return;
+        }
+        _running = true;
+        _cancelToken = CancelToken();
+        try {
+          await for (final event in _reactivateWithBackgroundResults()) {
+            if (!_backgroundUi.isClosed) {
+              _backgroundUi.add(event);
+            }
+          }
+        } catch (e) {
+          if (!_backgroundUi.isClosed) {
+            _backgroundUi.add(AgentUiError(_mapError(e)));
+          }
+        } finally {
+          _running = false;
+          _cancelToken = null;
+        }
+      }
+    } finally {
+      _reactivationScheduled = false;
+      if (!_running && _pendingCompletions.isNotEmpty) {
+        unawaited(_scheduleIdleReactivation());
+      }
+    }
+  }
+
+  Stream<AgentUiEvent> _reactivateWithBackgroundResults() async* {
+    final jobs = List<BackgroundToolJob>.from(_pendingCompletions);
+    _pendingCompletions.clear();
+    if (jobs.isEmpty) return;
+
+    _ensureAgent();
+    final agent = _agent!;
+    final prompt = buildBackgroundTaskResultMessage(jobs);
+    yield AgentUiUserMessage(prompt);
+    yield const AgentUiStatus('后台任务结果已送达，正在继续…');
+
+    final buffer = StringBuffer();
+    await for (final event in agent.runStream([
+      UserMessage.text(prompt),
+    ], cancelToken: _cancelToken)) {
+      yield* _mapStreamingEvent(event, buffer);
+    }
+    if (buffer.isNotEmpty) {
+      yield AgentUiAssistantFinal(buffer.toString());
+    }
+    for (final job in jobs) {
+      agent.backgroundJobs.remove(job.jobId);
+    }
+    agent.backgroundJobs.syncReminders(agent.state.systemReminders);
+    yield const AgentUiStatus('已完成');
+  }
+
+  Stream<AgentUiEvent> _mapStreamingEvent(
+    StreamingEvent event,
+    StringBuffer buffer,
+  ) async* {
+    switch (event.eventType) {
+      case StreamingEventType.modelChunkMessage:
+        final chunk = event.data as ModelMessage;
+        final text = chunk.textOutput;
+        if (text != null && text.isNotEmpty) {
+          buffer.write(text);
+          yield AgentUiAssistantDelta(text);
+        }
+      case StreamingEventType.fullModelMessage:
+        final full = event.data as ModelMessage;
+        final text = full.textOutput;
+        if (text != null && text.isNotEmpty && buffer.isEmpty) {
+          buffer.write(text);
+          yield AgentUiAssistantDelta(text);
+        }
+      case StreamingEventType.functionCallRequest:
+        for (final ui in _flushTurnBeforeTools(buffer)) {
+          yield ui;
+        }
+        final calls = event.data;
+        final list = calls is List<FunctionCall>
+            ? calls
+            : calls is List
+            ? calls.whereType<FunctionCall>().toList()
+            : const <FunctionCall>[];
+        for (final call in list) {
+          yield AgentUiToolCall(
+            name: call.name,
+            arguments: call.arguments,
+            callId: call.id,
+          );
+          yield AgentUiStatus('正在执行工具：${call.name}');
+        }
+      case StreamingEventType.toolBackgrounded:
+        final job = event.data;
+        if (job is BackgroundToolJob) {
+          yield AgentUiToolBackgrounded(
+            name: job.toolName,
+            jobId: job.jobId,
+            callId: job.callId,
+            stubResult: buildBackgroundToolStubText(
+              toolName: job.toolName,
+              jobId: job.jobId,
+              callId: job.callId,
+              threshold: kAgentToolBackgroundAfter,
+              runningJobs: _agent?.backgroundJobs.runningJobs ?? [job],
+            ),
+          );
+          final n = runningBackgroundJobCount;
+          yield AgentUiStatus('工具已转后台：$n 个进行中');
+        }
+      case StreamingEventType.functionCallResult:
+        final data = event.data;
+        if (data is FunctionExecutionResultMessage) {
+          for (final r in data.results) {
+            final isBackground = r.metadata?['background'] == true;
+            if (isBackground) continue;
+            final text = r.content
+                .whereType<TextPart>()
+                .map((p) => p.text)
+                .join('\n');
+            yield AgentUiToolResult(name: r.name, result: text, callId: r.id);
+          }
+        }
+      case StreamingEventType.toolBackgroundCompleted:
+        // Delivered via [backgroundJobs.events] → [_onBackgroundJobEvent].
+        break;
+      case StreamingEventType.modelRetrying:
+        buffer.clear();
+        yield const AgentUiDiscardDraftAssistant();
+        yield const AgentUiStatus('正在调用模型…');
+      case StreamingEventType.beforeCallModel:
+        yield const AgentUiStatus('正在调用模型…');
+    }
   }
 
   /// Bind to [projectPath] and load its active conversation.
@@ -358,6 +584,8 @@ class AgentService {
   /// Runs one user turn; yields UI events until complete, cancelled, or failed.
   ///
   /// [attachments] are copied into the guest [kGuestInboxDir] before the model runs.
+  /// Completions that arrive while this turn is active are drained at the end
+  /// of the stream; later idle completions go to [backgroundUiEvents].
   Stream<AgentUiEvent> run(
     String userText, {
     List<AgentAttachment> attachments = const [],
@@ -398,8 +626,6 @@ class AgentService {
       yield const AgentUiStatus('正在思考…');
       _ensureAgent();
       final agent = _agent!;
-      // Per model-turn buffer. Cleared on tool calls so preamble whitespace from
-      // a tool-using turn does not prefix the final user-facing reply.
       final buffer = StringBuffer();
 
       final context = buildAttachmentContextMessage(
@@ -414,70 +640,19 @@ class AgentService {
       await for (final event in agent.runStream([
         UserMessage.text(prompt),
       ], cancelToken: _cancelToken)) {
-        switch (event.eventType) {
-          case StreamingEventType.modelChunkMessage:
-            final chunk = event.data as ModelMessage;
-            final text = chunk.textOutput;
-            // Pass model text through unchanged.
-            if (text != null && text.isNotEmpty) {
-              buffer.write(text);
-              yield AgentUiAssistantDelta(text);
-            }
-          case StreamingEventType.fullModelMessage:
-            final full = event.data as ModelMessage;
-            final text = full.textOutput;
-            if (text != null && text.isNotEmpty && buffer.isEmpty) {
-              buffer.write(text);
-              yield AgentUiAssistantDelta(text);
-            }
-          case StreamingEventType.functionCallRequest:
-            // End this model-turn's UI buffer. Do not rewrite text — only
-            // choose whether the draft bubble stays (has content) or is dropped
-            // (whitespace-only preamble before tools).
-            for (final ui in _flushTurnBeforeTools(buffer)) {
-              yield ui;
-            }
-            final calls = event.data;
-            if (calls is List<FunctionCall>) {
-              for (final call in calls) {
-                yield AgentUiToolCall(
-                  name: call.name,
-                  arguments: call.arguments,
-                );
-                yield AgentUiStatus('正在执行工具：${call.name}');
-              }
-            } else if (calls is List) {
-              for (final call in calls.whereType<FunctionCall>()) {
-                yield AgentUiToolCall(
-                  name: call.name,
-                  arguments: call.arguments,
-                );
-                yield AgentUiStatus('正在执行工具：${call.name}');
-              }
-            }
-          case StreamingEventType.functionCallResult:
-            final data = event.data;
-            if (data is FunctionExecutionResultMessage) {
-              for (final r in data.results) {
-                final text = r.content
-                    .whereType<TextPart>()
-                    .map((p) => p.text)
-                    .join('\n');
-                yield AgentUiToolResult(name: r.name, result: text);
-              }
-            }
-          case StreamingEventType.modelRetrying:
-            buffer.clear();
-            yield const AgentUiDiscardDraftAssistant();
-            yield const AgentUiStatus('正在调用模型…');
-          case StreamingEventType.beforeCallModel:
-            yield const AgentUiStatus('正在调用模型…');
-        }
+        yield* _mapStreamingEvent(event, buffer);
       }
 
       if (buffer.isNotEmpty) {
         yield AgentUiAssistantFinal(buffer.toString());
       }
+
+      // Drain completions that finished during this turn before releasing the lock.
+      while (_pendingCompletions.isNotEmpty) {
+        if (_cancelToken?.isCancelled ?? false) break;
+        yield* _reactivateWithBackgroundResults();
+      }
+
       yield const AgentUiStatus('已完成');
     } on AgentException catch (e) {
       if (e.code == AgentExceptionCode.cancelled) {
@@ -492,6 +667,9 @@ class AgentService {
     } finally {
       _running = false;
       _cancelToken = null;
+      if (_pendingCompletions.isNotEmpty) {
+        unawaited(_scheduleIdleReactivation());
+      }
     }
   }
 
@@ -530,7 +708,13 @@ class AgentService {
           out.add(AgentUiAssistantFinal(text));
         }
         for (final call in m.functionCalls) {
-          out.add(AgentUiToolCall(name: call.name, arguments: call.arguments));
+          out.add(
+            AgentUiToolCall(
+              name: call.name,
+              arguments: call.arguments,
+              callId: call.id,
+            ),
+          );
         }
       } else if (m is FunctionExecutionResultMessage) {
         for (final r in m.results) {
@@ -538,7 +722,22 @@ class AgentService {
               .whereType<TextPart>()
               .map((p) => p.text)
               .join('\n');
-          out.add(AgentUiToolResult(name: r.name, result: text));
+          final isBackground = r.metadata?['background'] == true;
+          if (isBackground) {
+            final jobId = r.metadata?['jobId']?.toString() ?? r.id;
+            out.add(
+              AgentUiToolBackgrounded(
+                name: r.name,
+                jobId: jobId,
+                callId: r.id,
+                stubResult: text,
+              ),
+            );
+          } else {
+            out.add(
+              AgentUiToolResult(name: r.name, result: text, callId: r.id),
+            );
+          }
         }
       }
     }
@@ -554,6 +753,9 @@ class AgentService {
 
   Future<void> dispose() async {
     cancel();
+    await _backgroundSub?.cancel();
+    _backgroundSub = null;
+    _pendingCompletions.clear();
     final current = _agent?.state ?? _pendingState;
     final projectPath = _projectPath;
     if (current != null && _store != null && projectPath != null) {
@@ -563,8 +765,12 @@ class AgentService {
         // Best-effort flush on leave.
       }
     }
+    _agent?.backgroundJobs.dispose();
     _agent = null;
     _pendingState = null;
+    if (!_backgroundUi.isClosed) {
+      await _backgroundUi.close();
+    }
   }
 
   /// Visible for unit tests. Prefer calling via settings save path in production.

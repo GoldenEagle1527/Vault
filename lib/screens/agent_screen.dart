@@ -47,12 +47,18 @@ class _ChatItem {
     this.toolName,
     this.toolArguments,
     this.toolResult,
+    this.toolCallId,
+    this.toolJobId,
+    this.toolBackgrounded = false,
   });
 
   factory _ChatItem.tool({
     required String name,
     required String arguments,
     String? result,
+    String? callId,
+    String? jobId,
+    bool backgrounded = false,
   }) {
     return _ChatItem(
       kind: _ChatKind.tool,
@@ -60,6 +66,9 @@ class _ChatItem {
       toolName: name,
       toolArguments: arguments,
       toolResult: result,
+      toolCallId: callId,
+      toolJobId: jobId,
+      toolBackgrounded: backgrounded,
     );
   }
 
@@ -68,6 +77,9 @@ class _ChatItem {
   final String? toolName;
   final String? toolArguments;
   String? toolResult;
+  String? toolCallId;
+  String? toolJobId;
+  bool toolBackgrounded;
 }
 
 enum _ChatKind { user, assistant, tool, status, error }
@@ -93,6 +105,7 @@ class _AgentScreenState extends State<AgentScreen> {
   bool _promptedNewProject = false;
   /// 0 项目 · 1 会话 · 2 站点 · 3 工具
   int _sideTabIndex = 0;
+  StreamSubscription<AgentUiEvent>? _backgroundUiSub;
 
   String get _activeProjectName {
     final path = _activeProjectPath;
@@ -135,6 +148,7 @@ class _AgentScreenState extends State<AgentScreen> {
           conversationStore: _conversationStore,
           projectStore: _projectStore,
         );
+        _bindBackgroundUi(_service);
         _conversations = const [];
         _activeConversationId = null;
         _conversationTitle = kNewConversationTitle;
@@ -164,6 +178,7 @@ class _AgentScreenState extends State<AgentScreen> {
           projectPath: active,
         );
         _service = service;
+        _bindBackgroundUi(service);
         await _refreshConversationList();
         _hydrateFromService();
         if (!settings.isConfigured) {
@@ -227,6 +242,27 @@ class _AgentScreenState extends State<AgentScreen> {
     _activeConversationId = service.conversationId;
   }
 
+  void _bindBackgroundUi(AgentService? service) {
+    unawaited(_backgroundUiSub?.cancel());
+    _backgroundUiSub = null;
+    if (service == null) return;
+    _backgroundUiSub = service.backgroundUiEvents.listen((event) {
+      if (!mounted) return;
+      if (event is AgentUiStatus &&
+          event.message == '后台任务结果已送达，正在继续…') {
+        _running = true;
+      }
+      _applyLiveEvent(event);
+      if (event is AgentUiStatus && event.message == '已完成') {
+        _running = false;
+        _status = null;
+      }
+      _conversationTitle = service.conversationTitle;
+      setState(() {});
+      _scrollToEnd();
+    });
+  }
+
   void _applyRestoredEvent(AgentUiEvent event) {
     switch (event) {
       case AgentUiUserMessage(:final text):
@@ -235,10 +271,37 @@ class _AgentScreenState extends State<AgentScreen> {
         _items.add(_ChatItem(kind: _ChatKind.assistant, text: text));
       case AgentUiAssistantDelta(:final text):
         _items.add(_ChatItem(kind: _ChatKind.assistant, text: text));
-      case AgentUiToolCall(:final name, :final arguments):
-        _items.add(_ChatItem.tool(name: name, arguments: arguments));
-      case AgentUiToolResult(:final name, :final result):
-        _attachToolResult(name, result);
+      case AgentUiToolCall(:final name, :final arguments, :final callId):
+        _items.add(
+          _ChatItem.tool(name: name, arguments: arguments, callId: callId),
+        );
+      case AgentUiToolResult(:final name, :final result, :final callId):
+        _attachToolResult(name, result, callId: callId);
+      case AgentUiToolBackgrounded(
+        :final name,
+        :final jobId,
+        :final callId,
+        :final stubResult,
+      ):
+        _markToolBackgrounded(
+          name: name,
+          jobId: jobId,
+          callId: callId,
+          stubResult: stubResult,
+        );
+      case AgentUiToolBackgroundCompleted(
+        :final name,
+        :final jobId,
+        :final callId,
+        :final result,
+      ):
+        _attachToolResult(
+          name,
+          result,
+          callId: callId,
+          jobId: jobId,
+          clearBackgrounded: true,
+        );
       case AgentUiError(:final message):
         _items.add(_ChatItem(kind: _ChatKind.error, text: message));
       case AgentUiStatus():
@@ -247,17 +310,128 @@ class _AgentScreenState extends State<AgentScreen> {
     }
   }
 
-  void _attachToolResult(String name, String result) {
+  void _applyLiveEvent(AgentUiEvent event) {
+    switch (event) {
+      case AgentUiUserMessage(:final text):
+        _items.add(_ChatItem(kind: _ChatKind.user, text: text));
+      case AgentUiAssistantDelta(:final text):
+        if (_items.isNotEmpty && _items.last.kind == _ChatKind.assistant) {
+          _items.last.text += text;
+        } else {
+          _items.add(_ChatItem(kind: _ChatKind.assistant, text: text));
+        }
+      case AgentUiAssistantFinal(:final text):
+        if (_items.isNotEmpty && _items.last.kind == _ChatKind.assistant) {
+          _items.last.text = text;
+        } else {
+          _items.add(_ChatItem(kind: _ChatKind.assistant, text: text));
+        }
+      case AgentUiDiscardDraftAssistant():
+        _discardBlankAssistantDraft();
+      case AgentUiToolCall(:final name, :final arguments, :final callId):
+        _discardBlankAssistantDraft();
+        _items.add(
+          _ChatItem.tool(name: name, arguments: arguments, callId: callId),
+        );
+      case AgentUiToolResult(:final name, :final result, :final callId):
+        _attachToolResult(name, result, callId: callId);
+      case AgentUiToolBackgrounded(
+        :final name,
+        :final jobId,
+        :final callId,
+        :final stubResult,
+      ):
+        _markToolBackgrounded(
+          name: name,
+          jobId: jobId,
+          callId: callId,
+          stubResult: stubResult,
+        );
+      case AgentUiToolBackgroundCompleted(
+        :final name,
+        :final jobId,
+        :final callId,
+        :final result,
+      ):
+        _attachToolResult(
+          name,
+          result,
+          callId: callId,
+          jobId: jobId,
+          clearBackgrounded: true,
+        );
+      case AgentUiError(:final message):
+        _items.add(_ChatItem(kind: _ChatKind.error, text: message));
+      case AgentUiStatus(:final message):
+        _status = message;
+    }
+  }
+
+  void _markToolBackgrounded({
+    required String name,
+    required String jobId,
+    required String callId,
+    required String stubResult,
+  }) {
     for (var i = _items.length - 1; i >= 0; i--) {
       final item = _items[i];
-      if (item.kind == _ChatKind.tool &&
+      if (item.kind != _ChatKind.tool) continue;
+      final idMatch =
+          item.toolCallId == callId ||
+          (item.toolCallId == null &&
+              item.toolName == name &&
+              item.toolResult == null &&
+              !item.toolBackgrounded);
+      if (!idMatch) continue;
+      item.toolCallId ??= callId;
+      item.toolJobId = jobId;
+      item.toolBackgrounded = true;
+      // Keep result null so the card stays in "running/background" visual state.
+      return;
+    }
+    _items.add(
+      _ChatItem.tool(
+        name: name,
+        arguments: stubResult,
+        callId: callId,
+        jobId: jobId,
+        backgrounded: true,
+      ),
+    );
+  }
+
+  void _attachToolResult(
+    String name,
+    String result, {
+    String? callId,
+    String? jobId,
+    bool clearBackgrounded = false,
+  }) {
+    for (var i = _items.length - 1; i >= 0; i--) {
+      final item = _items[i];
+      if (item.kind != _ChatKind.tool) continue;
+      final idMatch = callId != null && item.toolCallId == callId;
+      final jobMatch = jobId != null && item.toolJobId == jobId;
+      final nameMatch =
           item.toolName == name &&
-          item.toolResult == null) {
+          (item.toolResult == null || item.toolBackgrounded);
+      if (idMatch || jobMatch || (callId == null && jobId == null && nameMatch)) {
         item.toolResult = result;
+        if (clearBackgrounded) item.toolBackgrounded = false;
+        item.toolCallId ??= callId;
+        item.toolJobId ??= jobId;
         return;
       }
     }
-    _items.add(_ChatItem.tool(name: name, arguments: '', result: result));
+    _items.add(
+      _ChatItem.tool(
+        name: name,
+        arguments: '',
+        result: result,
+        callId: callId,
+        jobId: jobId,
+      ),
+    );
   }
 
   Future<void> _reloadService() async {
@@ -272,6 +446,7 @@ class _AgentScreenState extends State<AgentScreen> {
           conversationStore: _conversationStore,
           projectStore: _projectStore,
         );
+        _bindBackgroundUi(_service);
       } else {
         _service = await AgentService.open(
           workspace: widget.workspace,
@@ -280,6 +455,7 @@ class _AgentScreenState extends State<AgentScreen> {
           projectStore: _projectStore,
           projectPath: projectPath,
         );
+        _bindBackgroundUi(_service);
         _hydrateFromService();
       }
     } else {
@@ -314,6 +490,7 @@ class _AgentScreenState extends State<AgentScreen> {
         projectStore: _projectStore,
         projectPath: created.path,
       );
+      _bindBackgroundUi(_service);
       await _refreshProjects();
       _activeProjectPath = created.path;
       await _refreshConversationList();
@@ -632,33 +809,7 @@ class _AgentScreenState extends State<AgentScreen> {
 
     await for (final event in service.run(text, attachments: attachments)) {
       if (!mounted) return;
-      switch (event) {
-        case AgentUiUserMessage(:final text):
-          _items.add(_ChatItem(kind: _ChatKind.user, text: text));
-        case AgentUiAssistantDelta(:final text):
-          if (_items.isNotEmpty && _items.last.kind == _ChatKind.assistant) {
-            _items.last.text += text;
-          } else {
-            _items.add(_ChatItem(kind: _ChatKind.assistant, text: text));
-          }
-        case AgentUiAssistantFinal(:final text):
-          if (_items.isNotEmpty && _items.last.kind == _ChatKind.assistant) {
-            _items.last.text = text;
-          } else {
-            _items.add(_ChatItem(kind: _ChatKind.assistant, text: text));
-          }
-        case AgentUiDiscardDraftAssistant():
-          _discardBlankAssistantDraft();
-        case AgentUiToolCall(:final name, :final arguments):
-          _discardBlankAssistantDraft();
-          _items.add(_ChatItem.tool(name: name, arguments: arguments));
-        case AgentUiToolResult(:final name, :final result):
-          _attachToolResult(name, result);
-        case AgentUiError(:final message):
-          _items.add(_ChatItem(kind: _ChatKind.error, text: message));
-        case AgentUiStatus(:final message):
-          _status = message;
-      }
+      _applyLiveEvent(event);
       _conversationTitle = service.conversationTitle;
       setState(() {});
       _scrollToEnd();
@@ -713,6 +864,7 @@ class _AgentScreenState extends State<AgentScreen> {
     if (identical(ActiveWorkspaceHolder.current, widget.workspace)) {
       ActiveWorkspaceHolder.current = null;
     }
+    unawaited(_backgroundUiSub?.cancel());
     unawaited(_service?.dispose() ?? Future.value());
     unawaited(widget.workspace.dispose());
     _inputCtrl.dispose();
@@ -1228,9 +1380,18 @@ class _AgentScreenState extends State<AgentScreen> {
               Padding(
                 padding: const EdgeInsets.only(right: 4),
                 child: Chip(
-                  label: Text(_running ? '运行中' : '已连接'),
+                  label: Text(() {
+                    final bg = _service?.runningBackgroundJobCount ?? 0;
+                    if (_running) return '运行中';
+                    if (bg > 0) return '后台 $bg';
+                    return '已连接';
+                  }()),
                   avatar: Icon(
-                    _running ? Icons.sync : Icons.check_circle,
+                    _running
+                        ? Icons.sync
+                        : (_service?.runningBackgroundJobCount ?? 0) > 0
+                        ? Icons.hourglass_top_rounded
+                        : Icons.check_circle,
                     size: 16,
                     color: scheme.primary,
                   ),
@@ -1582,6 +1743,13 @@ class _ToolCallCard extends StatefulWidget {
 
 class _ToolCallCardState extends State<_ToolCallCard> {
   bool _expanded = false;
+  final _scrollController = ScrollController();
+
+  @override
+  void dispose() {
+    _scrollController.dispose();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -1591,13 +1759,16 @@ class _ToolCallCardState extends State<_ToolCallCard> {
       widget.item.toolArguments,
     );
     final result = widget.item.toolResult;
-    final done = result != null;
+    final backgrounded = widget.item.toolBackgrounded;
+    final done = result != null && !backgrounded;
     final summary = _toolSummary(
       toolName: widget.item.toolName ?? widget.item.text,
       command: command,
       done: done,
+      backgrounded: backgrounded,
     );
-    final output = done ? _formatToolResult(result) : null;
+    final String? output =
+        result != null && !backgrounded ? _formatToolResult(result) : null;
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -1618,14 +1789,21 @@ class _ToolCallCardState extends State<_ToolCallCard> {
                 ),
                 const SizedBox(width: 4),
                 if (!done) ...[
-                  SizedBox(
-                    width: 12,
-                    height: 12,
-                    child: CircularProgressIndicator(
-                      strokeWidth: 1.5,
-                      color: scheme.primary,
+                  if (backgrounded)
+                    Icon(
+                      Icons.hourglass_top_rounded,
+                      size: 14,
+                      color: scheme.tertiary,
+                    )
+                  else
+                    SizedBox(
+                      width: 12,
+                      height: 12,
+                      child: CircularProgressIndicator(
+                        strokeWidth: 1.5,
+                        color: scheme.primary,
+                      ),
                     ),
-                  ),
                   const SizedBox(width: 8),
                 ],
                 Expanded(
@@ -1634,7 +1812,9 @@ class _ToolCallCardState extends State<_ToolCallCard> {
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
                     style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                      color: scheme.onSurfaceVariant,
+                      color: backgrounded
+                          ? scheme.tertiary
+                          : scheme.onSurfaceVariant,
                       fontWeight: FontWeight.w500,
                     ),
                   ),
@@ -1654,42 +1834,52 @@ class _ToolCallCardState extends State<_ToolCallCard> {
                 color: scheme.outlineVariant.withValues(alpha: 0.45),
               ),
             ),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                SelectableText(
-                  command,
-                  style: TextStyle(
-                    color: scheme.onSurface,
-                    fontFamily: 'monospace',
-                    fontSize: 12.5,
-                    height: 1.4,
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(maxHeight: 220),
+              child: Scrollbar(
+                controller: _scrollController,
+                child: SingleChildScrollView(
+                  controller: _scrollController,
+                  primary: false,
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      SelectableText(
+                        command,
+                        style: TextStyle(
+                          color: scheme.onSurface,
+                          fontFamily: 'monospace',
+                          fontSize: 12.5,
+                          height: 1.4,
+                        ),
+                      ),
+                      if (output != null && output.isNotEmpty) ...[
+                        const SizedBox(height: 8),
+                        SelectableText(
+                          output,
+                          style: TextStyle(
+                            color: scheme.onSurfaceVariant,
+                            fontFamily: 'monospace',
+                            fontSize: 12,
+                            height: 1.4,
+                          ),
+                        ),
+                      ] else if (!done)
+                        Padding(
+                          padding: const EdgeInsets.only(top: 8),
+                          child: Text(
+                            '执行中…',
+                            style: TextStyle(
+                              color: scheme.onSurfaceVariant,
+                              fontFamily: 'monospace',
+                              fontSize: 12,
+                            ),
+                          ),
+                        ),
+                    ],
                   ),
                 ),
-                if (output != null && output.isNotEmpty) ...[
-                  const SizedBox(height: 8),
-                  SelectableText(
-                    output,
-                    style: TextStyle(
-                      color: scheme.onSurfaceVariant,
-                      fontFamily: 'monospace',
-                      fontSize: 12,
-                      height: 1.4,
-                    ),
-                  ),
-                ] else if (!done)
-                  Padding(
-                    padding: const EdgeInsets.only(top: 8),
-                    child: Text(
-                      '执行中…',
-                      style: TextStyle(
-                        color: scheme.onSurfaceVariant,
-                        fontFamily: 'monospace',
-                        fontSize: 12,
-                      ),
-                    ),
-                  ),
-              ],
+              ),
             ),
           ),
       ],
@@ -1716,11 +1906,15 @@ String _toolSummary({
   required String toolName,
   required String command,
   required bool done,
+  bool backgrounded = false,
 }) {
   final firstLine = command.split(RegExp(r'\r?\n')).first.trim();
   final preview = firstLine.length > 72
       ? '${firstLine.substring(0, 72)}…'
       : firstLine;
+  if (backgrounded) {
+    return preview.isEmpty ? '后台执行中 $toolName' : '后台执行中 $preview';
+  }
   if (!done) {
     return preview.isEmpty ? 'Running $toolName…' : 'Running $preview';
   }

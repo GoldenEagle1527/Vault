@@ -367,6 +367,14 @@ enum StreamingEventType {
   fullModelMessage,
   functionCallRequest,
   functionCallResult,
+
+  /// A tool call exceeded [StatefulAgent.toolBackgroundAfter] and was detached.
+  /// [StreamingEvent.data] is a [BackgroundToolJob].
+  toolBackgrounded,
+
+  /// A previously backgrounded tool finished.
+  /// [StreamingEvent.data] is a [BackgroundToolJob].
+  toolBackgroundCompleted,
 }
 
 class StreamingEvent {

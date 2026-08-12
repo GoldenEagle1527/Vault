@@ -39,4 +39,35 @@ void main() {
     expect(events[4], isA<AgentUiAssistantFinal>());
     expect((events[4] as AgentUiAssistantFinal).text, '完成了');
   });
+
+  test('uiEventsFromHistory maps background tool stub', () {
+    final events = AgentService.uiEventsFromHistory([
+      ModelMessage(
+        model: 'm',
+        functionCalls: [
+          FunctionCall(id: 'c1', name: 'shell', arguments: '{"command":"sleep"}'),
+        ],
+      ),
+      FunctionExecutionResultMessage(
+        results: [
+          FunctionExecutionResult(
+            id: 'c1',
+            name: 'shell',
+            isError: false,
+            arguments: '{"command":"sleep"}',
+            content: [TextPart('已转后台')],
+            metadata: {'background': true, 'jobId': 'job-1', 'callId': 'c1'},
+          ),
+        ],
+      ),
+    ]);
+
+    expect(events, hasLength(2));
+    expect(events[0], isA<AgentUiToolCall>());
+    expect(events[1], isA<AgentUiToolBackgrounded>());
+    final bg = events[1] as AgentUiToolBackgrounded;
+    expect(bg.jobId, 'job-1');
+    expect(bg.callId, 'c1');
+    expect(bg.stubResult, '已转后台');
+  });
 }

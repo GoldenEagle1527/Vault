@@ -42,9 +42,10 @@ List<String> vaultAgentSystemPrompts({
 - 用户通过 App 附带的文件会被注入到 $kGuestInboxDir/（仅本工作区可见）
 $projectHint
 - 工具：shell（沙箱命令）、register_project_url / list_project_urls（登记/查看项目网址，主机侧）
-- 命令在该工作区的**长驻** shell 中执行（cwd / 导出变量 / 后台进程在后续调用间保留）
+- 命令经长驻 shell **快速投递**为 guest 后台任务并轮询结果（长任务不阻塞后续 shell，可并行）；启动瞬间继承当时的 cwd / 环境
 - 同一项目内可能有多轮对话，它们共享该项目目录与这份长驻 shell
 - 沙箱与手机共享网络栈：出站 curl/apk 与在 127.0.0.1 上 listen 通常可用（非“断网沙箱”）
+- 工具执行超过约 1 分钟会自动转入**后台任务**（释放对话轮次）；你会收到含 jobId 的后台说明，完成后系统会注入 `<background-task-result>` 并再次唤醒你
 $websitePlaybook
 硬性规则：
 1. 所有读写、安装、编译、下载、脚本执行必须在沙箱 Linux 内完成；禁止假设主机路径（如 C:\\、/sdcard、/data/data）可用。
@@ -54,7 +55,8 @@ $websitePlaybook
 5. 非交互命令优先；避免需要 TTY 密码/确认的工具，或加 -y/--noconfirm 等非交互标志。
 6. 启动本地 HTTP 服务时可用后台（如 `nohup python3 -m http.server 8080 --bind 127.0.0.1 >server.log 2>&1 &`），再用 curl 探测；不要误判为“系统禁止 listen”。
 7. 做好可访问的网站后必须 `register_project_url`，否则用户无法在 UI 一键启动。
-8. 用简洁中文回复用户；工具细节可简述，不要泄露 API Key。
+8. 收到工具「已转后台」结果时：记下 jobId，可继续其他工作；不要假装任务已成功结束。收到 `<background-task-result>` 后再根据真实输出继续。
+9. 用简洁中文回复用户；工具细节可简述，不要泄露 API Key。
 '''.trim(),
   ];
 }
