@@ -800,14 +800,8 @@ class _FileBrowserScreenState extends State<FileBrowserScreen> {
               PopupMenuItem(value: 'file', child: Text('新建文件')),
               PopupMenuItem(value: 'folder', child: Text('新建文件夹')),
             ],
-            icon: const Icon(Icons.create_new_folder_outlined),
+            icon: const Icon(Icons.add_outlined),
           ),
-          if (showProjectJump)
-            IconButton(
-              tooltip: '跳到当前项目',
-              onPressed: _actionsEnabled ? _jumpToProject : null,
-              icon: const Icon(Icons.folder_special_outlined),
-            ),
           IconButton(
             tooltip: '刷新',
             onPressed: _actionsEnabled ? _load : null,
@@ -819,6 +813,14 @@ class _FileBrowserScreenState extends State<FileBrowserScreen> {
                   )
                 : const Icon(Icons.refresh),
           ),
+          if (_projectPath != null)
+            IconButton(
+              tooltip: '回到当前项目',
+              onPressed: !_actionsEnabled || !showProjectJump
+                  ? null
+                  : _jumpToProject,
+              icon: const Icon(Icons.my_location_outlined),
+            ),
         ],
       ),
       body: DropTarget(
@@ -1181,6 +1183,23 @@ class _FilePreviewScreenState extends State<_FilePreviewScreen> {
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
+    final immersiveVideo = !_loading &&
+        _error == null &&
+        _kind == GuestMediaKind.video &&
+        _media != null;
+
+    if (immersiveVideo) {
+      return Scaffold(
+        backgroundColor: Colors.black,
+        body: GuestVideoPreview(
+          source: _media!,
+          title: _fileName,
+          subtitle: widget.guestPath,
+          onClose: () => Navigator.of(context).maybePop(),
+        ),
+      );
+    }
+
     return Scaffold(
       appBar: AppBar(
         title: Column(
@@ -1262,7 +1281,13 @@ class _FilePreviewScreenState extends State<_FilePreviewScreen> {
         case GuestMediaKind.image:
           return GuestImagePreview(source: media);
         case GuestMediaKind.video:
-          return GuestVideoPreview(source: media);
+          // Immersive player is built in [build]; keep a fallback for safety.
+          return GuestVideoPreview(
+            source: media,
+            title: _fileName,
+            subtitle: widget.guestPath,
+            onClose: () => Navigator.of(context).maybePop(),
+          );
         case GuestMediaKind.audio:
           return GuestAudioPreview(source: media, title: _fileName);
         case GuestMediaKind.text:

@@ -2,6 +2,7 @@ import 'dart:io';
 import 'dart:ui' show AppExitResponse;
 
 import 'package:flutter/material.dart';
+import 'package:fvp/fvp.dart' as fvp;
 import 'package:vault/offload/offload_host_server.dart';
 import 'package:vault/permissions/active_workspace_holder.dart';
 import 'package:vault/permissions/offload_permission_manager.dart';
@@ -15,6 +16,12 @@ import 'package:vault/theme/theme_controller.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  // Official video_player has no Windows/Linux backend; fvp fills that gap.
+  fvp.registerWith(
+    options: {
+      'platforms': ['windows', 'linux', 'macos'],
+    },
+  );
   final themeController = ThemeController();
   await themeController.load();
   try {
@@ -109,6 +116,7 @@ class _VaultAppState extends State<VaultApp> {
         builder: (context, _) {
           return MaterialApp(
             title: 'Vault',
+            debugShowCheckedModeBanner: false,
             theme: AppTheme.light(widget.themeController.accent),
             darkTheme: AppTheme.dark(widget.themeController.accent),
             themeMode: widget.themeController.mode,

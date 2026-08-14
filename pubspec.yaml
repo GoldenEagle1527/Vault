@@ -57,6 +57,7 @@ dependencies:
   video_player: ^2.11.1
   audioplayers: ^6.8.1
   desktop_drop: ^0.7.1
+  fvp: ^0.37.3
 
 dev_dependencies:
   flutter_test:
