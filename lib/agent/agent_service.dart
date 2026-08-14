@@ -11,6 +11,7 @@ import 'package:vault/agent/project_store.dart';
 import 'package:vault/agent/tools/project_url_tool.dart';
 import 'package:vault/agent/tools/shell_tool.dart';
 import 'package:vault/agent/vault_meta_db.dart';
+import 'package:vault/agent/workspace_mode.dart';
 import 'package:vault/sandbox/sandbox_provider.dart';
 import 'package:vault_agent_core/vault_agent_core.dart';
 
@@ -171,12 +172,14 @@ class AgentService {
     ProjectStore? projectStore,
     String? conversationId,
     String? projectPath,
+    WorkspaceMode mode = WorkspaceMode.chat,
   }) : _workspace = workspace,
        _settings = settings,
        _shellTimeout = shellTimeout,
        _pendingState = initialState,
        _store = conversationStore,
        _projectStore = projectStore,
+       _mode = mode,
        _projectPath = projectPath ??
            initialState?.metadata['projectPath'] as String?,
        // AgentState.sessionId is the engine field for conversation id.
@@ -191,6 +194,7 @@ class AgentService {
     ProjectStore? projectStore,
     VaultMetaDb? metaDb,
     Duration shellTimeout = kDefaultShellToolTimeout,
+    WorkspaceMode mode = WorkspaceMode.chat,
   }) async {
     final store = conversationStore ??
         (metaDb != null ? ConversationStore(metaDb: metaDb) : null);
@@ -208,6 +212,7 @@ class AgentService {
       projectPath: projectPath,
       conversationId: opened.state.sessionId,
       initialState: opened.state,
+      mode: mode,
     );
   }
 
@@ -218,6 +223,7 @@ class AgentService {
     ConversationStore? conversationStore,
     ProjectStore? projectStore,
     Duration shellTimeout = kDefaultShellToolTimeout,
+    WorkspaceMode mode = WorkspaceMode.chat,
   }) {
     return AgentService(
       workspace: workspace,
@@ -225,6 +231,7 @@ class AgentService {
       shellTimeout: shellTimeout,
       conversationStore: conversationStore,
       projectStore: projectStore,
+      mode: mode,
     );
   }
 
@@ -233,6 +240,7 @@ class AgentService {
   final Duration _shellTimeout;
   final ConversationStore? _store;
   final ProjectStore? _projectStore;
+  final WorkspaceMode _mode;
 
   StatefulAgent? _agent;
 
@@ -379,10 +387,12 @@ class AgentService {
       systemPrompts: vaultAgentSystemPrompts(
         workspaceId: workspaceId,
         projectPath: projectPath,
+        mode: _mode,
       ),
       controller: AgentController(),
       autoSaveStateFunc: _store == null ? null : (s) => _persistIfNeeded(s),
       toolBackgroundAfter: kAgentToolBackgroundAfter,
+      withGeneralPrinciples: _mode != WorkspaceMode.dev,
     );
     _attachBackgroundJobListener(_agent!);
   }

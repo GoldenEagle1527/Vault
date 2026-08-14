@@ -10,6 +10,7 @@ import 'package:vault/agent/agent_settings.dart';
 import 'package:vault/agent/conversation_store.dart';
 import 'package:vault/agent/project_site_launcher.dart';
 import 'package:vault/agent/project_store.dart';
+import 'package:vault/agent/workspace_mode.dart';
 import 'package:vault/permissions/active_workspace_holder.dart';
 import 'package:vault/sandbox/sandbox_provider.dart';
 import 'package:vault/screens/file_browser_screen.dart';
@@ -27,6 +28,7 @@ class AgentScreen extends StatefulWidget {
     required this.conversationStore,
     required this.projectStore,
     this.settingsStore,
+    this.mode = WorkspaceMode.chat,
   });
 
   final SandboxProvider provider;
@@ -35,6 +37,7 @@ class AgentScreen extends StatefulWidget {
   final ConversationStore conversationStore;
   final ProjectStore projectStore;
   final AgentSettingsStore? settingsStore;
+  final WorkspaceMode mode;
 
   @override
   State<AgentScreen> createState() => _AgentScreenState();
@@ -167,6 +170,7 @@ class _AgentScreenState extends State<AgentScreen> {
           settings: settings,
           conversationStore: _conversationStore,
           projectStore: _projectStore,
+          mode: widget.mode,
         );
         _bindBackgroundUi(_service);
         _conversations = const [];
@@ -196,6 +200,7 @@ class _AgentScreenState extends State<AgentScreen> {
           conversationStore: _conversationStore,
           projectStore: _projectStore,
           projectPath: active,
+          mode: widget.mode,
         );
         _service = service;
         _bindBackgroundUi(service);
@@ -657,6 +662,7 @@ class _AgentScreenState extends State<AgentScreen> {
           settings: settings,
           conversationStore: _conversationStore,
           projectStore: _projectStore,
+          mode: widget.mode,
         );
         _bindBackgroundUi(_service);
       } else {
@@ -666,6 +672,7 @@ class _AgentScreenState extends State<AgentScreen> {
           conversationStore: _conversationStore,
           projectStore: _projectStore,
           projectPath: projectPath,
+          mode: widget.mode,
         );
         _bindBackgroundUi(_service);
         _hydrateFromService();
@@ -701,6 +708,7 @@ class _AgentScreenState extends State<AgentScreen> {
         conversationStore: _conversationStore,
         projectStore: _projectStore,
         projectPath: created.path,
+        mode: widget.mode,
       );
       _bindBackgroundUi(_service);
       await _refreshProjects();
@@ -827,14 +835,17 @@ class _AgentScreenState extends State<AgentScreen> {
 
   Future<void> _openFileBrowser() async {
     final projectPath = _activeProjectPath;
+    final projectGuest =
+        projectPath == null ? null : guestProjectDir(projectPath);
     await Navigator.of(context).push(
       MaterialPageRoute(
         builder: (_) => FileBrowserScreen(
           provider: widget.provider,
           workspaceId: widget.workspace.workspaceId,
           title: widget.title,
-          projectGuestPath:
-              projectPath == null ? null : guestProjectDir(projectPath),
+          // Open at the active project working tree when available.
+          initialPath: projectGuest ?? kGuestHome,
+          projectGuestPath: projectGuest,
         ),
       ),
     );
@@ -1415,6 +1426,7 @@ class _AgentScreenState extends State<AgentScreen> {
                   ? _EmptyProject(onCreate: _createProject)
                   : !hasChatContent
                   ? _EmptyChat(
+                      mode: widget.mode,
                       onPrompt: (p) {
                         _inputCtrl.text = p;
                         _inputCtrl.selection =
@@ -1695,19 +1707,34 @@ class _EmptyProject extends StatelessWidget {
 }
 
 class _EmptyChat extends StatelessWidget {
-  const _EmptyChat({required this.onPrompt});
+  const _EmptyChat({
+    required this.onPrompt,
+    this.mode = WorkspaceMode.chat,
+  });
 
   final ValueChanged<String> onPrompt;
+  final WorkspaceMode mode;
 
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
-    final prompts = <(String, String, IconData)>[
-      ('帮我分析这份表格，找出最重要的三个趋势', '分析表格', Icons.table_chart_outlined),
-      ('帮我整理一批文件，先给我一个不会误删文件的方案', '整理文件', Icons.folder_outlined),
-      ('检查这个项目是否有明显问题，并用容易理解的方式告诉我', '检查项目', Icons.fact_check_outlined),
-      ('教我完成一个简单目标，每次只告诉我下一步', '一步步教我', Icons.school_outlined),
-    ];
+    final prompts = mode == WorkspaceMode.dev
+        ? <(String, String, IconData)>[
+            ('帮我做个记事页，打开就能写、刷新还在', '帮我做个记事页', Icons.edit_note_outlined),
+            (
+              '把下载的文件自动分类，做成一个能在浏览器里看的网页',
+              '把下载的文件自动分类做成网页',
+              Icons.folder_special_outlined,
+            ),
+            ('先做一个能用的最小版本，我打开网页就能试', '先做一个能用的最小版本', Icons.web_outlined),
+            ('做个待办清单网页，勾选之后刷新还在', '做个待办清单网页', Icons.checklist_outlined),
+          ]
+        : <(String, String, IconData)>[
+            ('帮我分析这份表格，找出最重要的三个趋势', '分析表格', Icons.table_chart_outlined),
+            ('帮我整理一批文件，先给我一个不会误删文件的方案', '整理文件', Icons.folder_outlined),
+            ('检查这个项目是否有明显问题，并用容易理解的方式告诉我', '检查项目', Icons.fact_check_outlined),
+            ('教我完成一个简单目标，每次只告诉我下一步', '一步步教我', Icons.school_outlined),
+          ];
 
     return ListView(
       padding: const EdgeInsets.fromLTRB(16, 32, 16, 24),

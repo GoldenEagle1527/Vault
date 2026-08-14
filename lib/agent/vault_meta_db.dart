@@ -57,6 +57,12 @@ CREATE TABLE IF NOT EXISTS workspace_state (
   active_project_path TEXT
 );
 ''');
+    // Existing DBs created before `mode` was added.
+    final workspaceStateCols = db.select('PRAGMA table_info(workspace_state)');
+    final hasMode = workspaceStateCols.any((row) => row['name'] == 'mode');
+    if (!hasMode) {
+      db.execute('ALTER TABLE workspace_state ADD COLUMN mode TEXT');
+    }
     db.execute('''
 CREATE TABLE IF NOT EXISTS projects (
   workspace_id TEXT NOT NULL,

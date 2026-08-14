@@ -5,6 +5,8 @@ import 'package:uuid/uuid.dart';
 import 'package:vault/agent/conversation_store.dart';
 import 'package:vault/agent/project_store.dart';
 import 'package:vault/agent/vault_meta_db.dart';
+import 'package:vault/agent/workspace_mode.dart';
+import 'package:vault/agent/workspace_store.dart';
 import 'package:vault/sandbox/network_reachability.dart';
 import 'package:vault/sandbox/sandbox_provider.dart';
 import 'package:vault/permissions/active_workspace_holder.dart';
@@ -13,6 +15,7 @@ import 'package:vault/screens/agent_screen.dart';
 import 'package:vault/screens/settings_screen.dart';
 import 'package:vault/widgets/glass.dart';
 import 'package:vault/widgets/workspace_init_dialog.dart';
+import 'package:vault/widgets/workspace_mode_dialog.dart';
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({
@@ -21,12 +24,14 @@ class HomeScreen extends StatefulWidget {
     this.metaDb,
     this.conversationStore,
     this.projectStore,
+    this.workspaceStore,
   });
 
   final SandboxProvider provider;
   final VaultMetaDb? metaDb;
   final ConversationStore? conversationStore;
   final ProjectStore? projectStore;
+  final WorkspaceStore? workspaceStore;
 
   @override
   State<HomeScreen> createState() => _HomeScreenState();
@@ -38,10 +43,12 @@ class _HomeScreenState extends State<HomeScreen> {
   VaultMetaDb? _metaDb;
   ConversationStore? _conversationStore;
   ProjectStore? _projectStore;
+  WorkspaceStore? _workspaceStore;
   bool _storesReady = false;
   SandboxCapabilities? _caps;
   List<WorkspaceInfo> _workspaces = const [];
   Map<String, WorkspaceConversationSummary> _summaries = const {};
+  Map<String, WorkspaceMode> _modes = const {};
   String? _error;
   bool _busy = false;
   int _navIndex = 0;
@@ -59,6 +66,8 @@ class _HomeScreenState extends State<HomeScreen> {
           widget.conversationStore ?? ConversationStore(metaDb: injected);
       _projectStore = widget.projectStore ??
           ProjectStore.fromProvider(widget.provider, metaDb: injected);
+      _workspaceStore =
+          widget.workspaceStore ?? WorkspaceStore(metaDb: injected);
       _storesReady = true;
       unawaited(_refresh());
     } else {
@@ -73,11 +82,14 @@ class _HomeScreenState extends State<HomeScreen> {
           widget.conversationStore ?? ConversationStore(metaDb: metaDb);
       final projectStore = widget.projectStore ??
           ProjectStore.fromProvider(widget.provider, metaDb: metaDb);
+      final workspaceStore =
+          widget.workspaceStore ?? WorkspaceStore(metaDb: metaDb);
       if (!mounted) return;
       setState(() {
         _metaDb = metaDb;
         _conversationStore = conversationStore;
         _projectStore = projectStore;
+        _workspaceStore = workspaceStore;
         _storesReady = true;
       });
       await _refresh();
@@ -119,8 +131,10 @@ class _HomeScreenState extends State<HomeScreen> {
           ? await widget.provider.list()
           : const <WorkspaceInfo>[];
       final summaries = <String, WorkspaceConversationSummary>{};
+      final modes = <String, WorkspaceMode>{};
       final projectsStore = _projectStore!;
       final conversationsStore = _conversationStore!;
+      final workspaceStore = _workspaceStore;
       for (final w in workspaces) {
         try {
           final projects = await projectsStore.list(w.workspaceId);
@@ -134,12 +148,20 @@ class _HomeScreenState extends State<HomeScreen> {
             projectCount: 0,
           );
         }
+        try {
+          modes[w.workspaceId] = workspaceStore == null
+              ? WorkspaceMode.chat
+              : await workspaceStore.getMode(w.workspaceId);
+        } catch (_) {
+          modes[w.workspaceId] = WorkspaceMode.chat;
+        }
       }
       if (!mounted) return;
       setState(() {
         _caps = caps;
         _workspaces = workspaces;
         _summaries = summaries;
+        _modes = modes;
       });
     } catch (e) {
       if (!mounted) return;
@@ -153,7 +175,14 @@ class _HomeScreenState extends State<HomeScreen> {
     if (_caps?.available != true) return;
     final conversationStore = _conversationStore;
     final projectStore = _projectStore;
-    if (conversationStore == null || projectStore == null) return;
+    final workspaceStore = _workspaceStore;
+    if (conversationStore == null ||
+        projectStore == null ||
+        workspaceStore == null) {
+      return;
+    }
+    final selectedMode = await showWorkspaceModeDialog(context);
+    if (selectedMode == null || !mounted) return;
     setState(() {
       _busy = true;
       _error = null;
@@ -173,6 +202,8 @@ class _HomeScreenState extends State<HomeScreen> {
         action: (report) => widget.provider.create(id, onProgress: report),
       );
       if (!mounted) return;
+      await workspaceStore.setMode(id, selectedMode);
+      if (!mounted) return;
       await Navigator.of(context).push(
         MaterialPageRoute(
           builder: (_) => AgentScreen(
@@ -181,6 +212,7 @@ class _HomeScreenState extends State<HomeScreen> {
             workspace: workspace,
             conversationStore: conversationStore,
             projectStore: projectStore,
+            mode: selectedMode,
           ),
         ),
       );
@@ -196,12 +228,16 @@ class _HomeScreenState extends State<HomeScreen> {
   Future<void> _openWorkspace(WorkspaceInfo info) async {
     final conversationStore = _conversationStore;
     final projectStore = _projectStore;
+    final workspaceStore = _workspaceStore;
     if (conversationStore == null || projectStore == null) return;
     setState(() {
       _busy = true;
       _error = null;
     });
     try {
+      final mode = workspaceStore == null
+          ? WorkspaceMode.chat
+          : await workspaceStore.getMode(info.workspaceId);
       final workspace = await widget.provider.attach(info.workspaceId);
       if (!mounted) return;
       await Navigator.of(context).push(
@@ -212,6 +248,7 @@ class _HomeScreenState extends State<HomeScreen> {
             workspace: workspace,
             conversationStore: conversationStore,
             projectStore: projectStore,
+            mode: mode,
           ),
         ),
       );
@@ -318,7 +355,9 @@ class _HomeScreenState extends State<HomeScreen> {
 
   String _workspaceSubtitle(WorkspaceInfo info) {
     final summary = _summaries[info.workspaceId];
+    final mode = _modes[info.workspaceId] ?? WorkspaceMode.chat;
     final parts = <String>[
+      workspaceModeLabel(mode),
       _relativeTime(info.createdAt),
       _formatBytes(info.approxDiskBytes),
     ];
