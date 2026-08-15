@@ -69,6 +69,10 @@ CREATE TABLE IF NOT EXISTS workspace_state (
     if (!hasGatewayPort) {
       db.execute('ALTER TABLE workspace_state ADD COLUMN gateway_port INTEGER');
     }
+    final hasName = workspaceStateCols.any((row) => row['name'] == 'name');
+    if (!hasName) {
+      db.execute('ALTER TABLE workspace_state ADD COLUMN name TEXT');
+    }
     db.execute('''
 CREATE TABLE IF NOT EXISTS projects (
   workspace_id TEXT NOT NULL,

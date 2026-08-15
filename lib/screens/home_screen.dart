@@ -14,6 +14,7 @@ import 'package:vault/permissions/offload_permission_dialog.dart';
 import 'package:vault/screens/agent_screen.dart';
 import 'package:vault/screens/settings_screen.dart';
 import 'package:vault/widgets/glass.dart';
+import 'package:vault/widgets/new_workspace_dialog.dart';
 import 'package:vault/widgets/workspace_init_dialog.dart';
 import 'package:vault/widgets/workspace_mode_dialog.dart';
 
@@ -49,6 +50,7 @@ class _HomeScreenState extends State<HomeScreen> {
   List<WorkspaceInfo> _workspaces = const [];
   Map<String, WorkspaceConversationSummary> _summaries = const {};
   Map<String, WorkspaceMode> _modes = const {};
+  Map<String, String> _names = const {};
   String? _error;
   bool _busy = false;
   int _navIndex = 0;
@@ -64,7 +66,8 @@ class _HomeScreenState extends State<HomeScreen> {
       _metaDb = injected;
       _conversationStore =
           widget.conversationStore ?? ConversationStore(metaDb: injected);
-      _projectStore = widget.projectStore ??
+      _projectStore =
+          widget.projectStore ??
           ProjectStore.fromProvider(widget.provider, metaDb: injected);
       _workspaceStore =
           widget.workspaceStore ?? WorkspaceStore(metaDb: injected);
@@ -80,7 +83,8 @@ class _HomeScreenState extends State<HomeScreen> {
       final metaDb = await VaultMetaDb.openDefault();
       final conversationStore =
           widget.conversationStore ?? ConversationStore(metaDb: metaDb);
-      final projectStore = widget.projectStore ??
+      final projectStore =
+          widget.projectStore ??
           ProjectStore.fromProvider(widget.provider, metaDb: metaDb);
       final workspaceStore =
           widget.workspaceStore ?? WorkspaceStore(metaDb: metaDb);
@@ -135,13 +139,17 @@ class _HomeScreenState extends State<HomeScreen> {
       final projectsStore = _projectStore!;
       final conversationsStore = _conversationStore!;
       final workspaceStore = _workspaceStore;
+      final names = workspaceStore == null
+          ? <String, String>{}
+          : await workspaceStore.listNames();
       for (final w in workspaces) {
         try {
           final projects = await projectsStore.list(w.workspaceId);
-          summaries[w.workspaceId] = await conversationsStore.peekProjectsSummary(
-            w.workspaceId,
-            projects.map((p) => p.path).toList(),
-          );
+          summaries[w.workspaceId] = await conversationsStore
+              .peekProjectsSummary(
+                w.workspaceId,
+                projects.map((p) => p.path).toList(),
+              );
         } catch (_) {
           summaries[w.workspaceId] = const WorkspaceConversationSummary(
             conversationCount: 0,
@@ -162,6 +170,7 @@ class _HomeScreenState extends State<HomeScreen> {
         _workspaces = workspaces;
         _summaries = summaries;
         _modes = modes;
+        _names = names;
       });
     } catch (e) {
       if (!mounted) return;
@@ -181,8 +190,18 @@ class _HomeScreenState extends State<HomeScreen> {
         workspaceStore == null) {
       return;
     }
+    final existingNames = _names.values.where((n) => n.trim().isNotEmpty);
+    final typedName = await showNewWorkspaceDialog(
+      context,
+      existingNames: existingNames,
+    );
+    if (typedName == null || !mounted) return;
     final selectedMode = await showWorkspaceModeDialog(context);
     if (selectedMode == null || !mounted) return;
+    final displayName = WorkspaceStore.allocateDisplayName(
+      existingNames,
+      base: typedName,
+    );
     setState(() {
       _busy = true;
       _error = null;
@@ -202,12 +221,13 @@ class _HomeScreenState extends State<HomeScreen> {
         action: (report) => widget.provider.create(id, onProgress: report),
       );
       if (!mounted) return;
+      await workspaceStore.setName(id, displayName);
       await workspaceStore.setMode(id, selectedMode);
       if (!mounted) return;
       await Navigator.of(context).push(
         MaterialPageRoute(
           builder: (_) => AgentScreen(
-            title: '工作区 $id',
+            title: displayName,
             provider: widget.provider,
             workspace: workspace,
             conversationStore: conversationStore,
@@ -243,7 +263,7 @@ class _HomeScreenState extends State<HomeScreen> {
       await Navigator.of(context).push(
         MaterialPageRoute(
           builder: (_) => AgentScreen(
-            title: info.displayName,
+            title: _resolvedName(info),
             provider: widget.provider,
             workspace: workspace,
             conversationStore: conversationStore,
@@ -268,8 +288,8 @@ class _HomeScreenState extends State<HomeScreen> {
         title: const Text('删除工作区？'),
         content: Text(
           _caps?.backend == SandboxBackend.proot
-              ? '将删除工作区 ${info.displayName} 的独立空间、全部会话历史，并结束相关进程。'
-              : '将执行 wsl --unregister 卸载 ${info.displayName}，删除其磁盘文件与全部会话历史。'
+              ? '将删除工作区 ${_resolvedName(info)} 的独立空间、全部会话历史，并结束相关进程。'
+              : '将执行 wsl --unregister 卸载 ${_resolvedName(info)}，删除其磁盘文件与全部会话历史。'
                     '通常可回收约 1 GB 空间。',
         ),
         actions: [
@@ -342,7 +362,15 @@ class _HomeScreenState extends State<HomeScreen> {
     return icons[workspaceId.hashCode.abs() % icons.length];
   }
 
+  String _resolvedName(WorkspaceInfo info) {
+    final named = _names[info.workspaceId]?.trim();
+    if (named != null && named.isNotEmpty) return named;
+    return info.displayName;
+  }
+
   String _workspaceTitle(WorkspaceInfo info) {
+    final named = _names[info.workspaceId]?.trim();
+    if (named != null && named.isNotEmpty) return named;
     final summary = _summaries[info.workspaceId];
     final recent = summary?.recentTitle?.trim();
     if (recent != null &&
@@ -373,7 +401,7 @@ class _HomeScreenState extends State<HomeScreen> {
     if (recent != null &&
         recent.isNotEmpty &&
         recent != kNewConversationTitle &&
-        recent != info.displayName) {
+        recent != _resolvedName(info)) {
       // Title already shows recent; keep meta only.
     } else if (recent == kNewConversationTitle) {
       parts.add('新会话');
@@ -628,7 +656,10 @@ class _WorkspaceHub extends StatelessWidget {
               MaterialBanner(
                 content: Text(error!),
                 actions: [
-                  TextButton(onPressed: onDismissError, child: const Text('关闭')),
+                  TextButton(
+                    onPressed: onDismissError,
+                    child: const Text('关闭'),
+                  ),
                 ],
               ),
               const SizedBox(height: 8),
@@ -716,10 +747,7 @@ class _WorkspaceHub extends StatelessWidget {
               ),
             ),
             const SizedBox(height: 24),
-            Text(
-              '全部工作区',
-              style: Theme.of(context).textTheme.titleLarge,
-            ),
+            Text('全部工作区', style: Theme.of(context).textTheme.titleLarge),
             const SizedBox(height: 10),
             if (workspaces.isEmpty)
               Padding(
@@ -742,8 +770,9 @@ class _WorkspaceHub extends StatelessWidget {
                       subtitle: subtitleFor(e.value),
                       icon: workspaceIcon(e.value.workspaceId),
                       onOpen: onOpen == null ? null : () => onOpen!(e.value),
-                      onDelete:
-                          onDelete == null ? null : () => onDelete!(e.value),
+                      onDelete: onDelete == null
+                          ? null
+                          : () => onDelete!(e.value),
                     ),
                   ),
                 ),
@@ -815,10 +844,7 @@ class _WorkspaceRow extends StatelessWidget {
             ),
             if (wide) ...[
               const SizedBox(width: 8),
-              FilledButton.tonal(
-                onPressed: onOpen,
-                child: const Text('打开'),
-              ),
+              FilledButton.tonal(onPressed: onOpen, child: const Text('打开')),
             ],
             IconButton(
               tooltip: '删除',
