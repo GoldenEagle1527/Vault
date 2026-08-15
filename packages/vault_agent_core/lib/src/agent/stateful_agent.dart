@@ -153,7 +153,9 @@ class _ModelMessageAccumulator {
       _text.write(chunk.textOutput);
     }
     if (chunk.functionCalls.isNotEmpty) {
-      _functionCalls.addAll(chunk.functionCalls);
+      for (final call in chunk.functionCalls) {
+        _mergeFunctionCall(call);
+      }
     }
     if (chunk.contentBlocks.isNotEmpty) {
       _contentBlocks.addAll(chunk.contentBlocks);
@@ -185,6 +187,24 @@ class _ModelMessageAccumulator {
     if (chunk.responseId != null) {
       responseId = chunk.responseId;
     }
+  }
+
+  void _mergeFunctionCall(FunctionCall incoming) {
+    final i = incoming.id.isEmpty
+        ? -1
+        : _functionCalls.indexWhere((c) => c.id == incoming.id);
+    if (i < 0) {
+      _functionCalls.add(incoming);
+      return;
+    }
+    final prev = _functionCalls[i];
+    _functionCalls[i] = FunctionCall(
+      id: incoming.id.isNotEmpty ? incoming.id : prev.id,
+      name: incoming.name.isNotEmpty ? incoming.name : prev.name,
+      arguments: incoming.arguments.length >= prev.arguments.length
+          ? incoming.arguments
+          : prev.arguments,
+    );
   }
 
   void reset() {
@@ -1722,8 +1742,7 @@ class StatefulAgent {
     // We intentionally do not execute scripts for mobile runtime in this iteration.
     final batchCallId = uuid.v4();
     final threshold = toolBackgroundAfter;
-    final backgroundEnabled =
-        threshold != null && threshold > Duration.zero;
+    final backgroundEnabled = threshold != null && threshold > Duration.zero;
 
     final futures = calls.map((call) async {
       final work = _executeSingleTool(
@@ -1733,7 +1752,9 @@ class StatefulAgent {
         batchCallId: batchCallId,
         cancelToken: cancelToken,
       );
-      if (!backgroundEnabled) {
+      final matched = tools?.where((t) => t.name == call.name);
+      final tool = (matched == null || matched.isEmpty) ? null : matched.first;
+      if (!backgroundEnabled || tool?.allowBackground == false) {
         return _ToolRaceOutcome(result: await work);
       }
       return _raceToolAgainstBackground(call, work, threshold);
@@ -1824,11 +1845,7 @@ class StatefulAgent {
           ),
         ),
       ],
-      metadata: {
-        'background': true,
-        'jobId': jobId,
-        'callId': call.id,
-      },
+      metadata: {'background': true, 'jobId': jobId, 'callId': call.id},
     );
     return _ToolRaceOutcome(result: stub, backgroundedJob: job);
   }
@@ -1879,8 +1896,8 @@ class StatefulAgent {
         if (call.arguments.trim().isEmpty) {
           decodedArgs = {};
         } else {
-          decodedArgs =
-              (jsonDecode(call.arguments) as Map).cast<String, dynamic>();
+          decodedArgs = (jsonDecode(call.arguments) as Map)
+              .cast<String, dynamic>();
         }
       } catch (e) {
         return ExecutionToolResult(
@@ -1892,8 +1909,8 @@ class StatefulAgent {
         );
       }
 
-      final properties =
-          (tool.parameters['properties'] as Map? ?? {}).cast<String, dynamic>();
+      final properties = (tool.parameters['properties'] as Map? ?? {})
+          .cast<String, dynamic>();
 
       void addArgument(String key, dynamic value) {
         dynamic castedValue = value;
@@ -1911,8 +1928,7 @@ class StatefulAgent {
               } else if (itemType == 'integer') {
                 castedValue = value.cast<int>();
               } else if (itemType == 'number') {
-                castedValue =
-                    value.map((e) => (e as num).toDouble()).toList();
+                castedValue = value.map((e) => (e as num).toDouble()).toList();
               } else if (itemType == 'boolean') {
                 castedValue = value.cast<bool>();
               }

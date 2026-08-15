@@ -30,4 +30,31 @@ class WorkspaceStore {
       );
     });
   }
+
+  /// Last successfully bound site-gateway port, if any.
+  Future<int?> getGatewayPort(String workspaceId) {
+    return _metaDb.withDb((db) {
+      final rows = db.select(
+        'SELECT gateway_port FROM workspace_state WHERE workspace_id = ?',
+        [workspaceId],
+      );
+      if (rows.isEmpty) return null;
+      final raw = rows.first['gateway_port'];
+      if (raw is int && raw > 0) return raw;
+      if (raw is num && raw.toInt() > 0) return raw.toInt();
+      return null;
+    });
+  }
+
+  Future<void> setGatewayPort(String workspaceId, int port) {
+    return _metaDb.withDb((db) {
+      db.execute(
+        'INSERT INTO workspace_state (workspace_id, gateway_port) '
+        'VALUES (?, ?) '
+        'ON CONFLICT(workspace_id) DO UPDATE SET '
+        'gateway_port = excluded.gateway_port',
+        [workspaceId, port],
+      );
+    });
+  }
 }

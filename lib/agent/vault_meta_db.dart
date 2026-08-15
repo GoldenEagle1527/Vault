@@ -63,6 +63,12 @@ CREATE TABLE IF NOT EXISTS workspace_state (
     if (!hasMode) {
       db.execute('ALTER TABLE workspace_state ADD COLUMN mode TEXT');
     }
+    final hasGatewayPort = workspaceStateCols.any(
+      (row) => row['name'] == 'gateway_port',
+    );
+    if (!hasGatewayPort) {
+      db.execute('ALTER TABLE workspace_state ADD COLUMN gateway_port INTEGER');
+    }
     db.execute('''
 CREATE TABLE IF NOT EXISTS projects (
   workspace_id TEXT NOT NULL,
@@ -82,11 +88,22 @@ CREATE TABLE IF NOT EXISTS project_urls (
   name TEXT NOT NULL,
   url TEXT NOT NULL,
   start_command TEXT,
+  slug TEXT,
   UNIQUE (workspace_id, project_path, sort_order),
   FOREIGN KEY (workspace_id, project_path)
     REFERENCES projects(workspace_id, path) ON DELETE CASCADE
 );
 ''');
+    final urlCols = db.select('PRAGMA table_info(project_urls)');
+    final hasSlug = urlCols.any((row) => row['name'] == 'slug');
+    if (!hasSlug) {
+      db.execute('ALTER TABLE project_urls ADD COLUMN slug TEXT');
+    }
+    db.execute(
+      'CREATE UNIQUE INDEX IF NOT EXISTS project_urls_workspace_slug '
+      'ON project_urls (workspace_id, slug) '
+      "WHERE slug IS NOT NULL AND slug != ''",
+    );
     db.execute('''
 CREATE TABLE IF NOT EXISTS project_state (
   workspace_id TEXT NOT NULL,

@@ -8,7 +8,10 @@ import 'package:vault/agent/agent_settings.dart';
 import 'package:vault/agent/agent_system_prompt.dart';
 import 'package:vault/agent/conversation_store.dart';
 import 'package:vault/agent/project_store.dart';
+import 'package:vault/agent/site_gateway.dart';
 import 'package:vault/agent/system_notice.dart';
+import 'package:vault/agent/ask_user.dart';
+import 'package:vault/agent/tools/ask_user_tool.dart';
 import 'package:vault/agent/tools/project_url_tool.dart';
 import 'package:vault/agent/tools/shell_tool.dart';
 import 'package:vault/agent/vault_meta_db.dart';
@@ -177,6 +180,7 @@ class AgentService {
     String? conversationId,
     String? projectPath,
     WorkspaceMode mode = WorkspaceMode.chat,
+    SiteGateway? siteGateway,
   }) : _workspace = workspace,
        _settings = settings,
        _shellTimeout = shellTimeout,
@@ -184,6 +188,7 @@ class AgentService {
        _store = conversationStore,
        _projectStore = projectStore,
        _mode = mode,
+       _siteGateway = siteGateway,
        _projectPath =
            projectPath ?? initialState?.metadata['projectPath'] as String?,
        // AgentState.sessionId is the engine field for conversation id.
@@ -199,6 +204,7 @@ class AgentService {
     VaultMetaDb? metaDb,
     Duration shellTimeout = kDefaultShellToolTimeout,
     WorkspaceMode mode = WorkspaceMode.chat,
+    SiteGateway? siteGateway,
   }) async {
     final store =
         conversationStore ??
@@ -217,6 +223,7 @@ class AgentService {
       conversationId: opened.state.sessionId,
       initialState: opened.state,
       mode: mode,
+      siteGateway: siteGateway,
     );
   }
 
@@ -228,6 +235,7 @@ class AgentService {
     ProjectStore? projectStore,
     Duration shellTimeout = kDefaultShellToolTimeout,
     WorkspaceMode mode = WorkspaceMode.chat,
+    SiteGateway? siteGateway,
   }) {
     return AgentService(
       workspace: workspace,
@@ -236,6 +244,7 @@ class AgentService {
       conversationStore: conversationStore,
       projectStore: projectStore,
       mode: mode,
+      siteGateway: siteGateway,
     );
   }
 
@@ -245,6 +254,8 @@ class AgentService {
   final ConversationStore? _store;
   final ProjectStore? _projectStore;
   final WorkspaceMode _mode;
+  final SiteGateway? _siteGateway;
+  final AskUserHost askUser = AskUserHost();
 
   StatefulAgent? _agent;
 
@@ -365,6 +376,7 @@ class AgentService {
 
     final projectStore = _projectStore;
     final tools = <Tool>[
+      createAskUserTool(askUser),
       createShellTool(
         _workspace,
         timeout: _shellTimeout,
@@ -376,6 +388,8 @@ class AgentService {
           projectStore: projectStore,
           workspaceId: workspaceId,
           projectPath: projectPath,
+          workspace: _workspace,
+          gateway: _siteGateway,
         ),
     ];
 
@@ -560,16 +574,33 @@ class AgentService {
       case StreamingEventType.modelChunkMessage:
         final chunk = event.data as ModelMessage;
         final text = chunk.textOutput;
-        if (text != null && text.isNotEmpty) {
+        if (isVisibleAssistantText(text)) {
           buffer.write(text);
-          yield AgentUiAssistantDelta(text);
+          yield AgentUiAssistantDelta(text!);
+        }
+        if (chunk.functionCalls.isNotEmpty) {
+          for (final ui in _flushTurnBeforeTools(buffer)) {
+            yield ui;
+          }
+          for (final call in chunk.functionCalls) {
+            if (call.id.isEmpty &&
+                call.name.isEmpty &&
+                call.arguments.isEmpty) {
+              continue;
+            }
+            yield AgentUiToolCall(
+              name: call.name,
+              arguments: call.arguments,
+              callId: call.id.isEmpty ? null : call.id,
+            );
+          }
         }
       case StreamingEventType.fullModelMessage:
         final full = event.data as ModelMessage;
         final text = full.textOutput;
-        if (text != null && text.isNotEmpty && buffer.isEmpty) {
+        if (isVisibleAssistantText(text) && buffer.isEmpty) {
           buffer.write(text);
-          yield AgentUiAssistantDelta(text);
+          yield AgentUiAssistantDelta(text!);
         }
         final usage = full.usage;
         final at = DateTime.fromMicrosecondsSinceEpoch(full.timestamp);
@@ -863,6 +894,21 @@ class AgentService {
     return null;
   }
 
+  static AgentUiSystemNotice _systemNoticeEvent(
+    String raw, {
+    required String fallback,
+  }) {
+    final notice = systemNoticeForUserText(raw);
+    return AgentUiSystemNotice(
+      notice?.text ?? fallback,
+      isError: notice?.isError ?? false,
+    );
+  }
+
+  /// True when streamed model text should become a visible assistant bubble.
+  static bool isVisibleAssistantText(String? text) =>
+      text != null && text.trim().isNotEmpty;
+
   /// Close the current UI turn buffer when the model switches to tools.
   ///
   /// Model text is never rewritten. Whitespace-only drafts are discarded as a
@@ -877,17 +923,6 @@ class AgentService {
       return;
     }
     yield AgentUiAssistantFinal(draft);
-  }
-
-  static AgentUiSystemNotice _systemNoticeEvent(
-    String raw, {
-    required String fallback,
-  }) {
-    final notice = systemNoticeForUserText(raw);
-    return AgentUiSystemNotice(
-      notice?.text ?? fallback,
-      isError: notice?.isError ?? false,
-    );
   }
 
   /// Map persisted [LLMMessage] history into UI events for rehydrate.
@@ -1020,6 +1055,7 @@ class AgentService {
   }
 
   void cancel() {
+    askUser.cancelAll();
     final token = _cancelToken;
     if (token != null && !token.isCancelled) {
       token.cancel('用户取消');

@@ -4,22 +4,28 @@ import 'dart:convert';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:vault/util/host_file_picker.dart';
 import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
+import 'package:url_launcher/url_launcher.dart';
+import 'package:vault/util/host_file_picker.dart';
 import 'package:vault/agent/agent_inbox.dart';
 import 'package:vault/agent/agent_service.dart';
 import 'package:vault/agent/agent_settings.dart';
+import 'package:vault/agent/ask_user.dart';
 import 'package:vault/agent/chat_input_keys.dart';
 import 'package:vault/agent/conversation_store.dart';
 import 'package:vault/agent/project_site_launcher.dart';
 import 'package:vault/agent/project_store.dart';
+import 'package:vault/agent/site_gateway.dart';
+import 'package:vault/agent/site_port.dart';
 import 'package:vault/agent/system_notice.dart';
 import 'package:vault/agent/workspace_mode.dart';
+import 'package:vault/agent/workspace_store.dart';
 import 'package:vault/permissions/active_workspace_holder.dart';
 import 'package:vault/sandbox/sandbox_provider.dart';
 import 'package:vault/screens/file_browser_screen.dart';
 import 'package:vault/screens/settings_screen.dart';
 import 'package:vault/screens/terminal_screen.dart';
+import 'package:vault/widgets/ask_user_panel.dart';
 import 'package:vault/widgets/glass.dart';
 import 'package:vault/widgets/new_project_dialog.dart';
 
@@ -95,8 +101,8 @@ class _ChatItem {
 
   final _ChatKind kind;
   String text;
-  final String? toolName;
-  final String? toolArguments;
+  String? toolName;
+  String? toolArguments;
   String? toolResult;
   String? toolCallId;
   String? toolJobId;
@@ -115,6 +121,8 @@ class _AgentScreenState extends State<AgentScreen> {
   late final AgentSettingsStore _settingsStore;
   late final ConversationStore _conversationStore;
   late final ProjectStore _projectStore;
+  late final WorkspaceStore _workspaceStore;
+  final SiteGateway _siteGateway = SiteGateway();
   final _inputCtrl = TextEditingController();
   late final FocusNode _inputFocus;
   final _scrollCtrl = ScrollController();
@@ -135,6 +143,7 @@ class _AgentScreenState extends State<AgentScreen> {
   /// 0 项目 · 1 会话 · 2 站点 · 3 工具
   int _sideTabIndex = 0;
   StreamSubscription<AgentUiEvent>? _backgroundUiSub;
+  AskUserHost? _askUserHost;
   final Map<String, bool> _siteUp = {};
   final Set<String> _siteBusy = {};
   Timer? _sitePollTimer;
@@ -168,6 +177,7 @@ class _AgentScreenState extends State<AgentScreen> {
     _inputFocus = FocusNode(onKeyEvent: _onInputKeyEvent);
     _conversationStore = widget.conversationStore;
     _projectStore = widget.projectStore;
+    _workspaceStore = WorkspaceStore(metaDb: _projectStore.metaDb);
     ActiveWorkspaceHolder.current = widget.workspace;
     _boot();
   }
@@ -181,6 +191,7 @@ class _AgentScreenState extends State<AgentScreen> {
       final settings = bundle.active;
       await _projectStore.ensureBootstrapped(widget.workspace.workspaceId);
       await _refreshProjects();
+      await _ensureSiteGateway();
       if (_projects.isEmpty) {
         _service = AgentService.withoutProject(
           workspace: widget.workspace,
@@ -188,6 +199,7 @@ class _AgentScreenState extends State<AgentScreen> {
           conversationStore: _conversationStore,
           projectStore: _projectStore,
           mode: widget.mode,
+          siteGateway: _siteGateway,
         );
         _bindBackgroundUi(_service);
         _conversations = const [];
@@ -215,6 +227,7 @@ class _AgentScreenState extends State<AgentScreen> {
           projectStore: _projectStore,
           projectPath: active,
           mode: widget.mode,
+          siteGateway: _siteGateway,
         );
         _service = service;
         _bindBackgroundUi(service);
@@ -253,7 +266,31 @@ class _AgentScreenState extends State<AgentScreen> {
     if (_activeProjectPath == null && _projects.isNotEmpty) {
       _activeProjectPath = _projects.first.path;
     }
+    _syncGatewayRoutes();
     _syncSitePoll();
+  }
+
+  Future<void> _ensureSiteGateway() async {
+    final ws = widget.workspace.workspaceId;
+    final preferred = await _workspaceStore.getGatewayPort(ws);
+    final port = await _siteGateway.start(preferredPort: preferred ?? 0);
+    if (port != preferred) {
+      await _workspaceStore.setGatewayPort(ws, port);
+    }
+    _syncGatewayRoutes();
+  }
+
+  void _syncGatewayRoutes() {
+    _siteGateway.updateRoutes(siteRoutesFromProjects(_projects));
+  }
+
+  String _sitePublicUrl(ProjectUrlEntry site) {
+    final slug = site.slug?.trim();
+    final port = _siteGateway.port;
+    if (slug != null && slug.isNotEmpty && port != null) {
+      return sitePublicUrl(slug: slug, gatewayPort: port);
+    }
+    return site.url;
   }
 
   Future<void> _refreshConversationList() async {
@@ -285,7 +322,18 @@ class _AgentScreenState extends State<AgentScreen> {
     _activeConversationId = service.conversationId;
   }
 
+  void _onAskUserChanged() {
+    if (mounted) setState(() {});
+  }
+
+  void _bindAskUser(AgentService? service) {
+    _askUserHost?.pending.removeListener(_onAskUserChanged);
+    _askUserHost = service?.askUser;
+    _askUserHost?.pending.addListener(_onAskUserChanged);
+  }
+
   void _bindBackgroundUi(AgentService? service) {
+    _bindAskUser(service);
     unawaited(_backgroundUiSub?.cancel());
     _backgroundUiSub = null;
     if (service == null) return;
@@ -376,10 +424,12 @@ class _AgentScreenState extends State<AgentScreen> {
           at: at,
         );
       case AgentUiToolCall(:final name, :final arguments, :final callId):
+        if (name == kAskUserToolName) break;
         _items.add(
           _ChatItem.tool(name: name, arguments: arguments, callId: callId),
         );
       case AgentUiToolResult(:final name, :final result, :final callId):
+        if (name == kAskUserToolName) break;
         _attachToolResult(name, result, callId: callId);
       case AgentUiToolBackgrounded(
         :final name,
@@ -458,6 +508,9 @@ class _AgentScreenState extends State<AgentScreen> {
           ),
         );
       case AgentUiAssistantDelta(:final text):
+        if (!AgentService.isVisibleAssistantText(text)) {
+          break;
+        }
         if (_items.isNotEmpty && _items.last.kind == _ChatKind.assistant) {
           if (_items.last.thinkingPlaceholder) {
             _items.last.thinkingPlaceholder = false;
@@ -476,6 +529,21 @@ class _AgentScreenState extends State<AgentScreen> {
         :final duration,
         :final at,
       ):
+        if (!AgentService.isVisibleAssistantText(text)) {
+          if (_items.isNotEmpty &&
+              _items.last.kind == _ChatKind.assistant &&
+              !_items.last.thinkingPlaceholder) {
+            _mergeUsageInto(
+              _items.last,
+              promptTokens: promptTokens,
+              completionTokens: completionTokens,
+              totalTokens: totalTokens,
+              duration: duration,
+              at: at,
+            );
+          }
+          break;
+        }
         if (_items.isNotEmpty && _items.last.kind == _ChatKind.assistant) {
           final item = _items.last;
           item.thinkingPlaceholder = false;
@@ -521,11 +589,10 @@ class _AgentScreenState extends State<AgentScreen> {
       case AgentUiDiscardDraftAssistant():
         _discardBlankAssistantDraft();
       case AgentUiToolCall(:final name, :final arguments, :final callId):
-        _discardBlankAssistantDraft();
-        _items.add(
-          _ChatItem.tool(name: name, arguments: arguments, callId: callId),
-        );
+        if (name == kAskUserToolName) break;
+        _upsertToolCall(name: name, arguments: arguments, callId: callId);
       case AgentUiToolResult(:final name, :final result, :final callId):
+        if (name == kAskUserToolName) break;
         _attachToolResult(name, result, callId: callId);
       case AgentUiToolBackgrounded(
         :final name,
@@ -627,6 +694,40 @@ class _AgentScreenState extends State<AgentScreen> {
     }
   }
 
+  void _upsertToolCall({
+    required String name,
+    required String arguments,
+    String? callId,
+  }) {
+    _discardBlankAssistantDraft();
+    for (var i = _items.length - 1; i >= 0; i--) {
+      final item = _items[i];
+      if (item.kind != _ChatKind.tool || item.toolResult != null) continue;
+      final idMatch =
+          callId != null && callId.isNotEmpty && item.toolCallId == callId;
+      final adoptPending =
+          !item.toolBackgrounded &&
+          (item.toolCallId == null || item.toolCallId!.isEmpty) &&
+          (name.isEmpty ||
+              item.toolName == null ||
+              item.toolName!.isEmpty ||
+              item.toolName == name);
+      if (!idMatch && !adoptPending) continue;
+      if (callId != null && callId.isNotEmpty) item.toolCallId = callId;
+      if (name.isNotEmpty) {
+        item.toolName = name;
+        item.text = name;
+      }
+      if (arguments.length >= (item.toolArguments?.length ?? 0)) {
+        item.toolArguments = arguments;
+      }
+      return;
+    }
+    _items.add(
+      _ChatItem.tool(name: name, arguments: arguments, callId: callId),
+    );
+  }
+
   void _markToolBackgrounded({
     required String name,
     required String jobId,
@@ -682,6 +783,9 @@ class _AgentScreenState extends State<AgentScreen> {
         if (clearBackgrounded) item.toolBackgrounded = false;
         item.toolCallId ??= callId;
         item.toolJobId ??= jobId;
+        if (name == 'register_project_url') {
+          unawaited(_refreshProjects());
+        }
         return;
       }
     }
@@ -713,6 +817,7 @@ class _AgentScreenState extends State<AgentScreen> {
           conversationStore: _conversationStore,
           projectStore: _projectStore,
           mode: widget.mode,
+          siteGateway: _siteGateway,
         );
         _bindBackgroundUi(_service);
       } else {
@@ -723,6 +828,7 @@ class _AgentScreenState extends State<AgentScreen> {
           projectStore: _projectStore,
           projectPath: projectPath,
           mode: widget.mode,
+          siteGateway: _siteGateway,
         );
         _bindBackgroundUi(_service);
         _hydrateFromService();
@@ -759,6 +865,7 @@ class _AgentScreenState extends State<AgentScreen> {
         projectStore: _projectStore,
         projectPath: created.path,
         mode: widget.mode,
+        siteGateway: _siteGateway,
       );
       _bindBackgroundUi(_service);
       await _refreshProjects();
@@ -868,6 +975,16 @@ class _AgentScreenState extends State<AgentScreen> {
     }
   }
 
+  Future<void> _openSiteUrl(ProjectUrlEntry site) async {
+    final url = _sitePublicUrl(site).trim();
+    if (url.isEmpty) return;
+    final uri = Uri.tryParse(url);
+    if (uri == null) return;
+    if (await canLaunchUrl(uri)) {
+      await launchUrl(uri, mode: LaunchMode.externalApplication);
+    }
+  }
+
   Future<void> _startSite(ProjectUrlEntry entry) async {
     final projectPath = _activeProjectPath;
     if (projectPath == null) return;
@@ -877,9 +994,11 @@ class _AgentScreenState extends State<AgentScreen> {
     });
     var launched = false;
     try {
-      final result = await ProjectSiteLauncher(
-        widget.workspace,
-      ).start(projectPath: projectPath, entry: entry);
+      final result = await ProjectSiteLauncher(widget.workspace).start(
+        projectPath: projectPath,
+        entry: entry,
+        openUrl: _sitePublicUrl(entry),
+      );
       if (!mounted) return;
       launched = result.startedProcess || result.alreadyUp;
       if (launched) _siteUp[entry.name] = true;
@@ -887,7 +1006,8 @@ class _AgentScreenState extends State<AgentScreen> {
         if (result.alreadyUp) '服务已在运行',
         if (result.startedProcess) '已后台启动',
         if (result.openedUrl) '已打开浏览器',
-        if (!result.openedUrl && entry.url.trim().isNotEmpty) '地址：${entry.url}',
+        if (!result.openedUrl && _sitePublicUrl(entry).trim().isNotEmpty)
+          '地址：${_sitePublicUrl(entry)}',
         if (result.message != null &&
             result.message != '服务已在运行' &&
             result.message != '已后台启动')
@@ -1289,6 +1409,9 @@ class _AgentScreenState extends State<AgentScreen> {
       ActiveWorkspaceHolder.current = null;
     }
     _sitePollTimer?.cancel();
+    unawaited(_siteGateway.stop());
+    _askUserHost?.pending.removeListener(_onAskUserChanged);
+    _askUserHost = null;
     unawaited(_backgroundUiSub?.cancel());
     unawaited(_service?.dispose() ?? Future.value());
     unawaited(widget.workspace.dispose());
@@ -1418,42 +1541,21 @@ class _AgentScreenState extends State<AgentScreen> {
     final up = _siteUp[site.name] == true;
     final busy = _siteBusy.contains(site.name);
     final canAct = !_booting && !busy;
+    final url = _sitePublicUrl(site).trim();
     return ListTile(
       leading: Icon(
         Icons.language,
         color: up ? scheme.primary : scheme.onSurfaceVariant,
       ),
-      title: Row(
-        children: [
-          Expanded(
-            child: Text(
-              site.name,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-            ),
-          ),
-          if (up)
-            Container(
-              margin: const EdgeInsets.only(left: 8),
-              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
-              decoration: BoxDecoration(
-                color: scheme.primaryContainer,
-                borderRadius: BorderRadius.circular(8),
-              ),
-              child: Text(
-                '运行中',
-                style: Theme.of(context).textTheme.labelSmall?.copyWith(
-                  color: scheme.onPrimaryContainer,
-                  fontWeight: FontWeight.w600,
-                ),
-              ),
-            ),
-        ],
+      title: Text(
+        site.name,
+        maxLines: 1,
+        overflow: TextOverflow.ellipsis,
       ),
-      subtitle: Text(site.url, maxLines: 2, overflow: TextOverflow.ellipsis),
+      onTap: url.isEmpty ? null : () => unawaited(_openSiteUrl(site)),
       trailing: busy
           ? const SizedBox(
-              width: 72,
+              width: 40,
               child: Center(
                 child: SizedBox(
                   width: 18,
@@ -1462,18 +1564,15 @@ class _AgentScreenState extends State<AgentScreen> {
                 ),
               ),
             )
-          : up
-          ? FilledButton.tonal(
-              style: FilledButton.styleFrom(
-                backgroundColor: scheme.errorContainer,
-                foregroundColor: scheme.onErrorContainer,
+          : IconButton(
+              tooltip: up ? '终止' : '启动',
+              onPressed: canAct
+                  ? () => up ? _stopSite(site) : _startSite(site)
+                  : null,
+              icon: Icon(
+                up ? Icons.stop : Icons.play_arrow,
+                color: up ? scheme.error : scheme.primary,
               ),
-              onPressed: canAct ? () => _stopSite(site) : null,
-              child: const Text('终止'),
-            )
-          : FilledButton.tonal(
-              onPressed: canAct ? () => _startSite(site) : null,
-              child: const Text('启动'),
             ),
     );
   }
@@ -1723,7 +1822,13 @@ class _AgentScreenState extends State<AgentScreen> {
                       controller: _scrollCtrl,
                       padding: const EdgeInsets.fromLTRB(16, 16, 16, 24),
                       itemCount: _items.length,
-                      itemBuilder: (context, i) => _ChatBubble(item: _items[i]),
+                      itemBuilder: (context, i) {
+                        final item = _items[i];
+                        return KeyedSubtree(
+                          key: _chatItemKey(item, i),
+                          child: _ChatBubble(item: item),
+                        );
+                      },
                     ),
             ),
           ),
@@ -1764,6 +1869,18 @@ class _AgentScreenState extends State<AgentScreen> {
                 constraints: const BoxConstraints(maxWidth: 840),
                 child: Column(
                   children: [
+                    if (_askUserHost?.pending.value != null) ...[
+                      AskUserPanel(
+                        questionnaire:
+                            _askUserHost!.pending.value!.questionnaire,
+                        onSubmit: (answers) {
+                          _askUserHost?.pending.value?.complete(
+                            AskUserSubmission.ok(answers),
+                          );
+                        },
+                      ),
+                      const SizedBox(height: 8),
+                    ],
                     GlassPanel(
                       borderRadius: 28,
                       tone: GlassTone.strong,
@@ -2086,6 +2203,15 @@ class _EmptyChat extends StatelessWidget {
   }
 }
 
+Key _chatItemKey(_ChatItem item, int index) {
+  if (item.thinkingPlaceholder) return const ValueKey('thinking-placeholder');
+  final callId = item.toolCallId;
+  if (item.kind == _ChatKind.tool && callId != null && callId.isNotEmpty) {
+    return ValueKey('tool-$callId');
+  }
+  return ValueKey('chat-$index-${item.kind.name}');
+}
+
 /// Centered muted line for site/workspace/background-task system hints.
 class _SystemNotice extends StatelessWidget {
   const _SystemNotice({required this.text, this.isError = false});
@@ -2120,6 +2246,14 @@ class _ChatBubble extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
+
+    if (item.thinkingPlaceholder) {
+      return _ThinkingRow(label: item.text);
+    }
+
+    if (item.kind == _ChatKind.assistant && item.text.trim().isEmpty) {
+      return const SizedBox.shrink();
+    }
 
     if (item.kind == _ChatKind.status || item.kind == _ChatKind.error) {
       return _SystemNotice(
@@ -2176,18 +2310,8 @@ class _ChatBubble extends StatelessWidget {
       ),
     };
 
-    final thinking = item.thinkingPlaceholder;
-    final contentColor = thinking ? fg.withValues(alpha: 0.62) : fg;
-    final Widget body = thinking
-        ? Text(
-            item.text,
-            style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-              color: contentColor,
-              fontStyle: FontStyle.italic,
-              height: 1.35,
-            ),
-          )
-        : _ChatMarkdown(data: item.text, color: contentColor);
+    final contentColor = fg;
+    final Widget body = _ChatMarkdown(data: item.text, color: contentColor);
 
     final bubble = solid
         ? DecoratedBox(
@@ -2555,6 +2679,51 @@ class _ToolCallCardState extends State<_ToolCallCard> {
   }
 }
 
+class _ThinkingRow extends StatelessWidget {
+  const _ThinkingRow({required this.label});
+
+  final String label;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 6, horizontal: 4),
+      child: Row(
+        children: [
+          Icon(
+            Icons.keyboard_arrow_right,
+            size: 18,
+            color: scheme.onSurfaceVariant,
+          ),
+          const SizedBox(width: 4),
+          SizedBox(
+            width: 12,
+            height: 12,
+            child: CircularProgressIndicator(
+              strokeWidth: 1.5,
+              color: scheme.primary,
+            ),
+          ),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              label,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                color: scheme.onSurfaceVariant,
+                fontStyle: FontStyle.italic,
+                fontWeight: FontWeight.w500,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
 String _toolCommand(String name, String? arguments) {
   final raw = arguments?.trim() ?? '';
   if (raw.isEmpty) return name;
@@ -2566,8 +2735,21 @@ String _toolCommand(String name, String? arguments) {
         return command.trim();
       }
     }
-  } catch (_) {}
+  } catch (_) {
+    final partial = _partialJsonStringField(raw, 'command');
+    if (partial != null && partial.isNotEmpty) return partial;
+    if (name.isNotEmpty && (raw.startsWith('{') || raw.startsWith('['))) {
+      return name;
+    }
+  }
   return raw;
+}
+
+String? _partialJsonStringField(String raw, String key) {
+  final match = RegExp('"$key"\\s*:\\s*"((?:[^"\\\\]|\\\\.)*)').firstMatch(raw);
+  final value = match?.group(1);
+  if (value == null || value.isEmpty) return null;
+  return value.replaceAll(r'\"', '"').replaceAll(r'\\', r'\');
 }
 
 String _toolSummary({
@@ -2584,6 +2766,7 @@ String _toolSummary({
     return preview.isEmpty ? '后台执行中 $toolName' : '后台执行中 $preview';
   }
   if (!done) {
+    if (preview.isEmpty && toolName.isEmpty) return '正在调用工具…';
     return preview.isEmpty ? 'Running $toolName…' : 'Running $preview';
   }
   if (preview.isEmpty) return 'Ran $toolName';

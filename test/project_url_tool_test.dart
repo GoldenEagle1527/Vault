@@ -5,6 +5,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:path/path.dart' as p;
 import 'package:vault/agent/conversation_store.dart';
 import 'package:vault/agent/project_store.dart';
+import 'package:vault/agent/site_gateway.dart';
 import 'package:vault/agent/tools/project_url_tool.dart';
 import 'package:vault/agent/vault_meta_db.dart';
 import 'package:vault_agent_core/vault_agent_core.dart';
@@ -93,5 +94,53 @@ void main() {
     expect(json['ok'], isTrue);
     expect(json['urls'], hasLength(1));
     expect((json['urls'] as List).first['name'], 'API');
+    expect(json['workspace_ports_in_use'], isA<List>());
+    expect((json['workspace_ports_in_use'] as List).first['port'], 8000);
+  });
+
+  test('register_project_url rejects port used by another project', () async {
+    final other = await projects.createProject(
+      'ws1',
+      conversationStore: conversations,
+    );
+    await projects.upsertUrl(
+      'ws1',
+      other.path,
+      const ProjectUrlEntry(name: '网站', url: 'http://127.0.0.1:8080/'),
+    );
+    final tools = createProjectUrlTools(
+      projectStore: projects,
+      workspaceId: 'ws1',
+      projectPath: projectPath,
+    );
+    final register = tools.firstWhere((t) => t.name == 'register_project_url');
+    final json = await runTool(register, {
+      'name': '网站',
+      'url': 'http://127.0.0.1:8080/',
+    });
+    expect(json['ok'], isFalse);
+    expect(json['error'], contains('8080'));
+    expect(json['error'], contains('占用'));
+  });
+
+  test('register_project_url returns public_url from gateway', () async {
+    final gateway = SiteGateway();
+    addTearDown(gateway.stop);
+    await gateway.start();
+    final tools = createProjectUrlTools(
+      projectStore: projects,
+      workspaceId: 'ws1',
+      projectPath: projectPath,
+      gateway: gateway,
+    );
+    final register = tools.firstWhere((t) => t.name == 'register_project_url');
+    final json = await runTool(register, {
+      'name': '网站',
+      'url': 'http://127.0.0.1:8765/',
+    });
+    expect(json['ok'], isTrue);
+    expect(json['public_url'], contains('.localhost:${gateway.port}/'));
+    expect(json['registered'], isA<Map<String, dynamic>>());
+    expect((json['registered'] as Map<String, dynamic>)['slug'], isNotEmpty);
   });
 }

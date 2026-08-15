@@ -131,8 +131,11 @@ void main() {
     expect(map['API'], isFalse);
   });
 
-  test('start skips launch when probe says already up', () async {
+  test('start skips launch when own pid is alive', () async {
     final ws = _FakeWorkspace((cmd) async {
+      if (cmd.contains('vault_site_own_pid')) {
+        return const CommandResult(exitCode: 0, stdout: '1', stderr: '');
+      }
       return const CommandResult(exitCode: 0, stdout: '200', stderr: '');
     });
     final result = await ProjectSiteLauncher(
@@ -143,9 +146,31 @@ void main() {
     expect(ws.commands.where((c) => c.contains('nohup')), isEmpty);
   });
 
+  test('start fails when port is up but pid is not ours', () async {
+    final ws = _FakeWorkspace((cmd) async {
+      if (cmd.contains('vault_site_own_pid')) {
+        return const CommandResult(exitCode: 0, stdout: '0', stderr: '');
+      }
+      if (cmd.contains('/proc/net/tcp')) {
+        return const CommandResult(exitCode: 0, stdout: '200', stderr: '');
+      }
+      return const CommandResult(exitCode: 0, stdout: '', stderr: '');
+    });
+    final result = await ProjectSiteLauncher(
+      ws,
+    ).start(projectPath: 'p1', entry: _site, openInBrowser: false);
+    expect(result.startedProcess, isFalse);
+    expect(result.alreadyUp, isFalse);
+    expect(result.message, contains('占用'));
+    expect(ws.commands.where((c) => c.contains('nohup')), isEmpty);
+  });
+
   test('start writes pid when down without a second probe', () async {
     var probes = 0;
     final ws = _FakeWorkspace((cmd) async {
+      if (cmd.contains('vault_site_own_pid')) {
+        return const CommandResult(exitCode: 0, stdout: '0', stderr: '');
+      }
       if (cmd.contains('/proc/net/tcp')) {
         probes += 1;
         return const CommandResult(exitCode: 0, stdout: '0', stderr: '');

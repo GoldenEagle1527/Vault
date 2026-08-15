@@ -1,6 +1,9 @@
 import 'package:url_launcher/url_launcher.dart';
 import 'package:vault/agent/project_store.dart';
+import 'package:vault/agent/site_port.dart';
 import 'package:vault/sandbox/sandbox_models.dart';
+
+export 'package:vault/agent/site_port.dart' show portFromSiteUrl;
 
 /// Result of starting a registered project site from the UI.
 class ProjectSiteStartResult {
@@ -31,16 +34,6 @@ bool isHttpServiceResponding(String code) {
   return n != null && n >= 100 && n <= 599;
 }
 
-/// Port from a registered site URL (`http` → 80, `https` → 443 when omitted).
-int? portFromSiteUrl(String url) {
-  final uri = Uri.tryParse(url.trim());
-  if (uri == null || uri.host.isEmpty) return null;
-  if (uri.hasPort) return uri.port;
-  if (uri.scheme == 'https') return 443;
-  if (uri.scheme == 'http') return 80;
-  return null;
-}
-
 /// Guest basename prefix for pid/log files of one registered site.
 String siteRuntimeStem(String name, {String? url}) {
   final port = url == null ? null : portFromSiteUrl(url);
@@ -69,6 +62,26 @@ for port in ${ports.join(' ')}; do
     echo 0
   fi
 done
+''';
+}
+
+/// Whether this site's pid-file process is still alive (`1` / `0`).
+String siteOwnPidAliveShellCommand({
+  required String projectDir,
+  required String pidFileName,
+}) {
+  final pidQ = shellSingleQuote('$projectDir/$pidFileName');
+  return '''
+# vault_site_own_pid
+pidfile=$pidQ
+if [ -f "\$pidfile" ]; then
+  pid=\$(cat "\$pidfile" 2>/dev/null || true)
+  if [ -n "\$pid" ] && [ -d "/proc/\$pid" ]; then
+    echo 1
+    exit 0
+  fi
+fi
+echo 0
 ''';
 }
 
@@ -181,18 +194,47 @@ class ProjectSiteLauncher {
     return map[entry.name] ?? false;
   }
 
-  /// Run [entry.startCommand] (if any) under the project dir, then open [entry.url].
+  /// True when this entry's pid-file process is still alive (not just the port).
+  Future<bool> isOwnProcessAlive({
+    required String projectPath,
+    required ProjectUrlEntry entry,
+  }) async {
+    final dir = guestProjectDir(projectPath);
+    final stem = siteRuntimeStem(entry.name, url: entry.url);
+    final result = await workspace.run(
+      siteOwnPidAliveShellCommand(projectDir: dir, pidFileName: '$stem.pid'),
+      timeout: const Duration(seconds: 10),
+    );
+    return result.stdout.trim() == '1';
+  }
+
+  /// Run [entry.startCommand] (if any) under the project dir, then open [openUrl]
+  /// (gateway public URL) or [entry.url].
   Future<ProjectSiteStartResult> start({
     required String projectPath,
     required ProjectUrlEntry entry,
     bool openInBrowser = true,
+    String? openUrl,
   }) async {
     final dir = guestProjectDir(projectPath);
     final url = entry.url.trim();
     final startCmd = entry.startCommand?.trim();
     final stem = siteRuntimeStem(entry.name, url: url);
 
-    var alreadyUp = url.isNotEmpty && await isUp(entry);
+    final ownAlive = await isOwnProcessAlive(
+      projectPath: projectPath,
+      entry: entry,
+    );
+    final portUp = url.isNotEmpty && await isUp(entry);
+    if (!ownAlive && portUp) {
+      return ProjectSiteStartResult(
+        startedProcess: false,
+        alreadyUp: false,
+        openedUrl: false,
+        message: '端口已被其他进程占用，无法启动「${entry.name}」',
+      );
+    }
+    var alreadyUp = ownAlive;
     var startedProcess = false;
 
     if (!alreadyUp && startCmd != null && startCmd.isNotEmpty) {
@@ -224,9 +266,10 @@ class ProjectSiteLauncher {
       );
     }
 
+    final browserUrl = (openUrl ?? url).trim();
     var openedUrl = false;
-    if (openInBrowser && url.isNotEmpty) {
-      final uri = Uri.tryParse(url);
+    if (openInBrowser && browserUrl.isNotEmpty) {
+      final uri = Uri.tryParse(browserUrl);
       if (uri != null && await canLaunchUrl(uri)) {
         openedUrl = await launchUrl(uri, mode: LaunchMode.externalApplication);
       }

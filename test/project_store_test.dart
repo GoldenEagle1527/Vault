@@ -29,14 +29,8 @@ void main() {
 
   test('allocateDisplayName uses 新项目 then 新项目(n)', () {
     expect(ProjectStore.allocateDisplayName(const []), kDefaultProjectName);
-    expect(
-      ProjectStore.allocateDisplayName(const ['新项目']),
-      '新项目(1)',
-    );
-    expect(
-      ProjectStore.allocateDisplayName(const ['新项目', '新项目(1)']),
-      '新项目(2)',
-    );
+    expect(ProjectStore.allocateDisplayName(const ['新项目']), '新项目(1)');
+    expect(ProjectStore.allocateDisplayName(const ['新项目', '新项目(1)']), '新项目(2)');
   });
 
   test('createProject makes guest dir + host DB row, not guest db', () async {
@@ -105,5 +99,38 @@ void main() {
     expect(info.urls.first.name, 'api');
     expect(info.urls.first.startCommand, 'uvicorn app:app');
     expect(info.urls.last.name, 'web');
+    expect(info.urls.first.slug, isNotEmpty);
+    expect(info.urls.last.slug, isNotEmpty);
+    expect(info.urls.first.slug, isNot(info.urls.last.slug));
+  });
+
+  test('upsertUrl rejects port already used in another project', () async {
+    final a = await projects.createProject(
+      'ws1',
+      conversationStore: conversations,
+    );
+    final b = await projects.createProject(
+      'ws1',
+      conversationStore: conversations,
+    );
+    await projects.upsertUrl(
+      'ws1',
+      a.path,
+      const ProjectUrlEntry(name: '网站', url: 'http://127.0.0.1:8080/'),
+    );
+    expect(
+      () => projects.upsertUrl(
+        'ws1',
+        b.path,
+        const ProjectUrlEntry(name: '网站', url: 'http://127.0.0.1:8080/'),
+      ),
+      throwsA(
+        isA<Exception>().having(
+          (e) => e.toString(),
+          'message',
+          contains('8080'),
+        ),
+      ),
+    );
   });
 }

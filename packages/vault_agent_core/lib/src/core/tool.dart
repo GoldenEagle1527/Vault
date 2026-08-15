@@ -22,6 +22,10 @@ class Tool {
   final List<String> namedParameters;
   final ToolParameterMode parameterMode;
 
+  /// When false, [StatefulAgent.toolBackgroundAfter] does not detach this call.
+  /// Use for UI-blocking tools that must finish before the model continues.
+  final bool allowBackground;
+
   Tool({
     required this.name,
     required this.description,
@@ -29,6 +33,7 @@ class Tool {
     this.executable,
     this.namedParameters = const [],
     this.parameterMode = ToolParameterMode.function,
+    this.allowBackground = true,
   });
   Map<String, dynamic> toJson() {
     return {
