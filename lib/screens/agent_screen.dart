@@ -13,6 +13,7 @@ import 'package:vault/agent/chat_input_keys.dart';
 import 'package:vault/agent/conversation_store.dart';
 import 'package:vault/agent/project_site_launcher.dart';
 import 'package:vault/agent/project_store.dart';
+import 'package:vault/agent/system_notice.dart';
 import 'package:vault/agent/workspace_mode.dart';
 import 'package:vault/permissions/active_workspace_holder.dart';
 import 'package:vault/sandbox/sandbox_provider.dart';
@@ -307,15 +308,36 @@ class _AgentScreenState extends State<AgentScreen> {
     });
   }
 
+  void _addUserOrSystemNotice(String text, {int? promptTokens, DateTime? at}) {
+    final notice = systemNoticeForUserText(text);
+    if (notice != null) {
+      _items.add(
+        _ChatItem(
+          kind: notice.isError ? _ChatKind.error : _ChatKind.status,
+          text: notice.text,
+        ),
+      );
+      return;
+    }
+    _items.add(
+      _ChatItem(
+        kind: _ChatKind.user,
+        text: text,
+        promptTokens: promptTokens,
+        at: at,
+      ),
+    );
+  }
+
   void _applyRestoredEvent(AgentUiEvent event) {
     switch (event) {
       case AgentUiUserMessage(:final text, :final promptTokens, :final at):
+        _addUserOrSystemNotice(text, promptTokens: promptTokens, at: at);
+      case AgentUiSystemNotice(:final text, :final isError):
         _items.add(
           _ChatItem(
-            kind: _ChatKind.user,
+            kind: isError ? _ChatKind.error : _ChatKind.status,
             text: text,
-            promptTokens: promptTokens,
-            at: at,
           ),
         );
       case AgentUiAssistantFinal(
@@ -423,12 +445,16 @@ class _AgentScreenState extends State<AgentScreen> {
   void _applyLiveEvent(AgentUiEvent event) {
     switch (event) {
       case AgentUiUserMessage(:final text, :final promptTokens, :final at):
+        _addUserOrSystemNotice(
+          text,
+          promptTokens: promptTokens,
+          at: at ?? DateTime.now(),
+        );
+      case AgentUiSystemNotice(:final text, :final isError):
         _items.add(
           _ChatItem(
-            kind: _ChatKind.user,
+            kind: isError ? _ChatKind.error : _ChatKind.status,
             text: text,
-            promptTokens: promptTokens,
-            at: at ?? DateTime.now(),
           ),
         );
       case AgentUiAssistantDelta(:final text):
@@ -1633,10 +1659,7 @@ class _AgentScreenState extends State<AgentScreen> {
           for (final p in _profiles)
             PopupMenuItem(
               value: p.id,
-              child: Text(
-                p.displayName,
-                overflow: TextOverflow.ellipsis,
-              ),
+              child: Text(p.displayName, overflow: TextOverflow.ellipsis),
             ),
         ],
         child: Padding(
@@ -1812,12 +1835,7 @@ class _AgentScreenState extends State<AgentScreen> {
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
     final wide = MediaQuery.sizeOf(context).width >= 720;
-    final hasChatContent = _items.any(
-      (i) =>
-          i.kind == _ChatKind.user ||
-          i.kind == _ChatKind.assistant ||
-          i.kind == _ChatKind.tool,
-    );
+    final hasChatContent = _items.isNotEmpty;
 
     final chatBody = _booting
         ? const Center(child: CircularProgressIndicator())
@@ -2068,6 +2086,32 @@ class _EmptyChat extends StatelessWidget {
   }
 }
 
+/// Centered muted line for site/workspace/background-task system hints.
+class _SystemNotice extends StatelessWidget {
+  const _SystemNotice({required this.text, this.isError = false});
+
+  final String text;
+  final bool isError;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final color = isError
+        ? scheme.error.withValues(alpha: 0.68)
+        : scheme.onSurfaceVariant.withValues(alpha: 0.62);
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 28, vertical: 8),
+      child: Text(
+        text,
+        textAlign: TextAlign.center,
+        style: Theme.of(
+          context,
+        ).textTheme.bodySmall?.copyWith(color: color, height: 1.35),
+      ),
+    );
+  }
+}
+
 class _ChatBubble extends StatelessWidget {
   const _ChatBubble({required this.item});
 
@@ -2076,6 +2120,13 @@ class _ChatBubble extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
+
+    if (item.kind == _ChatKind.status || item.kind == _ChatKind.error) {
+      return _SystemNotice(
+        text: item.text,
+        isError: item.kind == _ChatKind.error,
+      );
+    }
 
     if (item.kind == _ChatKind.tool) {
       return Padding(

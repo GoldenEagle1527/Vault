@@ -75,7 +75,11 @@ void main() {
       ModelMessage(
         model: 'm',
         functionCalls: [
-          FunctionCall(id: 'c1', name: 'shell', arguments: '{"command":"sleep"}'),
+          FunctionCall(
+            id: 'c1',
+            name: 'shell',
+            arguments: '{"command":"sleep"}',
+          ),
         ],
       ),
       FunctionExecutionResultMessage(
@@ -99,5 +103,24 @@ void main() {
     expect(bg.jobId, 'job-1');
     expect(bg.callId, 'c1');
     expect(bg.stubResult, '已转后台');
+  });
+
+  test('uiEventsFromHistory maps background-task-result to system notice', () {
+    final raw = buildBackgroundTaskResultMessage([
+      BackgroundToolJob(
+        jobId: 'j1',
+        callId: 'c1',
+        toolName: 'shell',
+        arguments: '{}',
+        startedAt: DateTime.utc(2026, 1, 1),
+        status: BackgroundToolJobStatus.completed,
+      ),
+    ]);
+    final events = AgentService.uiEventsFromHistory([UserMessage.text(raw)]);
+    expect(events, hasLength(1));
+    expect(events.single, isA<AgentUiSystemNotice>());
+    final notice = events.single as AgentUiSystemNotice;
+    expect(notice.text, '后台任务已结束');
+    expect(notice.isError, isFalse);
   });
 }

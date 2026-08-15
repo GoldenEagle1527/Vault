@@ -8,6 +8,7 @@ import 'package:vault/agent/agent_settings.dart';
 import 'package:vault/agent/agent_system_prompt.dart';
 import 'package:vault/agent/conversation_store.dart';
 import 'package:vault/agent/project_store.dart';
+import 'package:vault/agent/system_notice.dart';
 import 'package:vault/agent/tools/project_url_tool.dart';
 import 'package:vault/agent/tools/shell_tool.dart';
 import 'package:vault/agent/vault_meta_db.dart';
@@ -21,11 +22,7 @@ sealed class AgentUiEvent {
 }
 
 class AgentUiUserMessage extends AgentUiEvent {
-  const AgentUiUserMessage(
-    this.text, {
-    this.promptTokens,
-    this.at,
-  });
+  const AgentUiUserMessage(this.text, {this.promptTokens, this.at});
   final String text;
   final int? promptTokens;
   final DateTime? at;
@@ -156,6 +153,13 @@ class AgentUiError extends AgentUiEvent {
   final String message;
 }
 
+/// Persistent system hint in the transcript (not a user/assistant bubble).
+class AgentUiSystemNotice extends AgentUiEvent {
+  const AgentUiSystemNotice(this.text, {this.isError = false});
+  final String text;
+  final bool isError;
+}
+
 class AgentUiStatus extends AgentUiEvent {
   const AgentUiStatus(this.message);
   final String message;
@@ -180,8 +184,8 @@ class AgentService {
        _store = conversationStore,
        _projectStore = projectStore,
        _mode = mode,
-       _projectPath = projectPath ??
-           initialState?.metadata['projectPath'] as String?,
+       _projectPath =
+           projectPath ?? initialState?.metadata['projectPath'] as String?,
        // AgentState.sessionId is the engine field for conversation id.
        _conversationId = conversationId ?? initialState?.sessionId;
 
@@ -196,13 +200,13 @@ class AgentService {
     Duration shellTimeout = kDefaultShellToolTimeout,
     WorkspaceMode mode = WorkspaceMode.chat,
   }) async {
-    final store = conversationStore ??
+    final store =
+        conversationStore ??
         (metaDb != null ? ConversationStore(metaDb: metaDb) : null);
     if (store == null) {
       throw StateError('需要 ConversationStore 或 VaultMetaDb 以持久化会话');
     }
-    final opened =
-        await store.ensureActive(workspace.workspaceId, projectPath);
+    final opened = await store.ensureActive(workspace.workspaceId, projectPath);
     return AgentService(
       workspace: workspace,
       settings: settings,
@@ -349,10 +353,7 @@ class AgentService {
         _pendingState ??
         AgentState(
           sessionId: conversationId,
-          metadata: {
-            'workspaceId': workspaceId,
-            'projectPath': projectPath,
-          },
+          metadata: {'workspaceId': workspaceId, 'projectPath': projectPath},
         );
     // Engine AgentState.sessionId == conversationId (not workspace id).
     if (state.sessionId != conversationId) {
@@ -433,14 +434,13 @@ class AgentService {
               jobId: job.jobId,
               callId: job.callId,
               result: job.resultText(),
-              isError: job.status == BackgroundToolJobStatus.failed ||
+              isError:
+                  job.status == BackgroundToolJobStatus.failed ||
                   (job.result?.isError ?? false),
             ),
           );
           final n = runningBackgroundJobCount;
-          _backgroundUi.add(
-            AgentUiStatus(n == 0 ? '后台任务已完成' : '后台任务进行中：$n'),
-          );
+          _backgroundUi.add(AgentUiStatus(n == 0 ? '后台任务已完成' : '后台任务进行中：$n'));
         }
     }
     if (!_running) {
@@ -508,7 +508,7 @@ class AgentService {
       );
     }
     final prompt = bufferMsg.toString().trim();
-    yield AgentUiUserMessage(prompt);
+    yield _systemNoticeEvent(prompt, fallback: 'shell 输出已匹配，进程仍在运行');
     yield const AgentUiStatus('shell 匹配通知已送达，正在继续…');
 
     final buffer = StringBuffer();
@@ -533,7 +533,7 @@ class AgentService {
     _ensureAgent();
     final agent = _agent!;
     final prompt = buildBackgroundTaskResultMessage(jobs);
-    yield AgentUiUserMessage(prompt);
+    yield _systemNoticeEvent(prompt, fallback: '后台任务已结束');
     yield const AgentUiStatus('后台任务结果已送达，正在继续…');
 
     final buffer = StringBuffer();
@@ -582,8 +582,8 @@ class AgentService {
           totalTokens: usage == null
               ? null
               : (usage.totalTokens > 0
-                  ? usage.totalTokens
-                  : prompt + completion),
+                    ? usage.totalTokens
+                    : prompt + completion),
           duration: started == null ? null : at.difference(started),
           at: at,
         );
@@ -632,7 +632,8 @@ class AgentService {
                 .map((p) => p.text)
                 .join('\n');
             final meta = r.metadata;
-            final isBackground = meta?['background'] == true ||
+            final isBackground =
+                meta?['background'] == true ||
                 text.contains('"monitoring":true') ||
                 text.contains('"background":true');
             if (isBackground) {
@@ -878,6 +879,17 @@ class AgentService {
     yield AgentUiAssistantFinal(draft);
   }
 
+  static AgentUiSystemNotice _systemNoticeEvent(
+    String raw, {
+    required String fallback,
+  }) {
+    final notice = systemNoticeForUserText(raw);
+    return AgentUiSystemNotice(
+      notice?.text ?? fallback,
+      isError: notice?.isError ?? false,
+    );
+  }
+
   /// Map persisted [LLMMessage] history into UI events for rehydrate.
   static List<AgentUiEvent> uiEventsFromHistory(List<LLMMessage> messages) {
     final out = <AgentUiEvent>[];
@@ -890,12 +902,17 @@ class AgentService {
             .join('\n')
             .trim();
         if (text.isNotEmpty) {
-          out.add(
-            AgentUiUserMessage(
-              text,
-              at: DateTime.fromMicrosecondsSinceEpoch(m.timestamp),
-            ),
-          );
+          final notice = systemNoticeForUserText(text);
+          if (notice != null) {
+            out.add(AgentUiSystemNotice(notice.text, isError: notice.isError));
+          } else {
+            out.add(
+              AgentUiUserMessage(
+                text,
+                at: DateTime.fromMicrosecondsSinceEpoch(m.timestamp),
+              ),
+            );
+          }
         }
       } else if (m is ModelMessage) {
         final usage = m.usage;
@@ -911,8 +928,8 @@ class AgentService {
               totalTokens: usage == null
                   ? null
                   : (usage.totalTokens > 0
-                      ? usage.totalTokens
-                      : usage.promptTokens + usage.completionTokens),
+                        ? usage.totalTokens
+                        : usage.promptTokens + usage.completionTokens),
               duration: duration,
               at: at,
             ),
