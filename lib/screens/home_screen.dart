@@ -13,6 +13,7 @@ import 'package:vault/permissions/active_workspace_holder.dart';
 import 'package:vault/permissions/offload_permission_dialog.dart';
 import 'package:vault/screens/agent_screen.dart';
 import 'package:vault/screens/settings_screen.dart';
+import 'package:vault/theme/glass_tokens.dart';
 import 'package:vault/widgets/glass.dart';
 import 'package:vault/widgets/new_workspace_dialog.dart';
 import 'package:vault/widgets/workspace_init_dialog.dart';
@@ -40,6 +41,9 @@ class HomeScreen extends StatefulWidget {
 
 class _HomeScreenState extends State<HomeScreen> {
   static const _wideBreakpoint = 720.0;
+  static const _chromeRailWidth = 80.0;
+  static const _chromeItemHeight = 64.0;
+  static const _chromeInnerRadius = 24.0;
 
   VaultMetaDb? _metaDb;
   ConversationStore? _conversationStore;
@@ -434,138 +438,136 @@ class _HomeScreenState extends State<HomeScreen> {
       ),
     ];
 
+    final chromeColor = Color.alphaBlend(
+      GlassTokens.glassBg(scheme.brightness, strong: true),
+      GlassTokens.canvas(scheme.brightness),
+    );
+    final showHeader = _navIndex == 0;
+
+    final header = SizedBox(
+      height: _chromeItemHeight,
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(16, 0, 8, 0),
+        child: Stack(
+          alignment: Alignment.center,
+          children: [
+            Text(
+              '工作区',
+              style: Theme.of(
+                context,
+              ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w600),
+            ),
+            Row(
+              children: [
+                const Spacer(),
+                if (_caps != null && wide)
+                  Padding(
+                    padding: const EdgeInsets.only(right: 4),
+                    child: _EnvChip(caps: _caps!),
+                  ),
+                IconButton(
+                  tooltip: '刷新',
+                  onPressed: _busy ? null : _refresh,
+                  icon: const Icon(Icons.refresh),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+
+    final contentBody = IndexedStack(
+      index: _navIndex == 1 && !_settingsVisited ? 0 : _navIndex,
+      children: [
+        _WorkspaceHub(
+          greeting: _greeting(),
+          caps: _caps,
+          busy: _busy,
+          error: _error,
+          workspaces: _workspaces,
+          titleFor: _workspaceTitle,
+          subtitleFor: _workspaceSubtitle,
+          onDismissError: () => setState(() => _error = null),
+          onCreate: _busy || _caps?.available != true ? null : _createWorkspace,
+          onOpen: _busy ? null : _openWorkspace,
+          onDelete: _busy ? null : _destroyWorkspace,
+          workspaceIcon: _workspaceIcon,
+        ),
+        if (_settingsVisited)
+          SettingsScreen(
+            embedded: true,
+            workspaceResolver: _resolveWorkspaceForSmoke,
+          )
+        else
+          const SizedBox.shrink(),
+      ],
+    );
+
+    final mainColumn = Column(
+      children: [
+        if (showHeader) header,
+        if (_busy && showHeader) const LinearProgressIndicator(minHeight: 2),
+        Expanded(
+          child: wide
+              ? ClipRRect(
+                  borderRadius: const BorderRadius.only(
+                    topLeft: Radius.circular(_chromeInnerRadius),
+                  ),
+                  child: ColoredBox(
+                    color: GlassTokens.canvas(scheme.brightness),
+                    child: contentBody,
+                  ),
+                )
+              : contentBody,
+        ),
+      ],
+    );
+
     return OffloadPermissionDialogHost(
       child: AmbientBackdrop(
         child: Scaffold(
           backgroundColor: Colors.transparent,
-          body: Row(
-            children: [
-              if (wide) ...[
-                Padding(
-                  padding: const EdgeInsets.fromLTRB(10, 10, 0, 10),
-                  child: GlassPanel(
-                    borderRadius: 28,
-                    tone: GlassTone.strong,
-                    child: NavigationRail(
-                      selectedIndex: _navIndex,
-                      onDestinationSelected: _selectNav,
-                      labelType: NavigationRailLabelType.all,
-                      leading: Padding(
-                        padding: const EdgeInsets.only(bottom: 16, top: 8),
-                        child: CircleAvatar(
-                          radius: 28,
-                          backgroundColor: scheme.primary,
-                          foregroundColor: scheme.onPrimary,
-                          child: const Icon(Icons.shield_outlined),
-                        ),
-                      ),
-                      destinations: [
-                        for (final d in destinations)
-                          NavigationRailDestination(
-                            icon: d.icon,
-                            selectedIcon: d.selectedIcon,
-                            label: Text(d.label),
+          body: wide
+              ? Stack(
+                  fit: StackFit.expand,
+                  children: [
+                    ColoredBox(color: chromeColor),
+                    Row(
+                      children: [
+                        SizedBox(
+                          width: _chromeRailWidth,
+                          child: Column(
+                            children: [
+                              SizedBox(
+                                height: _chromeItemHeight,
+                                child: Center(
+                                  child: CircleAvatar(
+                                    radius: 20,
+                                    backgroundColor: scheme.primary,
+                                    foregroundColor: scheme.onPrimary,
+                                    child: const Icon(Icons.shield_outlined),
+                                  ),
+                                ),
+                              ),
+                              for (final (i, d) in destinations.indexed)
+                                _HomeNavButton(
+                                  height: _chromeItemHeight,
+                                  selected: _navIndex == i,
+                                  icon: d.icon,
+                                  selectedIcon: d.selectedIcon ?? d.icon,
+                                  label: d.label,
+                                  onTap: () => _selectNav(i),
+                                ),
+                            ],
                           ),
+                        ),
+                        Expanded(child: mainColumn),
                       ],
                     ),
-                  ),
-                ),
-                const SizedBox(width: 8),
-              ],
-              Expanded(
-                child: Column(
-                  children: [
-                    if (_navIndex == 0)
-                      SafeArea(
-                        bottom: false,
-                        child: Padding(
-                          padding: const EdgeInsets.fromLTRB(16, 12, 16, 4),
-                          child: GlassPanel(
-                            borderRadius: 22,
-                            tone: GlassTone.regular,
-                            padding: const EdgeInsets.fromLTRB(16, 10, 8, 10),
-                            child: Row(
-                              children: [
-                                Expanded(
-                                  child: Column(
-                                    crossAxisAlignment:
-                                        CrossAxisAlignment.start,
-                                    children: [
-                                      Text(
-                                        'Vault',
-                                        style: Theme.of(context)
-                                            .textTheme
-                                            .labelLarge
-                                            ?.copyWith(
-                                              color: scheme.onSurfaceVariant,
-                                            ),
-                                      ),
-                                      Text(
-                                        '工作区',
-                                        style: Theme.of(
-                                          context,
-                                        ).textTheme.headlineSmall,
-                                      ),
-                                    ],
-                                  ),
-                                ),
-                                if (_caps != null && wide)
-                                  Padding(
-                                    padding: const EdgeInsets.only(right: 4),
-                                    child: _EnvChip(caps: _caps!),
-                                  ),
-                                IconButton(
-                                  tooltip: '刷新',
-                                  onPressed: _busy ? null : _refresh,
-                                  icon: const Icon(Icons.refresh),
-                                ),
-                              ],
-                            ),
-                          ),
-                        ),
-                      ),
-                    if (_busy && _navIndex == 0)
-                      const Padding(
-                        padding: EdgeInsets.symmetric(horizontal: 16),
-                        child: LinearProgressIndicator(minHeight: 2),
-                      ),
-                    Expanded(
-                      child: IndexedStack(
-                        index: _navIndex == 1 && !_settingsVisited
-                            ? 0
-                            : _navIndex,
-                        children: [
-                          _WorkspaceHub(
-                            greeting: _greeting(),
-                            caps: _caps,
-                            busy: _busy,
-                            error: _error,
-                            workspaces: _workspaces,
-                            titleFor: _workspaceTitle,
-                            subtitleFor: _workspaceSubtitle,
-                            onDismissError: () => setState(() => _error = null),
-                            onCreate: _busy || _caps?.available != true
-                                ? null
-                                : _createWorkspace,
-                            onOpen: _busy ? null : _openWorkspace,
-                            onDelete: _busy ? null : _destroyWorkspace,
-                            workspaceIcon: _workspaceIcon,
-                          ),
-                          if (_settingsVisited)
-                            SettingsScreen(
-                              embedded: true,
-                              workspaceResolver: _resolveWorkspaceForSmoke,
-                            )
-                          else
-                            const SizedBox.shrink(),
-                        ],
-                      ),
-                    ),
                   ],
-                ),
-              ),
-            ],
-          ),
+                )
+              : mainColumn,
           bottomNavigationBar: wide
               ? null
               : Padding(
@@ -580,6 +582,75 @@ class _HomeScreenState extends State<HomeScreen> {
                     ),
                   ),
                 ),
+        ),
+      ),
+    );
+  }
+}
+
+class _HomeNavButton extends StatelessWidget {
+  const _HomeNavButton({
+    required this.height,
+    required this.selected,
+    required this.icon,
+    required this.selectedIcon,
+    required this.label,
+    required this.onTap,
+  });
+
+  final double height;
+  final bool selected;
+  final Widget icon;
+  final Widget selectedIcon;
+  final String label;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return SizedBox(
+      height: height,
+      width: double.infinity,
+      child: InkWell(
+        onTap: onTap,
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            DecoratedBox(
+              decoration: BoxDecoration(
+                color: selected
+                    ? scheme.secondaryContainer.withValues(alpha: 0.85)
+                    : Colors.transparent,
+                borderRadius: BorderRadius.circular(16),
+              ),
+              child: Padding(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 16,
+                  vertical: 4,
+                ),
+                child: IconTheme(
+                  data: IconThemeData(
+                    size: 24,
+                    color: selected
+                        ? scheme.onSecondaryContainer
+                        : scheme.onSurfaceVariant,
+                  ),
+                  child: selected ? selectedIcon : icon,
+                ),
+              ),
+            ),
+            const SizedBox(height: 4),
+            Text(
+              label,
+              style: TextStyle(
+                fontSize: 12,
+                fontWeight: selected ? FontWeight.w600 : FontWeight.w400,
+                color: selected
+                    ? scheme.onSecondaryContainer
+                    : scheme.onSurfaceVariant,
+              ),
+            ),
+          ],
         ),
       ),
     );

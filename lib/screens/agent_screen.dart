@@ -5,6 +5,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
+import 'package:url_launcher/url_launcher.dart';
 import 'package:vault/util/host_file_picker.dart';
 import 'package:vault/agent/agent_inbox.dart';
 import 'package:vault/agent/agent_service.dart';
@@ -1183,6 +1184,18 @@ class _AgentScreenState extends State<AgentScreen> {
     );
   }
 
+  Future<void> _openSiteUrl(String projectPath) async {
+    final site = _siteFor(projectPath);
+    if (site == null) return;
+    final url = _sitePublicUrl(site).trim();
+    if (url.isEmpty) return;
+    final uri = Uri.tryParse(url);
+    if (uri == null) return;
+    if (await canLaunchUrl(uri)) {
+      await launchUrl(uri, mode: LaunchMode.externalApplication);
+    }
+  }
+
   Future<void> _toggleSiteFor(String projectPath) async {
     final site = _siteFor(projectPath);
     if (site == null) return;
@@ -1654,6 +1667,11 @@ class _AgentScreenState extends State<AgentScreen> {
                     ],
                   ),
                 ),
+                IconButton(
+                  tooltip: '新项目',
+                  onPressed: _booting ? null : _createProject,
+                  icon: const Icon(Icons.create_new_folder_outlined),
+                ),
                 if (showClose)
                   IconButton(
                     tooltip: '关闭',
@@ -1724,6 +1742,16 @@ class _AgentScreenState extends State<AgentScreen> {
                 ),
               ),
             ),
+          ),
+          _headerIconButton(
+            tooltip: site == null
+                ? '尚未登记前端入口'
+                : (up ? '打开站点' : '站点未启动'),
+            icon: Icons.link,
+            color: up ? scheme.primary : scheme.onSurfaceVariant,
+            onPressed: up
+                ? () => unawaited(_openSiteUrl(project.path))
+                : null,
           ),
           _headerIconButton(
             tooltip: '终端',
@@ -1838,56 +1866,38 @@ class _AgentScreenState extends State<AgentScreen> {
   }
 
   Widget _buildMergedNavBody(ColorScheme scheme) {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.stretch,
+    return ListView(
+      padding: const EdgeInsets.only(bottom: 8),
       children: [
-        Expanded(
-          child: ListView(
-            padding: const EdgeInsets.only(bottom: 8),
-            children: [
-              if (_projects.isEmpty)
-                ListTile(
-                  title: Text(
-                    '暂无项目',
-                    style: TextStyle(color: scheme.onSurfaceVariant),
+        if (_projects.isEmpty)
+          ListTile(
+            title: Text(
+              '暂无项目',
+              style: TextStyle(color: scheme.onSurfaceVariant),
+            ),
+            subtitle: const Text('点击右上角文件夹图标开始'),
+          )
+        else
+          for (final p in _projects) ...[
+            _buildProjectHeader(scheme, p),
+            if (p.path == _activeProjectPath)
+              if (_conversations.isEmpty)
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(36, 8, 16, 8),
+                  child: Text(
+                    '暂无会话',
+                    style: Theme.of(context).textTheme.bodySmall
+                        ?.copyWith(color: scheme.onSurfaceVariant),
                   ),
-                  subtitle: const Text('点击下方「新项目」开始'),
                 )
               else
-                for (final p in _projects) ...[
-                  _buildProjectHeader(scheme, p),
-                  if (p.path == _activeProjectPath)
-                    if (_conversations.isEmpty)
-                      Padding(
-                        padding: const EdgeInsets.fromLTRB(36, 8, 16, 8),
-                        child: Text(
-                          '暂无会话',
-                          style: Theme.of(context).textTheme.bodySmall
-                              ?.copyWith(color: scheme.onSurfaceVariant),
-                        ),
-                      )
-                    else
-                      for (final node in ConversationStore.treeOrder(
-                        _conversations,
-                      ))
-                        _buildConversationTile(
-                          scheme,
-                          node.info,
-                          depth: node.depth,
-                        ),
-                ],
-            ],
-          ),
-        ),
-        const Divider(height: 1),
-        Padding(
-          padding: const EdgeInsets.fromLTRB(12, 8, 12, 12),
-          child: FilledButton.tonalIcon(
-            onPressed: _booting ? null : _createProject,
-            icon: const Icon(Icons.create_new_folder_outlined),
-            label: const Text('新项目'),
-          ),
-        ),
+                for (final node in ConversationStore.treeOrder(_conversations))
+                  _buildConversationTile(
+                    scheme,
+                    node.info,
+                    depth: node.depth,
+                  ),
+          ],
       ],
     );
   }
@@ -2135,96 +2145,97 @@ class _AgentScreenState extends State<AgentScreen> {
         ? const Center(child: CircularProgressIndicator())
         : _buildChatColumn(scheme, hasChatContent);
 
-    return AmbientBackdrop(
-      child: Scaffold(
-        key: _scaffoldKey,
-        backgroundColor: Colors.transparent,
-        drawer: wide
-            ? null
-            : Drawer(width: 300, child: _buildNavPanel(showClose: true)),
-        appBar: AppBar(
-          titleSpacing: 8,
-          title: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(
-                _activeProjectPath == null ? '新建项目以开始' : _conversationTitle,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: Theme.of(
-                  context,
-                ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w600),
-              ),
-              Text(
-                _activeProjectPath == null
-                    ? '${widget.title} · 工作区'
-                    : '$_activeProjectName · ${widget.title}',
-                style: Theme.of(context).textTheme.labelSmall?.copyWith(
-                  color: scheme.onSurfaceVariant,
-                ),
-              ),
-            ],
-          ),
-          actions: [
-            if (!wide)
-              IconButton(
-                tooltip: '工作区导航',
-                onPressed: () => _scaffoldKey.currentState?.openDrawer(),
-                icon: const Icon(Icons.menu_open),
-              ),
-            if (wide)
-              Padding(
-                padding: const EdgeInsets.only(right: 4),
-                child: Chip(
-                  label: Text(() {
-                    final bg = _service?.runningBackgroundJobCount ?? 0;
-                    if (_running) return '运行中';
-                    if (bg > 0) return '后台 $bg';
-                    return '已连接';
-                  }()),
-                  avatar: Icon(
-                    _running
-                        ? Icons.sync
-                        : (_service?.runningBackgroundJobCount ?? 0) > 0
-                        ? Icons.hourglass_top_rounded
-                        : Icons.check_circle,
-                    size: 16,
-                    color: scheme.primary,
-                  ),
-                  visualDensity: VisualDensity.compact,
-                  side: BorderSide.none,
-                  backgroundColor: scheme.primaryContainer.withValues(
-                    alpha: 0.75,
-                  ),
-                  labelStyle: TextStyle(color: scheme.onPrimaryContainer),
-                ),
-              ),
-            IconButton(
-              tooltip: '设置',
-              onPressed: _openSettings,
-              icon: const Icon(Icons.settings_outlined),
+    final scaffold = Scaffold(
+      key: _scaffoldKey,
+      backgroundColor: Colors.transparent,
+      drawer: wide
+          ? null
+          : Drawer(width: 300, child: _buildNavPanel(showClose: true)),
+      appBar: AppBar(
+        centerTitle: true,
+        titleSpacing: 8,
+        title: Column(
+          crossAxisAlignment: CrossAxisAlignment.center,
+          children: [
+            Text(
+              _activeProjectPath == null ? '新建项目以开始' : _conversationTitle,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: Theme.of(
+                context,
+              ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w600),
+            ),
+            Text(
+              _activeProjectPath == null
+                  ? '${widget.title} · 工作区'
+                  : '$_activeProjectName · ${widget.title}',
+              style: Theme.of(
+                context,
+              ).textTheme.labelSmall?.copyWith(color: scheme.onSurfaceVariant),
             ),
           ],
         ),
-        body: wide
-            ? Row(
-                children: [
-                  Padding(
-                    padding: const EdgeInsets.fromLTRB(10, 0, 0, 10),
-                    child: SizedBox(
-                      width: 300,
-                      child: GlassPanel(
-                        borderRadius: 24,
-                        tone: GlassTone.strong,
-                        child: _buildNavPanel(showClose: false),
-                      ),
-                    ),
-                  ),
-                  const SizedBox(width: 8),
-                  Expanded(child: chatBody),
-                ],
-              )
-            : chatBody,
+        actions: [
+          if (!wide)
+            IconButton(
+              tooltip: '工作区导航',
+              onPressed: () => _scaffoldKey.currentState?.openDrawer(),
+              icon: const Icon(Icons.menu_open),
+            ),
+          if (wide)
+            Padding(
+              padding: const EdgeInsets.only(right: 4),
+              child: Chip(
+                label: Text(() {
+                  final bg = _service?.runningBackgroundJobCount ?? 0;
+                  if (_running) return '运行中';
+                  if (bg > 0) return '后台 $bg';
+                  return '已连接';
+                }()),
+                avatar: Icon(
+                  _running
+                      ? Icons.sync
+                      : (_service?.runningBackgroundJobCount ?? 0) > 0
+                      ? Icons.hourglass_top_rounded
+                      : Icons.check_circle,
+                  size: 16,
+                  color: scheme.primary,
+                ),
+                visualDensity: VisualDensity.compact,
+                side: BorderSide.none,
+                backgroundColor: scheme.primaryContainer.withValues(
+                  alpha: 0.75,
+                ),
+                labelStyle: TextStyle(color: scheme.onPrimaryContainer),
+              ),
+            ),
+          IconButton(
+            tooltip: '设置',
+            onPressed: _openSettings,
+            icon: const Icon(Icons.settings_outlined),
+          ),
+        ],
+      ),
+      body: chatBody,
+    );
+
+    if (!wide) {
+      return AmbientBackdrop(child: scaffold);
+    }
+
+    return AmbientBackdrop(
+      child: Row(
+        children: [
+          SizedBox(
+            width: 300,
+            child: GlassPanel(
+              borderRadius: 0,
+              tone: GlassTone.strong,
+              child: _buildNavPanel(showClose: false),
+            ),
+          ),
+          Expanded(child: scaffold),
+        ],
       ),
     );
   }
