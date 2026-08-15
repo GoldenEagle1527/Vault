@@ -37,8 +37,7 @@ Tool createShellTool(
   final sessionEnv = (chatSessionId == null || chatSessionId.trim().isEmpty)
       ? null
       : <String, String>{'VAULT_CHAT_SESSION_ID': chatSessionId.trim()};
-  final projectDir =
-      projectPath == null ? null : guestProjectDir(projectPath);
+  final projectDir = projectPath == null ? null : guestProjectDir(projectPath);
   final cwdHint = projectDir ?? kGuestHome;
 
   return Tool(
@@ -63,7 +62,7 @@ Tool createShellTool(
               '在 Linux 沙箱内执行的命令。示例：'
               'pwd; ls -la $kGuestInboxDir; '
               'apk update && apk add curl; '
-              '${projectDir == null ? 'cd $kGuestHome && python3 -m http.server 8080 --bind 127.0.0.1' : 'cd $projectDir && python3 -m http.server 8080 --bind 127.0.0.1'}',
+              '${projectDir == null ? 'cd $kGuestHome && python3 -m http.server 8765 --bind 127.0.0.1' : 'cd $projectDir && python3 -m http.server 8765 --bind 127.0.0.1'}',
         },
         'notify_regex': {
           'type': 'string',
@@ -74,8 +73,7 @@ Tool createShellTool(
         },
         'notify_once': {
           'type': 'boolean',
-          'description':
-              '默认 true：仅首次匹配通知。false：每次出现新匹配都通知（仍不终止进程）。',
+          'description': '默认 true：仅首次匹配通知。false：每次出现新匹配都通知（仍不终止进程）。',
         },
       },
       'required': ['command'],
@@ -349,11 +347,7 @@ Future<void> _monitorDetachedShellJob(
       agent,
       jobId: jobId,
       callId: callId,
-      result: CommandResult(
-        exitCode: -1,
-        stdout: '',
-        stderr: e.toString(),
-      ),
+      result: CommandResult(exitCode: -1, stdout: '', stderr: e.toString()),
       isError: true,
     );
   }
@@ -366,7 +360,9 @@ String _shellOutputDelta(String previous, String current) {
     return current.substring(previous.length);
   }
   // Sliding tail: longest suffix of previous that is a prefix of current.
-  final max = previous.length < current.length ? previous.length : current.length;
+  final max = previous.length < current.length
+      ? previous.length
+      : current.length;
   for (var len = max; len > 0; len--) {
     if (current.startsWith(previous.substring(previous.length - len))) {
       return current.substring(len);
@@ -429,9 +425,7 @@ Future<CommandResult> runDetachedShellJob(
     return CommandResult(
       exitCode: start.exitCode == 0 ? -1 : start.exitCode,
       stdout: start.stdout,
-      stderr: start.stderr.isEmpty
-          ? '无法启动后台 shell 任务'
-          : start.stderr,
+      stderr: start.stderr.isEmpty ? '无法启动后台 shell 任务' : start.stderr,
     );
   }
 

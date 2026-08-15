@@ -639,6 +639,17 @@ class _BedrockStreamParser {
         _currentToolId = start['id'];
         _currentToolName = start['name'];
         _currentToolJson.clear();
+        return ModelMessage(
+          functionCalls: [
+            FunctionCall(
+              id: _currentToolId ?? '',
+              name: _currentToolName ?? '',
+              arguments: '',
+            ),
+          ],
+          model: modelConfig.model,
+          usage: _currentUsage(),
+        );
       } else if (start['type'] == 'thinking') {
         return ModelMessage(
           thought: '',
@@ -671,6 +682,19 @@ class _BedrockStreamParser {
         );
       } else if (delta['type'] == 'input_json_delta') {
         _currentToolJson.write(delta['partial_json']);
+        if (_currentToolId != null) {
+          return ModelMessage(
+            functionCalls: [
+              FunctionCall(
+                id: _currentToolId!,
+                name: _currentToolName ?? '',
+                arguments: _currentToolJson.toString(),
+              ),
+            ],
+            model: modelConfig.model,
+            usage: _currentUsage(),
+          );
+        }
       }
     } else if (type == 'content_block_stop') {
       return _finishCurrentBlock();

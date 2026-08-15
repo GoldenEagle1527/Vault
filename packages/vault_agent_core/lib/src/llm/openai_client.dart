@@ -554,36 +554,24 @@ class OpenAIResponseTransformer
     final Map<int, Map<String, dynamic>> toolCallBuffer = {};
     String? pendingFinishReason;
 
-    List<FunctionCall> finalizeToolCalls() {
-      List<FunctionCall> finalFunctionCalls = [];
-      if (toolCallBuffer.isNotEmpty) {
-        final sortedIndices = toolCallBuffer.keys.toList()..sort();
-        for (final index in sortedIndices) {
-          final b = toolCallBuffer[index]!;
-          try {
-            if ((b['name'] as String).isNotEmpty ||
-                (b['arguments'] as String).isNotEmpty ||
-                (b['id'] as String).isNotEmpty) {
-              var arguments = b['arguments'] as String;
-              if (arguments.isEmpty) {
-                arguments = '{}';
-              }
-              finalFunctionCalls.add(
-                FunctionCall(
-                  id: b['id'],
-                  name: b['name'],
-                  arguments: arguments,
-                ),
-              );
-            }
-          } catch (e) {
-            // Ignore invalid JSON
-          }
-        }
-        toolCallBuffer.clear();
+    List<FunctionCall> snapshotToolCalls({bool finalize = false}) {
+      final calls = <FunctionCall>[];
+      if (toolCallBuffer.isEmpty) return calls;
+      final sortedIndices = toolCallBuffer.keys.toList()..sort();
+      for (final index in sortedIndices) {
+        final b = toolCallBuffer[index]!;
+        final id = b['id'] as String;
+        final name = b['name'] as String;
+        var arguments = b['arguments'] as String;
+        if (id.isEmpty && name.isEmpty && arguments.isEmpty) continue;
+        if (finalize && arguments.isEmpty) arguments = '{}';
+        calls.add(FunctionCall(id: id, name: name, arguments: arguments));
       }
-      return finalFunctionCalls;
+      if (finalize) toolCallBuffer.clear();
+      return calls;
     }
+
+    List<FunctionCall> finalizeToolCalls() => snapshotToolCalls(finalize: true);
 
     await for (final data in stream) {
       final metadata = {
@@ -732,6 +720,14 @@ class OpenAIResponseTransformer
                   (buffer['arguments'] as String) + fn['arguments'];
             }
           }
+        }
+        final snapshot = snapshotToolCalls();
+        if (snapshot.isNotEmpty) {
+          yield ModelMessage(
+            functionCalls: snapshot,
+            metadata: metadata,
+            model: modelConfig.model,
+          );
         }
       }
 

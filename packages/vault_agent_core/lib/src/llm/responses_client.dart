@@ -767,6 +767,13 @@ class ResponsesAPIResponseTransformer
             name: item['name'] ?? item['function']?['name'] ?? '',
             arguments: '',
           );
+          final started = toolBuffers[itemId]!;
+          yield ModelMessage(
+            functionCalls: [
+              FunctionCall(id: started.id, name: started.name, arguments: ''),
+            ],
+            model: modelConfig.model,
+          );
         }
       }
 
@@ -837,6 +844,17 @@ class ResponsesAPIResponseTransformer
 
         if (toolBuffers.containsKey(itemId)) {
           toolBuffers[itemId]!.arguments += (delta ?? '');
+          final buffer = toolBuffers[itemId]!;
+          yield ModelMessage(
+            functionCalls: [
+              FunctionCall(
+                id: buffer.id,
+                name: buffer.name,
+                arguments: buffer.arguments,
+              ),
+            ],
+            model: modelConfig.model,
+          );
         }
       }
 
