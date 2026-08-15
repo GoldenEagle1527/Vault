@@ -65,6 +65,8 @@ class ConfigHandler implements OffloadHandler {
       jsonEncode({
         'ok': true,
         'vaultConfigEnabled': _permissionManager.vaultConfigEnabled,
+        'profileId': settings.id,
+        'profileName': settings.displayName,
         'apiBaseUrl': settings.apiBaseUrl,
         'model': settings.model,
         'apiKeyConfigured': key.isNotEmpty,

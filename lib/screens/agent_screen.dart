@@ -1,12 +1,15 @@
 import 'dart:async';
 import 'dart:convert';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:vault/util/host_file_picker.dart';
 import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
 import 'package:vault/agent/agent_inbox.dart';
 import 'package:vault/agent/agent_service.dart';
 import 'package:vault/agent/agent_settings.dart';
+import 'package:vault/agent/chat_input_keys.dart';
 import 'package:vault/agent/conversation_store.dart';
 import 'package:vault/agent/project_site_launcher.dart';
 import 'package:vault/agent/project_store.dart';
@@ -112,6 +115,7 @@ class _AgentScreenState extends State<AgentScreen> {
   late final ConversationStore _conversationStore;
   late final ProjectStore _projectStore;
   final _inputCtrl = TextEditingController();
+  late final FocusNode _inputFocus;
   final _scrollCtrl = ScrollController();
   final List<_ChatItem> _items = [];
   final List<AgentAttachment> _pendingAttachments = [];
@@ -134,6 +138,9 @@ class _AgentScreenState extends State<AgentScreen> {
   final Set<String> _siteBusy = {};
   Timer? _sitePollTimer;
   bool _siteProbeInFlight = false;
+  List<AgentSettings> _profiles = const [AgentSettings.defaults];
+  String _activeProfileId = AgentSettings.defaultProfileId;
+  AgentSettings? _pendingProfile;
 
   String get _activeProjectName {
     final path = _activeProjectPath;
@@ -157,6 +164,7 @@ class _AgentScreenState extends State<AgentScreen> {
   void initState() {
     super.initState();
     _settingsStore = widget.settingsStore ?? AgentSettingsStore();
+    _inputFocus = FocusNode(onKeyEvent: _onInputKeyEvent);
     _conversationStore = widget.conversationStore;
     _projectStore = widget.projectStore;
     ActiveWorkspaceHolder.current = widget.workspace;
@@ -165,8 +173,11 @@ class _AgentScreenState extends State<AgentScreen> {
 
   Future<void> _boot() async {
     try {
-      final settings = await _settingsStore.load();
+      final bundle = await _settingsStore.loadBundle();
       if (!mounted) return;
+      _profiles = bundle.profiles;
+      _activeProfileId = bundle.active.id;
+      final settings = bundle.active;
       await _projectStore.ensureBootstrapped(widget.workspace.workspaceId);
       await _refreshProjects();
       if (_projects.isEmpty) {
@@ -660,7 +671,12 @@ class _AgentScreenState extends State<AgentScreen> {
   }
 
   Future<void> _reloadService() async {
-    final settings = await _settingsStore.load();
+    final bundle = await _settingsStore.loadBundle();
+    if (!mounted) return;
+    _profiles = bundle.profiles;
+    _activeProfileId = bundle.active.id;
+    _pendingProfile = null;
+    final settings = bundle.active;
     final existing = _service;
     final projectPath = _activeProjectPath;
     if (existing == null) {
@@ -1142,11 +1158,68 @@ class _AgentScreenState extends State<AgentScreen> {
     if (!mounted) return;
     await _refreshProjects();
     await _refreshConversationList();
+    final pending = _pendingProfile;
+    _pendingProfile = null;
+    if (pending != null) {
+      _service?.applySettings(pending);
+    }
     setState(() {
       _running = false;
       _status = null;
       _discardThinkingPlaceholder();
     });
+  }
+
+  AgentSettings get _activeProfile {
+    for (final p in _profiles) {
+      if (p.id == _activeProfileId) return p;
+    }
+    return _profiles.isEmpty ? AgentSettings.defaults : _profiles.first;
+  }
+
+  Future<void> _switchChatProfile(String id) async {
+    if (id == _activeProfileId) return;
+    try {
+      final bundle = await _settingsStore.selectProfile(id);
+      if (!mounted) return;
+      setState(() {
+        _profiles = bundle.profiles;
+        _activeProfileId = bundle.active.id;
+      });
+      if (_running) {
+        _pendingProfile = bundle.active;
+      } else {
+        _pendingProfile = null;
+        _service?.applySettings(bundle.active);
+      }
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _status = '切换配置失败：$e');
+    }
+  }
+
+  KeyEventResult _onInputKeyEvent(FocusNode node, KeyEvent event) {
+    if (event is! KeyDownEvent) return KeyEventResult.ignored;
+    final isEnter =
+        event.logicalKey == LogicalKeyboardKey.enter ||
+        event.logicalKey == LogicalKeyboardKey.numpadEnter;
+    if (!isEnter) return KeyEventResult.ignored;
+    final shift =
+        HardwareKeyboard.instance.logicalKeysPressed.contains(
+          LogicalKeyboardKey.shiftLeft,
+        ) ||
+        HardwareKeyboard.instance.logicalKeysPressed.contains(
+          LogicalKeyboardKey.shiftRight,
+        );
+    if (!chatEnterShouldSend(
+      platform: defaultTargetPlatform,
+      shiftPressed: shift,
+      composing: _inputCtrl.value.composing.isValid,
+    )) {
+      return KeyEventResult.ignored;
+    }
+    unawaited(_send());
+    return KeyEventResult.handled;
   }
 
   void _discardBlankAssistantDraft() {
@@ -1194,6 +1267,7 @@ class _AgentScreenState extends State<AgentScreen> {
     unawaited(_service?.dispose() ?? Future.value());
     unawaited(widget.workspace.dispose());
     _inputCtrl.dispose();
+    _inputFocus.dispose();
     _scrollCtrl.dispose();
     super.dispose();
   }
@@ -1546,6 +1620,52 @@ class _AgentScreenState extends State<AgentScreen> {
     }
   }
 
+  Widget _buildProfileSwitcher(ColorScheme scheme) {
+    final current = _activeProfile;
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 4),
+      child: PopupMenuButton<String>(
+        tooltip: '切换模型配置',
+        initialValue: current.id,
+        enabled: _profiles.isNotEmpty,
+        onSelected: _switchChatProfile,
+        itemBuilder: (ctx) => [
+          for (final p in _profiles)
+            PopupMenuItem(
+              value: p.id,
+              child: Text(
+                p.displayName,
+                overflow: TextOverflow.ellipsis,
+              ),
+            ),
+        ],
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(4, 8, 2, 8),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              ConstrainedBox(
+                constraints: const BoxConstraints(maxWidth: 96),
+                child: Text(
+                  current.displayName,
+                  overflow: TextOverflow.ellipsis,
+                  style: Theme.of(context).textTheme.labelMedium?.copyWith(
+                    color: scheme.onSurfaceVariant,
+                  ),
+                ),
+              ),
+              Icon(
+                Icons.arrow_drop_down,
+                size: 20,
+                color: scheme.onSurfaceVariant,
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
   Widget _buildChatColumn(ColorScheme scheme, bool hasChatContent) {
     return Column(
       children: [
@@ -1636,9 +1756,12 @@ class _AgentScreenState extends State<AgentScreen> {
                           Expanded(
                             child: TextField(
                               controller: _inputCtrl,
+                              focusNode: _inputFocus,
                               minLines: 1,
                               maxLines: 5,
                               enabled: !_running,
+                              textInputAction: TextInputAction.newline,
+                              keyboardType: TextInputType.multiline,
                               decoration: const InputDecoration(
                                 hintText: '继续描述你的需求…',
                                 border: InputBorder.none,
@@ -1650,9 +1773,9 @@ class _AgentScreenState extends State<AgentScreen> {
                                   vertical: 12,
                                 ),
                               ),
-                              onSubmitted: (_) => _send(),
                             ),
                           ),
+                          _buildProfileSwitcher(scheme),
                           Padding(
                             padding: const EdgeInsets.only(right: 4, bottom: 2),
                             child: IconButton.filled(
@@ -1668,7 +1791,9 @@ class _AgentScreenState extends State<AgentScreen> {
                     ),
                     const SizedBox(height: 6),
                     Text(
-                      '重要操作执行前会请求确认。',
+                      desktopEnterHint(defaultTargetPlatform)
+                          ? '回车发送 · Shift+回车换行。重要操作执行前会请求确认。'
+                          : '重要操作执行前会请求确认。',
                       style: Theme.of(context).textTheme.labelSmall?.copyWith(
                         color: scheme.onSurfaceVariant,
                       ),
