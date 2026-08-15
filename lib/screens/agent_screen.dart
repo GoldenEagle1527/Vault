@@ -126,9 +126,14 @@ class _AgentScreenState extends State<AgentScreen> {
   String? _status;
   bool _booting = true;
   bool _promptedNewProject = false;
+
   /// 0 项目 · 1 会话 · 2 站点 · 3 工具
   int _sideTabIndex = 0;
   StreamSubscription<AgentUiEvent>? _backgroundUiSub;
+  final Map<String, bool> _siteUp = {};
+  final Set<String> _siteBusy = {};
+  Timer? _sitePollTimer;
+  bool _siteProbeInFlight = false;
 
   String get _activeProjectName {
     final path = _activeProjectPath;
@@ -185,10 +190,7 @@ class _AgentScreenState extends State<AgentScreen> {
           );
         }
         _items.add(
-          _ChatItem(
-            kind: _ChatKind.status,
-            text: '请先新建一个项目，之后的对话都会保存在该项目下。',
-          ),
+          _ChatItem(kind: _ChatKind.status, text: '请先新建一个项目，之后的对话都会保存在该项目下。'),
         );
       } else {
         final active = _activeProjectPath ?? _projects.first.path;
@@ -220,6 +222,7 @@ class _AgentScreenState extends State<AgentScreen> {
     } finally {
       if (mounted) {
         setState(() => _booting = false);
+        _syncSitePoll();
         _scrollToEnd();
         if (_projects.isEmpty && !_promptedNewProject) {
           _promptedNewProject = true;
@@ -238,6 +241,7 @@ class _AgentScreenState extends State<AgentScreen> {
     if (_activeProjectPath == null && _projects.isNotEmpty) {
       _activeProjectPath = _projects.first.path;
     }
+    _syncSitePoll();
   }
 
   Future<void> _refreshConversationList() async {
@@ -248,8 +252,10 @@ class _AgentScreenState extends State<AgentScreen> {
       _conversationTitle = kNewConversationTitle;
       return;
     }
-    final index =
-        await _conversationStore.list(widget.workspace.workspaceId, projectPath);
+    final index = await _conversationStore.list(
+      widget.workspace.workspaceId,
+      projectPath,
+    );
     _conversations = index.conversations;
     _activeConversationId =
         _service?.conversationId ?? index.activeConversationId;
@@ -632,7 +638,9 @@ class _AgentScreenState extends State<AgentScreen> {
       final nameMatch =
           item.toolName == name &&
           (item.toolResult == null || item.toolBackgrounded);
-      if (idMatch || jobMatch || (callId == null && jobId == null && nameMatch)) {
+      if (idMatch ||
+          jobMatch ||
+          (callId == null && jobId == null && nameMatch)) {
         item.toolResult = result;
         if (clearBackgrounded) item.toolBackgrounded = false;
         item.toolCallId ??= callId;
@@ -749,6 +757,8 @@ class _AgentScreenState extends State<AgentScreen> {
       await service.switchProject(projectPath);
       await _projectStore.setActive(widget.workspace.workspaceId, projectPath);
       _activeProjectPath = projectPath;
+      _siteUp.clear();
+      _siteBusy.clear();
       await _refreshProjects();
       await _refreshConversationList();
       _hydrateFromService();
@@ -767,22 +777,75 @@ class _AgentScreenState extends State<AgentScreen> {
     }
   }
 
+  void _selectSideTab(int index) {
+    setState(() => _sideTabIndex = index);
+    _syncSitePoll();
+  }
+
+  void _syncSitePoll() {
+    if (!mounted) {
+      _sitePollTimer?.cancel();
+      _sitePollTimer = null;
+      return;
+    }
+    final shouldPoll =
+        _sideTabIndex == 2 && _activeProjectUrls.isNotEmpty && !_booting;
+    if (shouldPoll) {
+      _sitePollTimer ??= Timer.periodic(const Duration(seconds: 4), (_) {
+        unawaited(_refreshSiteStatus());
+      });
+      unawaited(_refreshSiteStatus());
+    } else {
+      _sitePollTimer?.cancel();
+      _sitePollTimer = null;
+    }
+  }
+
+  Future<void> _refreshSiteStatus() async {
+    if (_siteProbeInFlight) return;
+    final urls = _activeProjectUrls;
+    if (urls.isEmpty) {
+      if (_siteUp.isNotEmpty && mounted) {
+        setState(_siteUp.clear);
+      }
+      return;
+    }
+    _siteProbeInFlight = true;
+    try {
+      final result = await ProjectSiteLauncher(widget.workspace).probeAll(urls);
+      if (!mounted) return;
+      setState(() {
+        _siteUp
+          ..clear()
+          ..addAll(result);
+      });
+    } catch (_) {
+      // Keep last known status.
+    } finally {
+      _siteProbeInFlight = false;
+    }
+  }
+
   Future<void> _startSite(ProjectUrlEntry entry) async {
     final projectPath = _activeProjectPath;
     if (projectPath == null) return;
-    setState(() => _status = '正在启动「${entry.name}」…');
+    setState(() {
+      _status = '正在启动「${entry.name}」…';
+      _siteBusy.add(entry.name);
+    });
+    var launched = false;
     try {
-      final result = await ProjectSiteLauncher(widget.workspace).start(
-        projectPath: projectPath,
-        entry: entry,
-      );
+      final result = await ProjectSiteLauncher(
+        widget.workspace,
+      ).start(projectPath: projectPath, entry: entry);
       if (!mounted) return;
+      launched = result.startedProcess || result.alreadyUp;
+      if (launched) _siteUp[entry.name] = true;
       final parts = <String>[
         if (result.alreadyUp) '服务已在运行',
         if (result.startedProcess) '已后台启动',
         if (result.openedUrl) '已打开浏览器',
-        if (!result.openedUrl && entry.url.trim().isNotEmpty)
-          '地址：${entry.url}',
+        if (!result.openedUrl && entry.url.trim().isNotEmpty) '地址：${entry.url}',
         if (result.message != null &&
             result.message != '服务已在运行' &&
             result.message != '已后台启动')
@@ -801,8 +864,46 @@ class _AgentScreenState extends State<AgentScreen> {
       _items.add(_ChatItem(kind: _ChatKind.error, text: '启动失败：$e'));
     } finally {
       if (mounted) {
-        setState(() => _status = null);
+        setState(() {
+          _status = null;
+          _siteBusy.remove(entry.name);
+        });
         _scrollToEnd();
+        if (!launched) unawaited(_refreshSiteStatus());
+      }
+    }
+  }
+
+  Future<void> _stopSite(ProjectUrlEntry entry) async {
+    final projectPath = _activeProjectPath;
+    if (projectPath == null) return;
+    setState(() {
+      _status = '正在终止「${entry.name}」…';
+      _siteBusy.add(entry.name);
+    });
+    try {
+      final result = await ProjectSiteLauncher(
+        widget.workspace,
+      ).stop(projectPath: projectPath, entry: entry);
+      if (!mounted) return;
+      _siteUp[entry.name] = !result.stopped;
+      _items.add(
+        _ChatItem(
+          kind: result.stopped ? _ChatKind.status : _ChatKind.error,
+          text: result.message ?? (result.stopped ? '已终止' : '终止失败'),
+        ),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      _items.add(_ChatItem(kind: _ChatKind.error, text: '终止失败：$e'));
+    } finally {
+      if (mounted) {
+        setState(() {
+          _status = null;
+          _siteBusy.remove(entry.name);
+        });
+        _scrollToEnd();
+        unawaited(_refreshSiteStatus());
       }
     }
   }
@@ -835,8 +936,9 @@ class _AgentScreenState extends State<AgentScreen> {
 
   Future<void> _openFileBrowser() async {
     final projectPath = _activeProjectPath;
-    final projectGuest =
-        projectPath == null ? null : guestProjectDir(projectPath);
+    final projectGuest = projectPath == null
+        ? null
+        : guestProjectDir(projectPath);
     await Navigator.of(context).push(
       MaterialPageRoute(
         builder: (_) => FileBrowserScreen(
@@ -1050,8 +1152,7 @@ class _AgentScreenState extends State<AgentScreen> {
   void _discardBlankAssistantDraft() {
     while (_items.isNotEmpty &&
         _items.last.kind == _ChatKind.assistant &&
-        (_items.last.thinkingPlaceholder ||
-            _items.last.text.trim().isEmpty)) {
+        (_items.last.thinkingPlaceholder || _items.last.text.trim().isEmpty)) {
       _items.removeLast();
     }
   }
@@ -1088,6 +1189,7 @@ class _AgentScreenState extends State<AgentScreen> {
     if (identical(ActiveWorkspaceHolder.current, widget.workspace)) {
       ActiveWorkspaceHolder.current = null;
     }
+    _sitePollTimer?.cancel();
     unawaited(_backgroundUiSub?.cancel());
     unawaited(_service?.dispose() ?? Future.value());
     unawaited(widget.workspace.dispose());
@@ -1171,7 +1273,7 @@ class _AgentScreenState extends State<AgentScreen> {
                         borderRadius: BorderRadius.circular(12),
                         child: InkWell(
                           borderRadius: BorderRadius.circular(12),
-                          onTap: () => setState(() => _sideTabIndex = entry.$1),
+                          onTap: () => _selectSideTab(entry.$1),
                           child: Padding(
                             padding: const EdgeInsets.symmetric(vertical: 8),
                             child: Column(
@@ -1209,6 +1311,70 @@ class _AgentScreenState extends State<AgentScreen> {
           Expanded(child: _buildSideTabBody()),
         ],
       ),
+    );
+  }
+
+  Widget _buildSiteTile(ColorScheme scheme, ProjectUrlEntry site) {
+    final up = _siteUp[site.name] == true;
+    final busy = _siteBusy.contains(site.name);
+    final canAct = !_booting && !busy;
+    return ListTile(
+      leading: Icon(
+        Icons.language,
+        color: up ? scheme.primary : scheme.onSurfaceVariant,
+      ),
+      title: Row(
+        children: [
+          Expanded(
+            child: Text(
+              site.name,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+            ),
+          ),
+          if (up)
+            Container(
+              margin: const EdgeInsets.only(left: 8),
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+              decoration: BoxDecoration(
+                color: scheme.primaryContainer,
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: Text(
+                '运行中',
+                style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                  color: scheme.onPrimaryContainer,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            ),
+        ],
+      ),
+      subtitle: Text(site.url, maxLines: 2, overflow: TextOverflow.ellipsis),
+      trailing: busy
+          ? const SizedBox(
+              width: 72,
+              child: Center(
+                child: SizedBox(
+                  width: 18,
+                  height: 18,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                ),
+              ),
+            )
+          : up
+          ? FilledButton.tonal(
+              style: FilledButton.styleFrom(
+                backgroundColor: scheme.errorContainer,
+                foregroundColor: scheme.onErrorContainer,
+              ),
+              onPressed: canAct ? () => _stopSite(site) : null,
+              child: const Text('终止'),
+            )
+          : FilledButton.tonal(
+              onPressed: canAct ? () => _startSite(site) : null,
+              child: const Text('启动'),
+            ),
     );
   }
 
@@ -1273,10 +1439,9 @@ class _AgentScreenState extends State<AgentScreen> {
             Padding(
               padding: const EdgeInsets.fromLTRB(12, 12, 12, 4),
               child: FilledButton.tonalIcon(
-                onPressed:
-                    _booting || _activeProjectPath == null
-                        ? null
-                        : _newConversation,
+                onPressed: _booting || _activeProjectPath == null
+                    ? null
+                    : _newConversation,
                 icon: const Icon(Icons.add),
                 label: const Text('新会话'),
               ),
@@ -1351,24 +1516,7 @@ class _AgentScreenState extends State<AgentScreen> {
               )
             else
               for (final site in _activeProjectUrls)
-                ListTile(
-                  leading: const Icon(Icons.language),
-                  title: Text(
-                    site.name,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                  ),
-                  subtitle: Text(
-                    site.url,
-                    maxLines: 2,
-                    overflow: TextOverflow.ellipsis,
-                  ),
-                  trailing: FilledButton.tonal(
-                    onPressed:
-                        _booting || _running ? null : () => _startSite(site),
-                    child: const Text('启动'),
-                  ),
-                ),
+                _buildSiteTile(scheme, site),
           ],
         );
       case 3:
@@ -1407,14 +1555,8 @@ class _AgentScreenState extends State<AgentScreen> {
             child: GlassPanel(
               borderRadius: 16,
               tone: GlassTone.regular,
-              padding: const EdgeInsets.symmetric(
-                horizontal: 16,
-                vertical: 10,
-              ),
-              child: SizedBox(
-                width: double.infinity,
-                child: Text(_status!),
-              ),
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+              child: SizedBox(width: double.infinity, child: Text(_status!)),
             ),
           ),
         Expanded(
@@ -1429,16 +1571,16 @@ class _AgentScreenState extends State<AgentScreen> {
                       mode: widget.mode,
                       onPrompt: (p) {
                         _inputCtrl.text = p;
-                        _inputCtrl.selection =
-                            TextSelection.collapsed(offset: p.length);
+                        _inputCtrl.selection = TextSelection.collapsed(
+                          offset: p.length,
+                        );
                       },
                     )
                   : ListView.builder(
                       controller: _scrollCtrl,
                       padding: const EdgeInsets.fromLTRB(16, 16, 16, 24),
                       itemCount: _items.length,
-                      itemBuilder: (context, i) =>
-                          _ChatBubble(item: _items[i]),
+                      itemBuilder: (context, i) => _ChatBubble(item: _items[i]),
                     ),
             ),
           ),
@@ -1461,9 +1603,8 @@ class _AgentScreenState extends State<AgentScreen> {
                       label: Text(a.displayName),
                       onDeleted: _running
                           ? null
-                          : () => setState(
-                              () => _pendingAttachments.removeAt(i),
-                            ),
+                          : () =>
+                                setState(() => _pendingAttachments.removeAt(i)),
                     );
                   },
                 ),
@@ -1513,10 +1654,7 @@ class _AgentScreenState extends State<AgentScreen> {
                             ),
                           ),
                           Padding(
-                            padding: const EdgeInsets.only(
-                              right: 4,
-                              bottom: 2,
-                            ),
+                            padding: const EdgeInsets.only(right: 4, bottom: 2),
                             child: IconButton.filled(
                               tooltip: _running ? '停止' : '发送',
                               onPressed: _running ? _cancel : _send,
@@ -1531,8 +1669,9 @@ class _AgentScreenState extends State<AgentScreen> {
                     const SizedBox(height: 6),
                     Text(
                       '重要操作执行前会请求确认。',
-                      style: Theme.of(context).textTheme.labelSmall
-                          ?.copyWith(color: scheme.onSurfaceVariant),
+                      style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                        color: scheme.onSurfaceVariant,
+                      ),
                     ),
                   ],
                 ),
@@ -1565,24 +1704,19 @@ class _AgentScreenState extends State<AgentScreen> {
         backgroundColor: Colors.transparent,
         drawer: wide
             ? null
-            : Drawer(
-                width: 300,
-                child: _buildNavPanel(showClose: true),
-              ),
+            : Drawer(width: 300, child: _buildNavPanel(showClose: true)),
         appBar: AppBar(
           titleSpacing: 8,
           title: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Text(
-                _activeProjectPath == null
-                    ? '新建项目以开始'
-                    : _conversationTitle,
+                _activeProjectPath == null ? '新建项目以开始' : _conversationTitle,
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
-                style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                  fontWeight: FontWeight.w600,
-                ),
+                style: Theme.of(
+                  context,
+                ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w600),
               ),
               Text(
                 _activeProjectPath == null
@@ -1689,9 +1823,9 @@ class _EmptyProject extends StatelessWidget {
             Text(
               '项目对应 Linux 里的时间戳目录；之后的多轮对话都会保存在该项目下。',
               textAlign: TextAlign.center,
-              style: Theme.of(context).textTheme.bodyLarge?.copyWith(
-                    color: scheme.onSurfaceVariant,
-                  ),
+              style: Theme.of(
+                context,
+              ).textTheme.bodyLarge?.copyWith(color: scheme.onSurfaceVariant),
             ),
             const SizedBox(height: 24),
             FilledButton.icon(
@@ -1707,10 +1841,7 @@ class _EmptyProject extends StatelessWidget {
 }
 
 class _EmptyChat extends StatelessWidget {
-  const _EmptyChat({
-    required this.onPrompt,
-    this.mode = WorkspaceMode.chat,
-  });
+  const _EmptyChat({required this.onPrompt, this.mode = WorkspaceMode.chat});
 
   final ValueChanged<String> onPrompt;
   final WorkspaceMode mode;
@@ -1870,8 +2001,7 @@ class _ChatBubble extends StatelessWidget {
     };
 
     final thinking = item.thinkingPlaceholder;
-    final contentColor =
-        thinking ? fg.withValues(alpha: 0.62) : fg;
+    final contentColor = thinking ? fg.withValues(alpha: 0.62) : fg;
     final Widget body = thinking
         ? Text(
             item.text,
@@ -1897,10 +2027,7 @@ class _ChatBubble extends StatelessWidget {
                 ),
               ],
             ),
-            child: Padding(
-              padding: const EdgeInsets.all(14),
-              child: body,
-            ),
+            child: Padding(padding: const EdgeInsets.all(14), child: body),
           )
         : GlassPanel(
             borderRadius: 20,
@@ -1949,7 +2076,8 @@ class _ChatBubbleMeta extends StatelessWidget {
       return false;
     }
     final showIn = item.promptTokens != null && item.promptTokens! > 0;
-    final showOut = item.kind == _ChatKind.assistant &&
+    final showOut =
+        item.kind == _ChatKind.assistant &&
         item.completionTokens != null &&
         item.completionTokens! > 0;
     return showIn || showOut || item.at != null;
@@ -1966,9 +2094,7 @@ class _ChatBubbleMeta extends StatelessWidget {
 
     void addSep() {
       if (children.isEmpty) return;
-      children.add(
-        Text(' · ', style: base),
-      );
+      children.add(Text(' · ', style: base));
     }
 
     if (item.promptTokens != null && item.promptTokens! > 0) {
@@ -1996,15 +2122,10 @@ class _ChatBubbleMeta extends StatelessWidget {
     }
     if (item.at != null) {
       addSep();
-      children.add(
-        Text(_formatClockTime(item.at!), style: base),
-      );
+      children.add(Text(_formatClockTime(item.at!), style: base));
     }
 
-    return Row(
-      mainAxisSize: MainAxisSize.min,
-      children: children,
-    );
+    return Row(mainAxisSize: MainAxisSize.min, children: children);
   }
 
   Widget _tokenChip({
@@ -2137,8 +2258,9 @@ class _ToolCallCardState extends State<_ToolCallCard> {
       done: done,
       backgrounded: backgrounded,
     );
-    final String? output =
-        result != null && !backgrounded ? _formatToolResult(result) : null;
+    final String? output = result != null && !backgrounded
+        ? _formatToolResult(result)
+        : null;
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
