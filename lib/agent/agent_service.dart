@@ -7,11 +7,13 @@ import 'package:vault/agent/agent_inbox.dart';
 import 'package:vault/agent/agent_settings.dart';
 import 'package:vault/agent/agent_system_prompt.dart';
 import 'package:vault/agent/conversation_store.dart';
+import 'package:vault/agent/project_site_launcher.dart';
 import 'package:vault/agent/project_store.dart';
 import 'package:vault/agent/site_gateway.dart';
 import 'package:vault/agent/system_notice.dart';
 import 'package:vault/agent/ask_user.dart';
 import 'package:vault/agent/tools/ask_user_tool.dart';
+import 'package:vault/agent/tools/inspect_site_tool.dart';
 import 'package:vault/agent/tools/project_url_tool.dart';
 import 'package:vault/agent/tools/shell_tool.dart';
 import 'package:vault/agent/vault_meta_db.dart';
@@ -375,6 +377,7 @@ class AgentService {
     _pendingState = null;
 
     final projectStore = _projectStore;
+    final gateway = _siteGateway;
     final tools = <Tool>[
       createAskUserTool(askUser),
       createShellTool(
@@ -389,7 +392,13 @@ class AgentService {
           workspaceId: workspaceId,
           projectPath: projectPath,
           workspace: _workspace,
-          gateway: _siteGateway,
+          gateway: gateway,
+        ),
+      if (_mode == WorkspaceMode.dev && gateway != null)
+        createInspectSiteTool(
+          gateway: gateway,
+          projectSites: () => _projectSites(projectPath),
+          probeUp: (sites) => ProjectSiteLauncher(_workspace).probeAll(sites),
         ),
     ];
 
@@ -815,11 +824,8 @@ class AgentService {
     _running = true;
     _cancelToken = CancelToken();
 
-    final displayUser = trimmed.isEmpty ? '（仅附件）' : trimmed;
     yield AgentUiUserMessage(
-      attachments.isEmpty
-          ? displayUser
-          : '$displayUser\n[附件 ${attachments.length} 个]',
+      userTurnDisplayText(trimmed, attachmentCount: attachments.length),
     );
 
     try {
@@ -839,10 +845,10 @@ class AgentService {
         guestPaths,
         projectPath: _projectPath,
       );
-      final prompt = [
-        if (context.isNotEmpty) context,
-        if (trimmed.isNotEmpty) trimmed else '请查看附件并按我的意图处理（见上方 guest 路径）。',
-      ].join('\n\n');
+      final prompt = composeModelUserPrompt(
+        userText: trimmed,
+        attachmentContext: context,
+      );
 
       await for (final event in agent.runStream([
         UserMessage.text(prompt),
@@ -908,6 +914,20 @@ class AgentService {
   /// True when streamed model text should become a visible assistant bubble.
   static bool isVisibleAssistantText(String? text) =>
       text != null && text.trim().isNotEmpty;
+
+  /// Chat-bubble text for a user turn (never includes hidden Vault context).
+  static String userTurnDisplayText(String trimmed, {int attachmentCount = 0}) {
+    final display = trimmed.isEmpty ? '（仅附件）' : trimmed;
+    if (attachmentCount == 0) return display;
+    return '$display\n[附件 $attachmentCount 个]';
+  }
+
+  Future<List<ProjectUrlEntry>> _projectSites(String projectPath) async {
+    final store = _projectStore;
+    if (store == null) return const [];
+    final project = await store.getProject(workspaceId, projectPath);
+    return project?.urls ?? const [];
+  }
 
   /// Close the current UI turn buffer when the model switches to tools.
   ///

@@ -16,6 +16,7 @@ List<String> vaultAgentSystemPrompts({
       workspaceId: workspaceId,
       projectPath: projectPath,
       projectDir: projectDir,
+      mode: mode,
     ),
     switch (mode) {
       WorkspaceMode.dev => _devPersona(projectDir: projectDir),
@@ -40,10 +41,22 @@ $list
       .trim();
 }
 
+/// Model-facing user turn: hidden Vault blocks first, then the user's words.
+String composeModelUserPrompt({
+  required String userText,
+  String attachmentContext = '',
+}) {
+  return [
+    if (attachmentContext.isNotEmpty) attachmentContext,
+    if (userText.isNotEmpty) userText else '请查看附件并按我的意图处理（见上方 guest 路径）。',
+  ].join('\n\n');
+}
+
 String _sharedSandboxFacts({
   required String workspaceId,
   String? projectPath,
   String? projectDir,
+  WorkspaceMode mode = WorkspaceMode.chat,
 }) {
   final projectHint = projectDir == null
       ? '- 尚未绑定项目；持久工作请写在 $kGuestProjectsDir/ 下由用户创建的项目目录中'
@@ -62,7 +75,7 @@ String _sharedSandboxFacts({
 - pip 已配置国内镜像；优先用 python3/pip3，无需再装其他 Python 版本
 - 用户通过 App 附带的文件会被注入到 $kGuestInboxDir/（仅本工作区可见）
 $projectHint
-- 工具：ask_user（向用户展示选择题，等他们点选或自己填写）、shell（沙箱命令）、register_project_url / list_project_urls（登记/查看项目网址，主机侧；list 含工作区已占用端口）
+- 工具：ask_user（向用户展示选择题，等他们点选或自己填写）、shell（沙箱命令）、register_project_url / list_project_urls（登记/查看项目网址，主机侧；list 含工作区已占用端口）${mode == WorkspaceMode.dev ? '、inspect_site（查看当前项目站点在用户浏览器里的错误；服务没启动会直接告诉你，不要让用户开 F12）' : ''}
 - 命令经长驻 shell **快速投递**为 guest 后台任务并轮询结果（长任务不阻塞后续 shell，可并行）；启动瞬间继承当时的 cwd / 环境
 - 同一项目内可能有多轮对话，它们共享该项目目录与这份长驻 shell
 - 沙箱与手机共享网络栈：出站 curl/apk 与在 127.0.0.1 上 listen 通常可用（非“断网沙箱”）
@@ -123,6 +136,7 @@ String _devPersona({required String? projectDir}) {
 - 用户通过浏览器用成品；聊天里不要主动展示代码、架构或原理。
 - 不问技术栈，不评判需求好不好、专不专业。
 - 默认在**当前项目**上迭代。只有用户明确说「做个全新的东西」时，才引导他们去 App 点「新建项目」；禁止自己 mkdir 当新项目。
+- 用户说「不能用 / 坏了 / 打不开」时，直接调用 `inspect_site`（不用传参，看的是当前项目的站点）。服务没启动就先处理启动；起来了再根据返回的浏览器错误改。不要让用户去开 F12。
 
 $currentProject
 

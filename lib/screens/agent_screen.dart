@@ -277,6 +277,7 @@ class _AgentScreenState extends State<AgentScreen> {
     if (port != preferred) {
       await _workspaceStore.setGatewayPort(ws, port);
     }
+    _siteGateway.captureEnabled = widget.mode == WorkspaceMode.dev;
     _syncGatewayRoutes();
   }
 
@@ -1547,11 +1548,7 @@ class _AgentScreenState extends State<AgentScreen> {
         Icons.language,
         color: up ? scheme.primary : scheme.onSurfaceVariant,
       ),
-      title: Text(
-        site.name,
-        maxLines: 1,
-        overflow: TextOverflow.ellipsis,
-      ),
+      title: Text(site.name, maxLines: 1, overflow: TextOverflow.ellipsis),
       onTap: url.isEmpty ? null : () => unawaited(_openSiteUrl(site)),
       trailing: busy
           ? const SizedBox(

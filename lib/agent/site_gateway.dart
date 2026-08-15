@@ -1,8 +1,10 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:vault/agent/project_store.dart';
+import 'package:vault/agent/site_browser_log.dart';
 import 'package:vault/agent/site_port.dart';
 
 /// One Host-routed backend behind [SiteGateway].
@@ -33,10 +35,31 @@ class SiteGateway {
   HttpClient? _client;
   int? _port;
   List<SiteRoute> _routes = const [];
+  final SiteBrowserLog _browserLog = SiteBrowserLog();
+
+  /// When true, inject probe.js into HTML and keep a ring buffer of errors.
+  bool captureEnabled = false;
 
   int? get port => _port;
   bool get isRunning => _server != null;
   List<SiteRoute> get routes => _routes;
+
+  /// Recent captured events (console / network / gateway).
+  List<SiteBrowserEvent> recentEvents({
+    String? slug,
+    DateTime? since,
+    bool includeWarn = true,
+    Iterable<String>? slugs,
+  }) {
+    return _browserLog.recent(
+      slug: slug,
+      since: since,
+      includeWarn: includeWarn,
+      slugs: slugs,
+    );
+  }
+
+  void recordEvent(SiteBrowserEvent event) => _browserLog.add(event);
 
   /// Bind [preferredPort] when possible; otherwise `bind(0)`.
   Future<int> start({int preferredPort = 0}) async {
@@ -82,6 +105,7 @@ class SiteGateway {
     _client = null;
     _port = null;
     _routes = const [];
+    _browserLog.clear();
     client?.close(force: true);
     await server?.close(force: true);
   }
@@ -99,6 +123,8 @@ class SiteGateway {
         return;
       }
 
+      if (await _tryHandleVaultPath(req)) return;
+
       final host = req.headers.value(HttpHeaders.hostHeader) ?? '';
       final slug = siteSlugFromHost(host);
       if (slug == null) {
@@ -113,6 +139,12 @@ class SiteGateway {
         }
       }
       if (route == null) {
+        _recordGateway(
+          slug: slug,
+          path: req.uri.path,
+          status: HttpStatus.notFound,
+          message: '没有名为「$slug」的站点',
+        );
         await _writeDirectory(req, missing: slug);
         return;
       }
@@ -130,9 +162,88 @@ class SiteGateway {
     }
   }
 
+  Future<bool> _tryHandleVaultPath(HttpRequest req) async {
+    final path = req.uri.path;
+    if (path != kVaultProbePath && path != kVaultBrowserLogPath) {
+      return false;
+    }
+    if (path == kVaultProbePath) {
+      if (req.method != 'GET' && req.method != 'HEAD') {
+        req.response.statusCode = HttpStatus.methodNotAllowed;
+        await req.response.close();
+        return true;
+      }
+      req.response.statusCode = HttpStatus.ok;
+      req.response.headers.contentType = ContentType(
+        'application',
+        'javascript',
+        charset: 'utf-8',
+      );
+      req.response.headers.set(HttpHeaders.cacheControlHeader, 'no-store');
+      if (req.method == 'GET') {
+        req.response.write(captureEnabled ? kVaultProbeJs : '');
+      }
+      await req.response.close();
+      return true;
+    }
+
+    if (req.method != 'POST') {
+      req.response.statusCode = HttpStatus.methodNotAllowed;
+      await req.response.close();
+      return true;
+    }
+    final raw = await utf8.decoder.bind(req).join();
+    if (captureEnabled) {
+      final host = req.headers.value(HttpHeaders.hostHeader) ?? '';
+      final slug = siteSlugFromHost(host) ?? 'unknown';
+      _ingestBrowserLog(raw, fallbackSlug: slug);
+    }
+    req.response.statusCode = HttpStatus.noContent;
+    await req.response.close();
+    return true;
+  }
+
+  void _ingestBrowserLog(String raw, {required String fallbackSlug}) {
+    try {
+      final decoded = jsonDecode(raw);
+      if (decoded is! Map) return;
+      final event = siteBrowserEventFromPayload(
+        Map<String, dynamic>.from(decoded),
+        fallbackSlug: fallbackSlug,
+      );
+      if (event != null) recordEvent(event);
+    } catch (_) {}
+  }
+
+  void _recordGateway({
+    required String slug,
+    required String path,
+    required int status,
+    required String message,
+  }) {
+    if (!captureEnabled || isNoisyBrowserPath(path)) return;
+    recordEvent(
+      SiteBrowserEvent(
+        at: DateTime.now(),
+        slug: slug,
+        type: 'gateway',
+        level: 'error',
+        message: message,
+        href: path,
+        status: status,
+      ),
+    );
+  }
+
   Future<void> _proxy(HttpRequest req, SiteRoute route) async {
     final client = _client;
     if (client == null) {
+      _recordGateway(
+        slug: route.slug,
+        path: req.uri.path,
+        status: HttpStatus.badGateway,
+        message: '网关未启动',
+      );
       await _writeHtml(req, HttpStatus.badGateway, '网关未启动', '请重新进入工作区。');
       return;
     }
@@ -154,6 +265,18 @@ class SiteGateway {
       );
       await outbound.addStream(req);
       final upstream = await outbound.close();
+      if (upstream.statusCode >= 400) {
+        _recordGateway(
+          slug: route.slug,
+          path: req.uri.path,
+          status: upstream.statusCode,
+          message: '上游 ${upstream.statusCode} ${req.method} ${req.uri.path}',
+        );
+      }
+      if (captureEnabled && _isHtmlHeaders(upstream.headers)) {
+        await _proxyHtml(req, upstream);
+        return;
+      }
       req.response.statusCode = upstream.statusCode;
       upstream.headers.forEach((name, values) {
         if (_hopByHop.contains(name.toLowerCase())) return;
@@ -162,6 +285,12 @@ class SiteGateway {
       await req.response.addStream(upstream);
       await req.response.close();
     } catch (_) {
+      _recordGateway(
+        slug: route.slug,
+        path: req.uri.path,
+        status: HttpStatus.badGateway,
+        message: '站点未启动（502）',
+      );
       await _writeHtml(
         req,
         HttpStatus.badGateway,
@@ -169,6 +298,45 @@ class SiteGateway {
         '请在 Vault 侧栏「站点」里启动「${route.name}」。',
       );
     }
+  }
+
+  Future<void> _proxyHtml(HttpRequest req, HttpClientResponse upstream) async {
+    final builder = BytesBuilder(copy: false);
+    var overLimit = false;
+    await for (final chunk in upstream) {
+      builder.add(chunk);
+      if (builder.length > kSiteBrowserHtmlInjectMaxBytes) overLimit = true;
+    }
+    final bytes = builder.takeBytes();
+    req.response.statusCode = upstream.statusCode;
+    upstream.headers.forEach((name, values) {
+      final lower = name.toLowerCase();
+      if (_hopByHop.contains(lower)) return;
+      if (lower == 'content-length' || lower == 'content-encoding') return;
+      req.response.headers.set(name, values);
+    });
+    if (overLimit) {
+      req.response.headers.contentLength = bytes.length;
+      req.response.add(bytes);
+      await req.response.close();
+      return;
+    }
+    final html = injectVaultProbeScript(
+      utf8.decode(bytes, allowMalformed: true),
+    );
+    final out = utf8.encode(html);
+    req.response.headers.contentType =
+        upstream.headers.contentType ?? ContentType.html;
+    req.response.headers.contentLength = out.length;
+    req.response.add(out);
+    await req.response.close();
+  }
+
+  bool _isHtmlHeaders(HttpHeaders headers) {
+    final ct = headers.contentType;
+    if (ct != null) return ct.mimeType == 'text/html';
+    final raw = headers.value(HttpHeaders.contentTypeHeader) ?? '';
+    return raw.toLowerCase().contains('text/html');
   }
 
   Future<void> _writeDirectory(HttpRequest req, {String? missing}) async {
