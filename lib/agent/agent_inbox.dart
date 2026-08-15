@@ -5,10 +5,7 @@ import 'package:vault/sandbox/sandbox_models.dart';
 
 /// A host file the user selected to inject into the workspace inbox.
 class AgentAttachment {
-  const AgentAttachment({
-    required this.hostPath,
-    required this.displayName,
-  });
+  const AgentAttachment({required this.hostPath, required this.displayName});
 
   final String hostPath;
   final String displayName;

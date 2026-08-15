@@ -36,7 +36,8 @@ rm -f $out $exitF $pidF
 _pid=\$!
 printf '%s\\n' "\$_pid" > $pidF
 printf '%s\\n' "\$_pid"
-'''.trim();
+'''
+      .trim();
 }
 
 /// Poll script: prints DONE or RUNNING, always with current output body.
@@ -67,7 +68,8 @@ else
   _out
   printf '\\n%s\\n' '$kShellJobEndMarker'
 fi
-'''.trim();
+'''
+      .trim();
 }
 
 /// Best-effort kill of a detached job (used on wall-clock timeout).
@@ -83,7 +85,8 @@ if [ -f $pidF ]; then
     kill -9 "\$_pid" 2>/dev/null || true
   fi
 fi
-'''.trim();
+'''
+      .trim();
 }
 
 class ShellJobPollResult {
@@ -172,8 +175,9 @@ ShellJobPollResult parseShellJobPollStdout(String stdout) {
       continue;
     }
     final excerptStart = absoluteStart > 200 ? absoluteStart - 200 : 0;
-    final excerptEnd =
-        absoluteEnd + 400 < output.length ? absoluteEnd + 400 : output.length;
+    final excerptEnd = absoluteEnd + 400 < output.length
+        ? absoluteEnd + 400
+        : output.length;
     var excerpt = output.substring(excerptStart, excerptEnd);
     if (excerptStart > 0) excerpt = '…$excerpt';
     if (excerptEnd < output.length) excerpt = '$excerpt…';

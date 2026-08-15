@@ -24,8 +24,7 @@ class AgentSettings {
   final String apiKey;
   final String model;
 
-  bool get isConfigured =>
-      apiKey.trim().isNotEmpty && model.trim().isNotEmpty;
+  bool get isConfigured => apiKey.trim().isNotEmpty && model.trim().isNotEmpty;
 
   String get displayName {
     final n = name.trim();
@@ -85,10 +84,7 @@ class AgentSettings {
 
 /// All saved LLM profiles plus which one is currently selected.
 class AgentSettingsBundle {
-  const AgentSettingsBundle({
-    required this.profiles,
-    required this.activeId,
-  });
+  const AgentSettingsBundle({required this.profiles, required this.activeId});
 
   final List<AgentSettings> profiles;
   final String activeId;
@@ -124,8 +120,7 @@ abstract class AgentSettingsKv {
 }
 
 class MemoryAgentSettingsKv implements AgentSettingsKv {
-  MemoryAgentSettingsKv([Map<String, String>? seed])
-    : _data = {...?seed};
+  MemoryAgentSettingsKv([Map<String, String>? seed]) : _data = {...?seed};
 
   final Map<String, String> _data;
 
@@ -162,17 +157,15 @@ class FlutterSecureAgentSettingsKv implements AgentSettingsKv {
 }
 
 class AgentSettingsStore {
-  AgentSettingsStore({
-    FlutterSecureStorage? storage,
-    AgentSettingsKv? kv,
-  }) : _kv =
-           kv ??
-           FlutterSecureAgentSettingsKv(
-             storage ??
-                 const FlutterSecureStorage(
-                   aOptions: AndroidOptions(encryptedSharedPreferences: true),
-                 ),
-           );
+  AgentSettingsStore({FlutterSecureStorage? storage, AgentSettingsKv? kv})
+    : _kv =
+          kv ??
+          FlutterSecureAgentSettingsKv(
+            storage ??
+                const FlutterSecureStorage(
+                  aOptions: AndroidOptions(encryptedSharedPreferences: true),
+                ),
+          );
 
   static const _kBaseUrl = 'vault.agent.api_base_url';
   static const _kApiKey = 'vault.agent.api_key';
@@ -211,9 +204,7 @@ class AgentSettingsStore {
     } else {
       profiles[index] = next;
     }
-    await _persist(
-      AgentSettingsBundle(profiles: profiles, activeId: id),
-    );
+    await _persist(AgentSettingsBundle(profiles: profiles, activeId: id));
   }
 
   Future<void> saveBundle(AgentSettingsBundle bundle) => _persist(bundle);
@@ -263,7 +254,9 @@ class AgentSettingsStore {
     if (bundle.profiles.length <= 1) return bundle;
     final profiles = bundle.profiles.where((p) => p.id != id).toList();
     if (profiles.length == bundle.profiles.length) return bundle;
-    final activeId = bundle.activeId == id ? profiles.first.id : bundle.activeId;
+    final activeId = bundle.activeId == id
+        ? profiles.first.id
+        : bundle.activeId;
     final next = AgentSettingsBundle(profiles: profiles, activeId: activeId);
     await _persist(next);
     return next;
@@ -328,9 +321,7 @@ class AgentSettingsStore {
       final seen = <String>{};
       for (final item in list) {
         if (item is! Map) continue;
-        var profile = AgentSettings.fromJson(
-          Map<String, dynamic>.from(item),
-        );
+        var profile = AgentSettings.fromJson(Map<String, dynamic>.from(item));
         if (seen.contains(profile.id)) {
           profile = profile.copyWith(id: _newId());
         }
@@ -341,7 +332,8 @@ class AgentSettingsStore {
       final activeId = (map['activeId'] as String?)?.trim();
       return AgentSettingsBundle(
         profiles: profiles,
-        activeId: (activeId != null &&
+        activeId:
+            (activeId != null &&
                 activeId.isNotEmpty &&
                 profiles.any((p) => p.id == activeId))
             ? activeId
@@ -352,8 +344,7 @@ class AgentSettingsStore {
     }
   }
 
-  static String _newId() =>
-      _uuid.v4().replaceAll('-', '').substring(0, 12);
+  static String _newId() => _uuid.v4().replaceAll('-', '').substring(0, 12);
 
   static String _uniqueName(List<AgentSettings> profiles, String? requested) {
     final taken = {for (final p in profiles) p.displayName};
