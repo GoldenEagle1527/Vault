@@ -11,6 +11,7 @@ import 'package:vault/agent/agent_service.dart';
 import 'package:vault/agent/agent_settings.dart';
 import 'package:vault/agent/ask_user.dart';
 import 'package:vault/agent/chat_input_keys.dart';
+import 'package:vault/agent/conversation_state.dart';
 import 'package:vault/agent/conversation_store.dart';
 import 'package:vault/agent/project_site_launcher.dart';
 import 'package:vault/agent/project_store.dart';
@@ -25,6 +26,7 @@ import 'package:vault/screens/file_browser_screen.dart';
 import 'package:vault/screens/settings_screen.dart';
 import 'package:vault/screens/terminal_screen.dart';
 import 'package:vault/widgets/ask_user_panel.dart';
+import 'package:vault/widgets/ask_user_transcript.dart';
 import 'package:vault/widgets/glass.dart';
 import 'package:vault/widgets/new_project_dialog.dart';
 
@@ -68,6 +70,7 @@ class _ChatItem {
     this.totalTokens,
     this.duration,
     this.at,
+    this.historyIndex,
   });
 
   factory _ChatItem.tool({
@@ -77,6 +80,7 @@ class _ChatItem {
     String? callId,
     String? jobId,
     bool backgrounded = false,
+    int? historyIndex,
   }) {
     return _ChatItem(
       kind: _ChatKind.tool,
@@ -87,6 +91,7 @@ class _ChatItem {
       toolCallId: callId,
       toolJobId: jobId,
       toolBackgrounded: backgrounded,
+      historyIndex: historyIndex,
     );
   }
 
@@ -112,6 +117,7 @@ class _ChatItem {
   int? totalTokens;
   Duration? duration;
   DateTime? at;
+  int? historyIndex;
 }
 
 enum _ChatKind { user, assistant, tool, status, error }
@@ -352,7 +358,12 @@ class _AgentScreenState extends State<AgentScreen> {
     });
   }
 
-  void _addUserOrSystemNotice(String text, {int? promptTokens, DateTime? at}) {
+  void _addUserOrSystemNotice(
+    String text, {
+    int? promptTokens,
+    DateTime? at,
+    int? historyIndex,
+  }) {
     final notice = systemNoticeForUserText(text);
     if (notice != null) {
       _items.add(
@@ -369,14 +380,25 @@ class _AgentScreenState extends State<AgentScreen> {
         text: text,
         promptTokens: promptTokens,
         at: at,
+        historyIndex: historyIndex,
       ),
     );
   }
 
   void _applyRestoredEvent(AgentUiEvent event) {
     switch (event) {
-      case AgentUiUserMessage(:final text, :final promptTokens, :final at):
-        _addUserOrSystemNotice(text, promptTokens: promptTokens, at: at);
+      case AgentUiUserMessage(
+        :final text,
+        :final promptTokens,
+        :final at,
+        :final historyIndex,
+      ):
+        _addUserOrSystemNotice(
+          text,
+          promptTokens: promptTokens,
+          at: at,
+          historyIndex: historyIndex,
+        );
       case AgentUiSystemNotice(:final text, :final isError):
         _items.add(
           _ChatItem(
@@ -419,14 +441,32 @@ class _AgentScreenState extends State<AgentScreen> {
           duration: duration,
           at: at,
         );
-      case AgentUiToolCall(:final name, :final arguments, :final callId):
-        if (name == kAskUserToolName) break;
+      case AgentUiToolCall(
+        :final name,
+        :final arguments,
+        :final callId,
+        :final historyIndex,
+      ):
         _items.add(
-          _ChatItem.tool(name: name, arguments: arguments, callId: callId),
+          _ChatItem.tool(
+            name: name,
+            arguments: arguments,
+            callId: callId,
+            historyIndex: historyIndex,
+          ),
         );
-      case AgentUiToolResult(:final name, :final result, :final callId):
-        if (name == kAskUserToolName) break;
-        _attachToolResult(name, result, callId: callId);
+      case AgentUiToolResult(
+        :final name,
+        :final result,
+        :final callId,
+        :final historyIndex,
+      ):
+        _attachToolResult(
+          name,
+          result,
+          callId: callId,
+          historyIndex: historyIndex,
+        );
       case AgentUiToolBackgrounded(
         :final name,
         :final jobId,
@@ -458,6 +498,7 @@ class _AgentScreenState extends State<AgentScreen> {
         _items.add(_ChatItem(kind: _ChatKind.error, text: message));
       case AgentUiStatus():
       case AgentUiDiscardDraftAssistant():
+      case AgentUiConversationForked():
         break;
     }
   }
@@ -490,11 +531,17 @@ class _AgentScreenState extends State<AgentScreen> {
 
   void _applyLiveEvent(AgentUiEvent event) {
     switch (event) {
-      case AgentUiUserMessage(:final text, :final promptTokens, :final at):
+      case AgentUiUserMessage(
+        :final text,
+        :final promptTokens,
+        :final at,
+        :final historyIndex,
+      ):
         _addUserOrSystemNotice(
           text,
           promptTokens: promptTokens,
           at: at ?? DateTime.now(),
+          historyIndex: historyIndex,
         );
       case AgentUiSystemNotice(:final text, :final isError):
         _items.add(
@@ -584,12 +631,32 @@ class _AgentScreenState extends State<AgentScreen> {
         );
       case AgentUiDiscardDraftAssistant():
         _discardBlankAssistantDraft();
-      case AgentUiToolCall(:final name, :final arguments, :final callId):
-        if (name == kAskUserToolName) break;
-        _upsertToolCall(name: name, arguments: arguments, callId: callId);
-      case AgentUiToolResult(:final name, :final result, :final callId):
-        if (name == kAskUserToolName) break;
-        _attachToolResult(name, result, callId: callId);
+      case AgentUiToolCall(
+        :final name,
+        :final arguments,
+        :final callId,
+        :final historyIndex,
+      ):
+        _upsertToolCall(
+          name: name,
+          arguments: arguments,
+          callId: callId,
+          historyIndex: historyIndex,
+        );
+      case AgentUiToolResult(
+        :final name,
+        :final result,
+        :final callId,
+        :final historyIndex,
+      ):
+        _attachToolResult(
+          name,
+          result,
+          callId: callId,
+          historyIndex: historyIndex,
+        );
+      case AgentUiConversationForked():
+        break;
       case AgentUiToolBackgrounded(
         :final name,
         :final jobId,
@@ -694,6 +761,7 @@ class _AgentScreenState extends State<AgentScreen> {
     required String name,
     required String arguments,
     String? callId,
+    int? historyIndex,
   }) {
     _discardBlankAssistantDraft();
     for (var i = _items.length - 1; i >= 0; i--) {
@@ -717,10 +785,16 @@ class _AgentScreenState extends State<AgentScreen> {
       if (arguments.length >= (item.toolArguments?.length ?? 0)) {
         item.toolArguments = arguments;
       }
+      item.historyIndex ??= historyIndex;
       return;
     }
     _items.add(
-      _ChatItem.tool(name: name, arguments: arguments, callId: callId),
+      _ChatItem.tool(
+        name: name,
+        arguments: arguments,
+        callId: callId,
+        historyIndex: historyIndex,
+      ),
     );
   }
 
@@ -763,6 +837,7 @@ class _AgentScreenState extends State<AgentScreen> {
     String? callId,
     String? jobId,
     bool clearBackgrounded = false,
+    int? historyIndex,
   }) {
     for (var i = _items.length - 1; i >= 0; i--) {
       final item = _items[i];
@@ -779,6 +854,7 @@ class _AgentScreenState extends State<AgentScreen> {
         if (clearBackgrounded) item.toolBackgrounded = false;
         item.toolCallId ??= callId;
         item.toolJobId ??= jobId;
+        if (historyIndex != null) item.historyIndex = historyIndex;
         if (name == 'register_project_url') {
           unawaited(
             _refreshProjects().then((_) {
@@ -796,6 +872,7 @@ class _AgentScreenState extends State<AgentScreen> {
         result: result,
         callId: callId,
         jobId: jobId,
+        historyIndex: historyIndex,
       ),
     );
   }
@@ -1196,7 +1273,7 @@ class _AgentScreenState extends State<AgentScreen> {
     if (!mounted) return;
     final service = _service;
     if (service == null) return;
-    setState(() => _status = '正在切换会话…');
+    setState(() => _status = '正在恢复项目文件…');
     try {
       await service.switchConversation(id);
       await _refreshConversationList();
@@ -1295,8 +1372,22 @@ class _AgentScreenState extends State<AgentScreen> {
       _status = null;
     });
 
-    await for (final event in service.run(text, attachments: attachments)) {
+    await _consumeAgentStream(service.run(text, attachments: attachments));
+  }
+
+  Future<void> _consumeAgentStream(Stream<AgentUiEvent> stream) async {
+    final service = _service;
+    if (service == null) return;
+    await for (final event in stream) {
       if (!mounted) return;
+      if (event is AgentUiConversationForked) {
+        await _refreshConversationList();
+        _hydrateFromService();
+        _conversationTitle = service.conversationTitle;
+        setState(() {});
+        _scrollToEnd();
+        continue;
+      }
       _applyLiveEvent(event);
       _conversationTitle = service.conversationTitle;
       setState(() {});
@@ -1316,6 +1407,99 @@ class _AgentScreenState extends State<AgentScreen> {
       _status = null;
       _discardThinkingPlaceholder();
     });
+  }
+
+  Future<void> _editUserMessage(_ChatItem item) async {
+    final index = item.historyIndex;
+    final service = _service;
+    if (index == null || service == null || _running) return;
+    final initial = displayTextFromStoredUserPrompt(item.text);
+    final edited = await showDialog<String>(
+      context: context,
+      builder: (ctx) => _EditUserMessageDialog(initialText: initial),
+    );
+    if (edited == null || !mounted) return;
+    final trimmed = edited.trim();
+    if (trimmed.isEmpty || trimmed == initial) return;
+    setState(() {
+      _running = true;
+      _status = null;
+    });
+    await _consumeAgentStream(service.forkAndRerun(index, trimmed));
+  }
+
+  Future<void> _reselectAskUser(_ChatItem item) async {
+    final service = _service;
+    if (service == null || _running) return;
+    final q = AskUserQuestionnaire.tryParseArguments(item.toolArguments ?? '');
+    if (q == null) return;
+    final initial = AskUserAnswer.tryParseResult(item.toolResult ?? '');
+    final answers = await showModalBottomSheet<List<AskUserAnswer>>(
+      context: context,
+      isScrollControlled: true,
+      builder: (ctx) {
+        return Padding(
+          padding: EdgeInsets.only(
+            left: 16,
+            right: 16,
+            top: 16,
+            bottom: MediaQuery.viewInsetsOf(ctx).bottom + 16,
+          ),
+          child: AskUserPanel(
+            questionnaire: q,
+            initialAnswers: initial,
+            onSubmit: (value) => Navigator.pop(ctx, value),
+          ),
+        );
+      },
+    );
+    if (answers == null || !mounted) return;
+    setState(() {
+      _running = true;
+      _status = null;
+    });
+    await _consumeAgentStream(
+      service.forkAndResubmitAskUser(
+        answers: answers,
+        historyIndex: item.historyIndex,
+        callId: item.toolCallId,
+      ),
+    );
+  }
+
+  Future<void> _copyText(String text, {String done = '已复制'}) async {
+    await Clipboard.setData(ClipboardData(text: text));
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(done), duration: const Duration(seconds: 1)),
+    );
+  }
+
+  Widget? _branchSwitcher(int? messageIndex) {
+    final id = _activeConversationId;
+    if (id == null || messageIndex == null) return null;
+    final siblings = _conversationStore.branchesAt(
+      conversations: _conversations,
+      currentId: id,
+      messageIndex: messageIndex,
+    );
+    if (siblings.isEmpty) return null;
+    return Padding(
+      padding: const EdgeInsets.only(top: 4),
+      child: Wrap(
+        spacing: 6,
+        children: [
+          for (final c in siblings)
+            ActionChip(
+              label: Text(c.isBranch ? '分支 · ${c.title}' : c.title),
+              visualDensity: VisualDensity.compact,
+              onPressed: _running
+                  ? null
+                  : () => unawaited(_switchConversation(c.id)),
+            ),
+        ],
+      ),
+    );
   }
 
   AgentSettings get _activeProfile {
@@ -1591,10 +1775,14 @@ class _AgentScreenState extends State<AgentScreen> {
     );
   }
 
-  Widget _buildConversationTile(ColorScheme scheme, ConversationInfo c) {
+  Widget _buildConversationTile(
+    ColorScheme scheme,
+    ConversationInfo c, {
+    int depth = 0,
+  }) {
     final selected = c.id == _activeConversationId;
     return Padding(
-      padding: const EdgeInsets.fromLTRB(8, 1, 8, 1),
+      padding: EdgeInsets.fromLTRB(8.0 + depth * 16, 1, 8, 1),
       child: Material(
         color: selected ? scheme.surfaceContainerHighest : Colors.transparent,
         borderRadius: BorderRadius.circular(8),
@@ -1605,9 +1793,17 @@ class _AgentScreenState extends State<AgentScreen> {
             padding: const EdgeInsets.fromLTRB(12, 8, 4, 8),
             child: Row(
               children: [
+                if (c.isBranch) ...[
+                  Icon(
+                    Icons.call_split,
+                    size: 14,
+                    color: scheme.onSurfaceVariant,
+                  ),
+                  const SizedBox(width: 6),
+                ],
                 Expanded(
                   child: Text(
-                    c.title,
+                    c.isBranch ? '分支 · ${c.title}' : c.title,
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
                     style: Theme.of(context).textTheme.bodyMedium?.copyWith(
@@ -1671,8 +1867,14 @@ class _AgentScreenState extends State<AgentScreen> {
                         ),
                       )
                     else
-                      for (final c in _conversations)
-                        _buildConversationTile(scheme, c),
+                      for (final node in ConversationStore.treeOrder(
+                        _conversations,
+                      ))
+                        _buildConversationTile(
+                          scheme,
+                          node.info,
+                          depth: node.depth,
+                        ),
                 ],
             ],
           ),
@@ -1771,7 +1973,37 @@ class _AgentScreenState extends State<AgentScreen> {
                         final item = _items[i];
                         return KeyedSubtree(
                           key: _chatItemKey(item, i),
-                          child: _ChatBubble(item: item),
+                          child: _ChatBubble(
+                            item: item,
+                            running: _running,
+                            onCopy: () {
+                              if (item.kind == _ChatKind.tool) {
+                                unawaited(
+                                  _copyText(
+                                    [
+                                      item.toolArguments ?? item.text,
+                                      if (item.toolResult != null)
+                                        item.toolResult!,
+                                    ].join('\n\n'),
+                                    done: '已复制工具输出',
+                                  ),
+                                );
+                              } else {
+                                unawaited(_copyText(item.text));
+                              }
+                            },
+                            onEdit:
+                                item.kind == _ChatKind.user &&
+                                    item.historyIndex != null
+                                ? () => unawaited(_editUserMessage(item))
+                                : null,
+                            onReselectAskUser:
+                                item.kind == _ChatKind.tool &&
+                                    item.toolName == kAskUserToolName
+                                ? () => unawaited(_reselectAskUser(item))
+                                : null,
+                            branchSwitcher: _branchSwitcher(item.historyIndex),
+                          ),
                         );
                       },
                     ),
@@ -2184,9 +2416,21 @@ class _SystemNotice extends StatelessWidget {
 }
 
 class _ChatBubble extends StatelessWidget {
-  const _ChatBubble({required this.item});
+  const _ChatBubble({
+    required this.item,
+    this.running = false,
+    this.onCopy,
+    this.onEdit,
+    this.onReselectAskUser,
+    this.branchSwitcher,
+  });
 
   final _ChatItem item;
+  final bool running;
+  final VoidCallback? onCopy;
+  final VoidCallback? onEdit;
+  final VoidCallback? onReselectAskUser;
+  final Widget? branchSwitcher;
 
   @override
   Widget build(BuildContext context) {
@@ -2207,6 +2451,15 @@ class _ChatBubble extends StatelessWidget {
       );
     }
 
+    if (item.kind == _ChatKind.tool && item.toolName == kAskUserToolName) {
+      return AskUserTranscript(
+        arguments: item.toolArguments ?? '',
+        result: item.toolResult,
+        onReselect: running ? null : onReselectAskUser,
+        branchSwitcher: branchSwitcher,
+      );
+    }
+
     if (item.kind == _ChatKind.tool) {
       return Padding(
         padding: const EdgeInsets.symmetric(vertical: 6),
@@ -2216,7 +2469,19 @@ class _ChatBubble extends StatelessWidget {
             constraints: BoxConstraints(
               maxWidth: MediaQuery.sizeOf(context).width * 0.92,
             ),
-            child: _ToolCallCard(item: item),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                _ToolCallCard(item: item),
+                if (onCopy != null)
+                  IconButton(
+                    tooltip: '复制',
+                    onPressed: onCopy,
+                    icon: const Icon(Icons.copy_outlined, size: 16),
+                    visualDensity: VisualDensity.compact,
+                  ),
+              ],
+            ),
           ),
         ),
       );
@@ -2294,11 +2559,38 @@ class _ChatBubble extends StatelessWidget {
             ),
             child: bubble,
           ),
-          if (meta.hasContent)
-            Padding(
-              padding: const EdgeInsets.only(top: 4, left: 4, right: 4),
-              child: meta,
+          Padding(
+            padding: const EdgeInsets.only(top: 2, left: 2, right: 2),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                if (meta.hasContent) meta,
+                if (onCopy != null)
+                  IconButton(
+                    tooltip: '复制',
+                    onPressed: onCopy,
+                    icon: const Icon(Icons.copy_outlined, size: 16),
+                    visualDensity: VisualDensity.compact,
+                    constraints: const BoxConstraints(
+                      minWidth: 28,
+                      minHeight: 28,
+                    ),
+                  ),
+                if (onEdit != null && !running)
+                  IconButton(
+                    tooltip: '修改',
+                    onPressed: onEdit,
+                    icon: const Icon(Icons.edit_outlined, size: 16),
+                    visualDensity: VisualDensity.compact,
+                    constraints: const BoxConstraints(
+                      minWidth: 28,
+                      minHeight: 28,
+                    ),
+                  ),
+              ],
             ),
+          ),
+          ?branchSwitcher,
         ],
       ),
     );
@@ -2742,4 +3034,56 @@ String _formatToolResult(String raw) {
     }
   } catch (_) {}
   return raw;
+}
+
+class _EditUserMessageDialog extends StatefulWidget {
+  const _EditUserMessageDialog({required this.initialText});
+
+  final String initialText;
+
+  @override
+  State<_EditUserMessageDialog> createState() => _EditUserMessageDialogState();
+}
+
+class _EditUserMessageDialogState extends State<_EditUserMessageDialog> {
+  late final TextEditingController _ctrl;
+
+  @override
+  void initState() {
+    super.initState();
+    _ctrl = TextEditingController(text: widget.initialText);
+  }
+
+  @override
+  void dispose() {
+    _ctrl.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Text('修改这条消息'),
+      content: TextField(
+        controller: _ctrl,
+        autofocus: true,
+        minLines: 3,
+        maxLines: 8,
+        decoration: const InputDecoration(
+          hintText: '输入新的内容',
+          border: OutlineInputBorder(),
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Text('取消'),
+        ),
+        FilledButton(
+          onPressed: () => Navigator.pop(context, _ctrl.text),
+          child: const Text('用新内容继续'),
+        ),
+      ],
+    );
+  }
 }

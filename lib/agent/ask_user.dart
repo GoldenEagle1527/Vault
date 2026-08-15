@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:flutter/foundation.dart';
 
@@ -42,18 +43,24 @@ class AskUserQuestionnaire {
     for (final item in raw) {
       if (item is! Map) continue;
       final map = item.cast<String, dynamic>();
-      final prompt = (map['prompt'] as String?)?.trim() ??
+      final prompt =
+          (map['prompt'] as String?)?.trim() ??
           (map['question'] as String?)?.trim() ??
           '';
       if (prompt.isEmpty) continue;
       final id = (map['id'] as String?)?.trim();
-      final allowMultiple = map['allow_multiple'] == true ||
+      final allowMultiple =
+          map['allow_multiple'] == true ||
           map['allowMultiple'] == true ||
           map['multi'] == true;
       final options = <AskUserOption>[];
       final rawOpts = map['options'];
       if (rawOpts is List) {
-        for (var i = 0; i < rawOpts.length && options.length < maxOptions; i++) {
+        for (
+          var i = 0;
+          i < rawOpts.length && options.length < maxOptions;
+          i++
+        ) {
           final opt = rawOpts[i];
           if (opt is String) {
             final label = opt.trim();
@@ -63,7 +70,8 @@ class AskUserQuestionnaire {
           }
           if (opt is! Map) continue;
           final om = opt.cast<String, dynamic>();
-          final label = (om['label'] as String?)?.trim() ??
+          final label =
+              (om['label'] as String?)?.trim() ??
               (om['text'] as String?)?.trim() ??
               '';
           if (label.isEmpty) continue;
@@ -84,6 +92,17 @@ class AskUserQuestionnaire {
     if (questions.isEmpty) return null;
     return AskUserQuestionnaire(questions: questions);
   }
+
+  /// Parse the model's raw tool-call [arguments] JSON string.
+  static AskUserQuestionnaire? tryParseArguments(String arguments) {
+    try {
+      final decoded = jsonDecode(arguments);
+      if (decoded is Map) {
+        return tryParse(decoded.cast<String, dynamic>());
+      }
+    } catch (_) {}
+    return null;
+  }
 }
 
 class AskUserAnswer {
@@ -98,11 +117,66 @@ class AskUserAnswer {
   final String? customText;
 
   Map<String, dynamic> toJson() => {
-        'id': id,
-        'selected_ids': selectedIds,
-        if (customText != null && customText!.isNotEmpty)
-          'custom_text': customText,
-      };
+    'id': id,
+    'selected_ids': selectedIds,
+    if (customText != null && customText!.isNotEmpty) 'custom_text': customText,
+  };
+
+  factory AskUserAnswer.fromJson(Map<String, dynamic> json) {
+    final rawIds = json['selected_ids'] ?? json['selectedIds'];
+    return AskUserAnswer(
+      id: (json['id'] as String?)?.trim() ?? '',
+      selectedIds: rawIds is List
+          ? [for (final e in rawIds) e.toString()]
+          : const [],
+      customText:
+          (json['custom_text'] as String?) ?? (json['customText'] as String?),
+    );
+  }
+
+  /// Parse answers from an `ask_user` tool result JSON string.
+  static List<AskUserAnswer> tryParseResult(String resultJson) {
+    try {
+      final decoded = jsonDecode(resultJson);
+      if (decoded is! Map) return const [];
+      final raw = decoded['answers'];
+      if (raw is! List) return const [];
+      return [
+        for (final item in raw)
+          if (item is Map) AskUserAnswer.fromJson(item.cast<String, dynamic>()),
+      ];
+    } catch (_) {
+      return const [];
+    }
+  }
+}
+
+/// Human-readable Q&A for copy / transcript.
+String formatAskUserTranscript({
+  required AskUserQuestionnaire questionnaire,
+  List<AskUserAnswer> answers = const [],
+}) {
+  final byId = {for (final a in answers) a.id: a};
+  final buf = StringBuffer();
+  for (final q in questionnaire.questions) {
+    if (buf.isNotEmpty) buf.writeln();
+    buf.writeln(q.prompt);
+    final answer = byId[q.id];
+    if (answer == null) {
+      buf.writeln('（未作答）');
+      continue;
+    }
+    final labels = <String>[
+      for (final id in answer.selectedIds)
+        q.options.where((o) => o.id == id).map((o) => o.label).firstOrNull ??
+            id,
+    ];
+    if (answer.customText != null && answer.customText!.trim().isNotEmpty) {
+      labels.add(answer.customText!.trim());
+    }
+    buf.writeln(labels.isEmpty ? '（未作答）' : labels.join('、'));
+  }
+  return buf.toString().trim();
 }
 
 class AskUserSubmission {
@@ -113,10 +187,10 @@ class AskUserSubmission {
   });
 
   const AskUserSubmission.ok(List<AskUserAnswer> answers)
-      : this._(cancelled: false, answers: answers);
+    : this._(cancelled: false, answers: answers);
 
   const AskUserSubmission.cancelled([String reason = '用户取消'])
-      : this._(cancelled: true, cancelReason: reason);
+    : this._(cancelled: true, cancelReason: reason);
 
   final bool cancelled;
   final String? cancelReason;
@@ -124,11 +198,7 @@ class AskUserSubmission {
 
   Map<String, dynamic> toToolResult() {
     if (cancelled) {
-      return {
-        'ok': false,
-        'cancelled': true,
-        'error': cancelReason ?? '用户取消',
-      };
+      return {'ok': false, 'cancelled': true, 'error': cancelReason ?? '用户取消'};
     }
     return {
       'ok': true,

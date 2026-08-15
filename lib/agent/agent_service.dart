@@ -12,6 +12,8 @@ import 'package:vault/agent/project_store.dart';
 import 'package:vault/agent/site_gateway.dart';
 import 'package:vault/agent/system_notice.dart';
 import 'package:vault/agent/ask_user.dart';
+import 'package:vault/agent/conversation_state.dart';
+import 'package:vault/agent/project_checkpoint.dart';
 import 'package:vault/agent/tools/ask_user_tool.dart';
 import 'package:vault/agent/tools/inspect_site_tool.dart';
 import 'package:vault/agent/tools/project_url_tool.dart';
@@ -27,10 +29,16 @@ sealed class AgentUiEvent {
 }
 
 class AgentUiUserMessage extends AgentUiEvent {
-  const AgentUiUserMessage(this.text, {this.promptTokens, this.at});
+  const AgentUiUserMessage(
+    this.text, {
+    this.promptTokens,
+    this.at,
+    this.historyIndex,
+  });
   final String text;
   final int? promptTokens;
   final DateTime? at;
+  final int? historyIndex;
 }
 
 class AgentUiAssistantDelta extends AgentUiEvent {
@@ -81,10 +89,12 @@ class AgentUiToolCall extends AgentUiEvent {
     required this.name,
     required this.arguments,
     this.callId,
+    this.historyIndex,
   });
   final String name;
   final String arguments;
   final String? callId;
+  final int? historyIndex;
 }
 
 class AgentUiToolResult extends AgentUiEvent {
@@ -92,10 +102,18 @@ class AgentUiToolResult extends AgentUiEvent {
     required this.name,
     required this.result,
     this.callId,
+    this.historyIndex,
   });
   final String name;
   final String result;
   final String? callId;
+  final int? historyIndex;
+}
+
+/// Current conversation was replaced by a fork; UI should rehydrate.
+class AgentUiConversationForked extends AgentUiEvent {
+  const AgentUiConversationForked(this.conversationId);
+  final String conversationId;
 }
 
 /// Tool exceeded the background threshold and is still running.
@@ -379,7 +397,7 @@ class AgentService {
     final projectStore = _projectStore;
     final gateway = _siteGateway;
     final tools = <Tool>[
-      createAskUserTool(askUser),
+      createAskUserTool(askUser, onPresent: _snapshotAskUserPresented),
       createShellTool(
         _workspace,
         timeout: _shellTimeout,
@@ -721,6 +739,10 @@ class AgentService {
       throw StateError('未配置 ConversationStore，无法切换项目');
     }
     if (persistCurrent && _projectPath != null) {
+      await _snapshotCurrent(
+        kind: kCheckpointTurnEnd,
+        index: historyMessageCount,
+      );
       final current = _agent?.state ?? _pendingState;
       if (current != null) {
         await store.save(workspaceId, _projectPath!, current);
@@ -730,7 +752,8 @@ class AgentService {
     _projectPath = projectPath;
     _conversationId = opened.state.sessionId;
     _pendingState = opened.state;
-    _agent = null;
+    _dropLiveAgent();
+    await _restoreHead(opened.state);
   }
 
   /// Visible for tests: materialize the agent with current settings/state.
@@ -742,6 +765,53 @@ class AgentService {
     for (var i = 0; i < 50 && _running; i++) {
       await Future<void>.delayed(const Duration(milliseconds: 20));
     }
+  }
+
+  ProjectCheckpointStore? get _checkpoints {
+    final path = _projectPath;
+    if (path == null) return null;
+    return ProjectCheckpointStore(
+      runGuest: (cmd) => _workspace.run(cmd),
+      projectPath: path,
+    );
+  }
+
+  Future<String?> _snapshotCurrent({
+    required String kind,
+    required int index,
+  }) async {
+    final checkpoints = _checkpoints;
+    final id = _conversationId;
+    final state = _agent?.state ?? _pendingState;
+    if (checkpoints == null || id == null || state == null) return null;
+    final sha = await checkpoints.snapshot(id);
+    if (sha == null) return null;
+    recordCheckpoint(state, index: index, sha: sha, kind: kind);
+    final store = _store;
+    final projectPath = _projectPath;
+    if (store != null && projectPath != null) {
+      await store.save(workspaceId, projectPath, state);
+    }
+    return sha;
+  }
+
+  Future<void> _snapshotAskUserPresented() {
+    return _snapshotCurrent(
+      kind: kCheckpointAskUser,
+      index: historyMessageCount,
+    );
+  }
+
+  Future<void> _restoreHead(AgentState state) async {
+    final sha = headTreeShaOf(state);
+    if (sha == null) return;
+    await _checkpoints?.restore(sha);
+  }
+
+  void _dropLiveAgent() {
+    askUser.cancelAll();
+    _agent?.backgroundJobs.dispose();
+    _agent = null;
   }
 
   /// Persist current state (optional), then load [conversationId] as active.
@@ -761,6 +831,10 @@ class AgentService {
     }
 
     if (persistCurrent) {
+      await _snapshotCurrent(
+        kind: kCheckpointTurnEnd,
+        index: historyMessageCount,
+      );
       final current = _agent?.state ?? _pendingState;
       if (current != null) {
         await store.save(workspaceId, projectPath, current);
@@ -771,7 +845,8 @@ class AgentService {
     await store.setActive(workspaceId, projectPath, conversationId);
     _conversationId = conversationId;
     _pendingState = state;
-    _agent = null;
+    _dropLiveAgent();
+    await _restoreHead(state);
   }
 
   /// Create a new empty conversation and make it active.
@@ -786,6 +861,10 @@ class AgentService {
     }
     await _waitUntilIdle();
     if (persistCurrent) {
+      await _snapshotCurrent(
+        kind: kCheckpointTurnEnd,
+        index: historyMessageCount,
+      );
       final current = _agent?.state ?? _pendingState;
       if (current != null) {
         await store.save(workspaceId, projectPath, current);
@@ -794,7 +873,215 @@ class AgentService {
     final created = await store.create(workspaceId, projectPath);
     _conversationId = created.state.sessionId;
     _pendingState = created.state;
-    _agent = null;
+    _dropLiveAgent();
+    await _restoreHead(created.state);
+  }
+
+  /// Edit a user message: keep the old conversation, fork, restore files, rerun.
+  Stream<AgentUiEvent> forkAndRerun(int historyIndex, String newText) async* {
+    await _waitUntilIdle();
+    final store = _store;
+    final projectPath = _projectPath;
+    final parent = _agent?.state ?? _pendingState;
+    if (store == null || projectPath == null || parent == null) {
+      yield const AgentUiError('无法分叉会话');
+      return;
+    }
+    if (historyIndex < 0 || historyIndex >= parent.history.messages.length) {
+      yield const AgentUiError('找不到要修改的消息');
+      return;
+    }
+    await _snapshotCurrent(
+      kind: kCheckpointTurnEnd,
+      index: historyMessageCount,
+    );
+    await store.save(workspaceId, projectPath, parent);
+    final restoreSha = checkpointShaAt(
+      parent,
+      historyIndex,
+      kind: kCheckpointUserTurn,
+    );
+    final forked = await store.fork(
+      workspaceId: workspaceId,
+      projectPath: projectPath,
+      parentState: parent,
+      keepCount: historyIndex,
+      forkedFromMessageIndex: historyIndex,
+    );
+    _conversationId = forked.state.sessionId;
+    _pendingState = forked.state;
+    _dropLiveAgent();
+    if (restoreSha != null) {
+      await _checkpoints?.restore(restoreSha);
+    }
+    yield AgentUiConversationForked(forked.state.sessionId);
+    yield* run(newText);
+  }
+
+  /// Reselect `ask_user` answers: fork, replace the tool result, continue.
+  Stream<AgentUiEvent> forkAndResubmitAskUser({
+    required List<AskUserAnswer> answers,
+    int? historyIndex,
+    String? callId,
+  }) async* {
+    await _waitUntilIdle();
+    final store = _store;
+    final projectPath = _projectPath;
+    final parent = _agent?.state ?? _pendingState;
+    if (store == null || projectPath == null || parent == null) {
+      yield const AgentUiError('无法分叉会话');
+      return;
+    }
+    final located = _locateAskUser(
+      parent,
+      historyIndex: historyIndex,
+      callId: callId,
+    );
+    if (located == null) {
+      yield const AgentUiError('找不到提问记录');
+      return;
+    }
+    await _snapshotCurrent(
+      kind: kCheckpointTurnEnd,
+      index: historyMessageCount,
+    );
+    await store.save(workspaceId, projectPath, parent);
+    final restoreSha = checkpointShaAt(
+      parent,
+      located.modelIndex,
+      kind: kCheckpointAskUser,
+    );
+    final call = located.call;
+    final forked = await store.fork(
+      workspaceId: workspaceId,
+      projectPath: projectPath,
+      parentState: parent,
+      keepCount: located.modelIndex + 1,
+      forkedFromMessageIndex: located.resultIndex,
+      mutate: (state) {
+        state.history.messages.add(
+          FunctionExecutionResultMessage(
+            results: [
+              FunctionExecutionResult(
+                id: call.id,
+                name: kAskUserToolName,
+                isError: false,
+                arguments: call.arguments,
+                content: [
+                  TextPart(
+                    jsonEncode(AskUserSubmission.ok(answers).toToolResult()),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        );
+      },
+    );
+    _conversationId = forked.state.sessionId;
+    _pendingState = forked.state;
+    _dropLiveAgent();
+    if (restoreSha != null) {
+      await _checkpoints?.restore(restoreSha);
+    }
+    yield AgentUiConversationForked(forked.state.sessionId);
+    yield* continueFromHistory();
+  }
+
+  static ({int modelIndex, int resultIndex, FunctionCall call})? _locateAskUser(
+    AgentState state, {
+    int? historyIndex,
+    String? callId,
+  }) {
+    final messages = state.history.messages;
+    int? resultIndex;
+    if (historyIndex != null &&
+        historyIndex >= 0 &&
+        historyIndex < messages.length &&
+        messages[historyIndex] is FunctionExecutionResultMessage) {
+      resultIndex = historyIndex;
+    } else {
+      for (var i = 0; i < messages.length; i++) {
+        final m = messages[i];
+        if (m is! FunctionExecutionResultMessage) continue;
+        if (m.results.any(
+          (r) =>
+              r.name == kAskUserToolName && (callId == null || r.id == callId),
+        )) {
+          resultIndex = i;
+          if (callId != null) break;
+        }
+      }
+    }
+    if (resultIndex == null) return null;
+    for (var i = resultIndex; i >= 0; i--) {
+      final m = messages[i];
+      if (m is! ModelMessage) continue;
+      for (final call in m.functionCalls) {
+        if (call.name != kAskUserToolName) continue;
+        if (callId != null && call.id != callId) continue;
+        return (modelIndex: i, resultIndex: resultIndex, call: call);
+      }
+    }
+    return null;
+  }
+
+  /// Continue the agent loop from the current persisted history (no new user turn).
+  Stream<AgentUiEvent> continueFromHistory() async* {
+    if (_running) {
+      yield const AgentUiError('已有任务在运行，请先取消或等待结束');
+      return;
+    }
+    if (!_settings.isConfigured) {
+      yield const AgentUiError('请先在设置中配置 API Key 与模型');
+      return;
+    }
+    _running = true;
+    _cancelToken = CancelToken();
+    try {
+      yield const AgentUiStatus('正在思考…');
+      _ensureAgent();
+      final agent = _agent!;
+      final buffer = StringBuffer();
+      await for (final event in agent.runStream(
+        const [],
+        cancelToken: _cancelToken,
+      )) {
+        yield* _mapStreamingEvent(event, buffer);
+      }
+      if (buffer.isNotEmpty) {
+        yield AgentUiAssistantFinal(buffer.toString());
+      }
+      while (_hasPendingBackgroundWakeups) {
+        if (_cancelToken?.isCancelled ?? false) break;
+        if (_pendingNotifies.isNotEmpty) {
+          yield* _reactivateWithShellNotifies();
+        } else {
+          yield* _reactivateWithBackgroundResults();
+        }
+      }
+      await _snapshotCurrent(
+        kind: kCheckpointTurnEnd,
+        index: historyMessageCount,
+      );
+      yield const AgentUiStatus('已完成');
+    } on AgentException catch (e) {
+      if (e.code == AgentExceptionCode.cancelled) {
+        yield const AgentUiError('已取消');
+      } else {
+        yield AgentUiError(_mapError(e));
+      }
+    } on DioException catch (e) {
+      yield AgentUiError(_mapDioError(e));
+    } catch (e) {
+      yield AgentUiError(_mapError(e));
+    } finally {
+      _running = false;
+      _cancelToken = null;
+      if (_hasPendingBackgroundWakeups) {
+        unawaited(_scheduleIdleReactivation());
+      }
+    }
   }
 
   /// Runs one user turn; yields UI events until complete, cancelled, or failed.
@@ -824,8 +1111,12 @@ class AgentService {
     _running = true;
     _cancelToken = CancelToken();
 
+    final turnIndex = historyMessageCount;
+    await _snapshotCurrent(kind: kCheckpointUserTurn, index: turnIndex);
+
     yield AgentUiUserMessage(
       userTurnDisplayText(trimmed, attachmentCount: attachments.length),
+      historyIndex: turnIndex,
     );
 
     try {
@@ -870,6 +1161,10 @@ class AgentService {
         }
       }
 
+      await _snapshotCurrent(
+        kind: kCheckpointTurnEnd,
+        index: historyMessageCount,
+      );
       yield const AgentUiStatus('已完成');
     } on AgentException catch (e) {
       if (e.code == AgentExceptionCode.cancelled) {
@@ -950,22 +1245,24 @@ class AgentService {
   static List<AgentUiEvent> uiEventsFromHistory(List<LLMMessage> messages) {
     final out = <AgentUiEvent>[];
     LLMMessage? prev;
-    for (final m in messages) {
+    for (var i = 0; i < messages.length; i++) {
+      final m = messages[i];
       if (m is UserMessage) {
-        final text = m.contents
+        final raw = m.contents
             .whereType<TextPart>()
             .map((p) => p.text)
             .join('\n')
             .trim();
-        if (text.isNotEmpty) {
-          final notice = systemNoticeForUserText(text);
+        if (raw.isNotEmpty) {
+          final notice = systemNoticeForUserText(raw);
           if (notice != null) {
             out.add(AgentUiSystemNotice(notice.text, isError: notice.isError));
           } else {
             out.add(
               AgentUiUserMessage(
-                text,
+                displayTextFromStoredUserPrompt(raw),
                 at: DateTime.fromMicrosecondsSinceEpoch(m.timestamp),
+                historyIndex: i,
               ),
             );
           }
@@ -1013,6 +1310,7 @@ class AgentService {
               name: call.name,
               arguments: call.arguments,
               callId: call.id,
+              historyIndex: i,
             ),
           );
         }
@@ -1035,7 +1333,12 @@ class AgentService {
             );
           } else {
             out.add(
-              AgentUiToolResult(name: r.name, result: text, callId: r.id),
+              AgentUiToolResult(
+                name: r.name,
+                result: text,
+                callId: r.id,
+                historyIndex: i,
+              ),
             );
           }
         }
@@ -1069,6 +1372,7 @@ class AgentService {
           e.text,
           promptTokens: promptTokens,
           at: e.at,
+          historyIndex: e.historyIndex,
         );
         return;
       }

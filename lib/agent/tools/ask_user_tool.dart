@@ -4,7 +4,7 @@ import 'package:vault/agent/ask_user.dart';
 import 'package:vault_agent_core/vault_agent_core.dart';
 
 /// Interactive questionnaire. Blocks until the user submits or cancels in the UI.
-Tool createAskUserTool(AskUserHost host) {
+Tool createAskUserTool(AskUserHost host, {Future<void> Function()? onPresent}) {
   return Tool(
     name: kAskUserToolName,
     description:
@@ -23,14 +23,8 @@ Tool createAskUserTool(AskUserHost host) {
           'items': {
             'type': 'object',
             'properties': {
-              'id': {
-                'type': 'string',
-                'description': '问题稳定 id，如 who / device',
-              },
-              'prompt': {
-                'type': 'string',
-                'description': '用人话写的问题，不要用术语',
-              },
+              'id': {'type': 'string', 'description': '问题稳定 id，如 who / device'},
+              'prompt': {'type': 'string', 'description': '用人话写的问题，不要用术语'},
               'allow_multiple': {
                 'type': 'boolean',
                 'description': 'true 为可多选，默认 false 单选',
@@ -62,6 +56,7 @@ Tool createAskUserTool(AskUserHost host) {
           'error': 'questions 无效：至少要有一个带 prompt 的问题',
         });
       }
+      await onPresent?.call();
       final submission = await host.present(questionnaire);
       return jsonEncode(submission.toToolResult());
     },

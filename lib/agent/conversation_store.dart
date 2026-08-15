@@ -1,6 +1,7 @@
 import 'dart:convert';
 
 import 'package:uuid/uuid.dart';
+import 'package:vault/agent/conversation_state.dart';
 import 'package:vault/agent/vault_meta_db.dart';
 import 'package:vault_agent_core/vault_agent_core.dart';
 
@@ -15,6 +16,9 @@ class ConversationInfo {
     required this.createdAt,
     required this.updatedAt,
     required this.messageCount,
+    this.parentId,
+    this.forkedFromMessageIndex,
+    this.headTreeSha,
   });
 
   final String id;
@@ -22,14 +26,23 @@ class ConversationInfo {
   final DateTime createdAt;
   final DateTime updatedAt;
   final int messageCount;
+  final String? parentId;
+  final int? forkedFromMessageIndex;
+  final String? headTreeSha;
+
+  bool get isBranch => parentId != null && parentId!.isNotEmpty;
 
   Map<String, dynamic> toJson() => {
-        'id': id,
-        'title': title,
-        'createdAt': createdAt.toUtc().toIso8601String(),
-        'updatedAt': updatedAt.toUtc().toIso8601String(),
-        'messageCount': messageCount,
-      };
+    'id': id,
+    'title': title,
+    'createdAt': createdAt.toUtc().toIso8601String(),
+    'updatedAt': updatedAt.toUtc().toIso8601String(),
+    'messageCount': messageCount,
+    if (parentId != null) 'parentId': parentId,
+    if (forkedFromMessageIndex != null)
+      'forkedFromMessageIndex': forkedFromMessageIndex,
+    if (headTreeSha != null) 'headTreeSha': headTreeSha,
+  };
 
   factory ConversationInfo.fromJson(Map<String, dynamic> json) {
     return ConversationInfo(
@@ -40,6 +53,9 @@ class ConversationInfo {
       createdAt: DateTime.parse(json['createdAt'] as String),
       updatedAt: DateTime.parse(json['updatedAt'] as String),
       messageCount: (json['messageCount'] as num?)?.toInt() ?? 0,
+      parentId: json['parentId'] as String?,
+      forkedFromMessageIndex: (json['forkedFromMessageIndex'] as num?)?.toInt(),
+      headTreeSha: json['headTreeSha'] as String?,
     );
   }
 
@@ -47,6 +63,9 @@ class ConversationInfo {
     String? title,
     DateTime? updatedAt,
     int? messageCount,
+    String? parentId,
+    int? forkedFromMessageIndex,
+    String? headTreeSha,
   }) {
     return ConversationInfo(
       id: id,
@@ -54,6 +73,10 @@ class ConversationInfo {
       createdAt: createdAt,
       updatedAt: updatedAt ?? this.updatedAt,
       messageCount: messageCount ?? this.messageCount,
+      parentId: parentId ?? this.parentId,
+      forkedFromMessageIndex:
+          forkedFromMessageIndex ?? this.forkedFromMessageIndex,
+      headTreeSha: headTreeSha ?? this.headTreeSha,
     );
   }
 }
@@ -69,9 +92,9 @@ class WorkspaceConversationIndex {
   final List<ConversationInfo> conversations;
 
   Map<String, dynamic> toJson() => {
-        'activeConversationId': activeConversationId,
-        'conversations': conversations.map((c) => c.toJson()).toList(),
-      };
+    'activeConversationId': activeConversationId,
+    'conversations': conversations.map((c) => c.toJson()).toList(),
+  };
 
   factory WorkspaceConversationIndex.fromJson(Map<String, dynamic> json) {
     final list = (json['conversations'] as List? ?? const [])
@@ -117,9 +140,9 @@ class ConversationStore {
   static const _metaProjectPath = 'projectPath';
 
   Map<String, dynamic> _meta(String workspaceId, String projectPath) => {
-        _metaWorkspaceId: workspaceId,
-        _metaProjectPath: projectPath,
-      };
+    _metaWorkspaceId: workspaceId,
+    _metaProjectPath: projectPath,
+  };
 
   Future<WorkspaceConversationIndex> _readIndex(
     String workspaceId,
@@ -127,7 +150,8 @@ class ConversationStore {
   ) {
     return _metaDb.withDb((db) {
       final rows = db.select(
-        'SELECT id, title, created_at, updated_at, message_count '
+        'SELECT id, title, created_at, updated_at, message_count, '
+        'parent_id, forked_from_message_index, head_tree_sha '
         'FROM conversations WHERE workspace_id = ? AND project_path = ? '
         'ORDER BY updated_at DESC',
         [workspaceId, projectPath],
@@ -140,6 +164,10 @@ class ConversationStore {
             createdAt: DateTime.parse(row['created_at'] as String),
             updatedAt: DateTime.parse(row['updated_at'] as String),
             messageCount: (row['message_count'] as num).toInt(),
+            parentId: row['parent_id'] as String?,
+            forkedFromMessageIndex: (row['forked_from_message_index'] as num?)
+                ?.toInt(),
+            headTreeSha: row['head_tree_sha'] as String?,
           ),
       ];
       final activeRows = db.select(
@@ -164,8 +192,7 @@ class ConversationStore {
   Future<WorkspaceConversationIndex> list(
     String workspaceId,
     String projectPath,
-  ) =>
-      _readIndex(workspaceId, projectPath);
+  ) => _readIndex(workspaceId, projectPath);
 
   /// Ensures the project has an active conversation; creates one if needed.
   Future<({WorkspaceConversationIndex index, AgentState state})> ensureActive(
@@ -277,6 +304,7 @@ class ConversationStore {
     final now = DateTime.now().toUtc();
     final count = state.history.messages.length;
     final stateJson = jsonEncode(state.toJson());
+    final headSha = headTreeShaOf(state);
 
     await _metaDb.withDb((db) {
       final existing = db.select(
@@ -288,7 +316,8 @@ class ConversationStore {
         db.execute(
           'INSERT INTO conversations '
           '(workspace_id, project_path, id, title, created_at, updated_at, '
-          'message_count, state_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+          'message_count, state_json, head_tree_sha) '
+          'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
           [
             workspaceId,
             projectPath,
@@ -298,18 +327,20 @@ class ConversationStore {
             now.toIso8601String(),
             count,
             stateJson,
+            headSha,
           ],
         );
       } else {
         db.execute(
           'UPDATE conversations SET title = ?, updated_at = ?, '
-          'message_count = ?, state_json = ? '
+          'message_count = ?, state_json = ?, head_tree_sha = ? '
           'WHERE workspace_id = ? AND project_path = ? AND id = ?',
           [
             title,
             now.toIso8601String(),
             count,
             stateJson,
+            headSha,
             workspaceId,
             projectPath,
             state.sessionId,
@@ -363,14 +394,21 @@ class ConversationStore {
     final index = await _readIndex(workspaceId, projectPath);
     await _metaDb.withDb((db) {
       db.execute(
+        'UPDATE conversations SET parent_id = NULL, '
+        'forked_from_message_index = NULL '
+        'WHERE workspace_id = ? AND project_path = ? AND parent_id = ?',
+        [workspaceId, projectPath, conversationId],
+      );
+      db.execute(
         'DELETE FROM conversations '
         'WHERE workspace_id = ? AND project_path = ? AND id = ?',
         [workspaceId, projectPath, conversationId],
       );
     });
 
-    final remaining =
-        index.conversations.where((c) => c.id != conversationId).toList();
+    final remaining = index.conversations
+        .where((c) => c.id != conversationId)
+        .toList();
     if (remaining.isEmpty) {
       await _metaDb.withDb((db) {
         db.execute(
@@ -388,6 +426,127 @@ class ConversationStore {
     }
     await setActive(workspaceId, projectPath, active!);
     return _readIndex(workspaceId, projectPath);
+  }
+
+  /// Copy [parentState] truncated to [keepCount] messages into a new child.
+  Future<({WorkspaceConversationIndex index, AgentState state})> fork({
+    required String workspaceId,
+    required String projectPath,
+    required AgentState parentState,
+    required int keepCount,
+    required int forkedFromMessageIndex,
+    void Function(AgentState forked)? mutate,
+  }) async {
+    final forked = truncateAgentState(parentState, keepCount);
+    mutate?.call(forked);
+    final now = DateTime.now().toUtc();
+    final id = const Uuid().v4().replaceAll('-', '').substring(0, 12);
+    forked.sessionId = id;
+    forked.isRunning = false;
+    forked.metadata.addAll(_meta(workspaceId, projectPath));
+    final title = titleFromMessages(forked.history.messages);
+    final count = forked.history.messages.length;
+    final stateJson = jsonEncode(forked.toJson());
+    final createdAt = now.toIso8601String();
+    final headSha = headTreeShaOf(forked);
+
+    await _metaDb.withDb((db) {
+      db.execute(
+        'INSERT INTO conversations '
+        '(workspace_id, project_path, id, title, created_at, updated_at, '
+        'message_count, state_json, parent_id, forked_from_message_index, '
+        'head_tree_sha) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+        [
+          workspaceId,
+          projectPath,
+          id,
+          title,
+          createdAt,
+          createdAt,
+          count,
+          stateJson,
+          parentState.sessionId,
+          forkedFromMessageIndex,
+          headSha,
+        ],
+      );
+      db.execute(
+        'INSERT INTO project_state '
+        '(workspace_id, project_path, active_conversation_id) VALUES (?, ?, ?) '
+        'ON CONFLICT(workspace_id, project_path) DO UPDATE SET '
+        'active_conversation_id = excluded.active_conversation_id',
+        [workspaceId, projectPath, id],
+      );
+    });
+
+    final index = await _readIndex(workspaceId, projectPath);
+    return (index: index, state: forked);
+  }
+
+  /// Conversations that share a fork point with [currentId] at [messageIndex].
+  List<ConversationInfo> branchesAt({
+    required List<ConversationInfo> conversations,
+    required String currentId,
+    required int messageIndex,
+  }) {
+    ConversationInfo? current;
+    for (final c in conversations) {
+      if (c.id == currentId) current = c;
+    }
+    if (current == null) return const [];
+    final out = <ConversationInfo>[];
+    void add(ConversationInfo c) {
+      if (c.id == currentId) return;
+      if (out.any((e) => e.id == c.id)) return;
+      out.add(c);
+    }
+
+    for (final c in conversations) {
+      if (c.parentId == currentId && c.forkedFromMessageIndex == messageIndex) {
+        add(c);
+      }
+    }
+    if (current.parentId != null &&
+        current.forkedFromMessageIndex == messageIndex) {
+      for (final c in conversations) {
+        if (c.id == current.parentId) add(c);
+        if (c.parentId == current.parentId &&
+            c.forkedFromMessageIndex == messageIndex) {
+          add(c);
+        }
+      }
+    }
+    return out;
+  }
+
+  /// Roots first, then children (stable among siblings by updatedAt desc).
+  static List<({ConversationInfo info, int depth})> treeOrder(
+    List<ConversationInfo> conversations,
+  ) {
+    final byParent = <String?, List<ConversationInfo>>{};
+    for (final c in conversations) {
+      byParent.putIfAbsent(c.parentId, () => []).add(c);
+    }
+    final ids = {for (final c in conversations) c.id};
+    final out = <({ConversationInfo info, int depth})>[];
+    void walk(ConversationInfo node, int depth) {
+      out.add((info: node, depth: depth));
+      final kids = [...?byParent[node.id]]
+        ..sort((a, b) => b.updatedAt.compareTo(a.updatedAt));
+      for (final child in kids) {
+        walk(child, depth + 1);
+      }
+    }
+
+    final roots =
+        conversations
+            .where((c) => c.parentId == null || !ids.contains(c.parentId))
+            .toList()
+          ..sort((a, b) => b.updatedAt.compareTo(a.updatedAt));
+    for (final root in roots) {
+      walk(root, 0);
+    }
+    return out;
   }
 
   /// Removes all host DB rows for [workspaceId].

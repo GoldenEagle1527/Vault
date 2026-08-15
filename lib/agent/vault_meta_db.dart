@@ -129,6 +129,18 @@ CREATE TABLE IF NOT EXISTS conversations (
     REFERENCES projects(workspace_id, path) ON DELETE CASCADE
 );
 ''');
+    final convCols = db.select('PRAGMA table_info(conversations)');
+    if (!convCols.any((row) => row['name'] == 'parent_id')) {
+      db.execute('ALTER TABLE conversations ADD COLUMN parent_id TEXT');
+    }
+    if (!convCols.any((row) => row['name'] == 'forked_from_message_index')) {
+      db.execute(
+        'ALTER TABLE conversations ADD COLUMN forked_from_message_index INTEGER',
+      );
+    }
+    if (!convCols.any((row) => row['name'] == 'head_tree_sha')) {
+      db.execute('ALTER TABLE conversations ADD COLUMN head_tree_sha TEXT');
+    }
   }
 
   /// Delete all rows for [workspaceId] (projects cascade to urls/conversations).

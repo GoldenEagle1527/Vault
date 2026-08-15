@@ -8,10 +8,12 @@ class AskUserPanel extends StatefulWidget {
     super.key,
     required this.questionnaire,
     required this.onSubmit,
+    this.initialAnswers,
   });
 
   final AskUserQuestionnaire questionnaire;
   final ValueChanged<List<AskUserAnswer>> onSubmit;
+  final List<AskUserAnswer>? initialAnswers;
 
   @override
   State<AskUserPanel> createState() => _AskUserPanelState();
@@ -50,6 +52,21 @@ class _AskUserPanelState extends State<AskUserPanel> {
     _pageCtrl = PageController();
     _drafts = [for (final _ in _questions) _AskUserDraft()];
     _customCtrls = [for (final _ in _questions) TextEditingController()];
+    final initials = widget.initialAnswers;
+    if (initials != null && initials.isNotEmpty) {
+      final byId = {for (final a in initials) a.id: a};
+      for (var i = 0; i < _questions.length; i++) {
+        final answer = byId[_questions[i].id];
+        if (answer == null) continue;
+        _drafts[i].selectedIds.addAll(answer.selectedIds);
+        final custom = answer.customText?.trim() ?? '';
+        if (custom.isNotEmpty) {
+          _drafts[i].writeIn = true;
+          _drafts[i].customText = custom;
+          _customCtrls[i].text = custom;
+        }
+      }
+    }
   }
 
   @override
@@ -114,22 +131,25 @@ class _AskUserPanelState extends State<AskUserPanel> {
             children: [
               Text(
                 '请选一下',
-                style: Theme.of(context).textTheme.titleSmall?.copyWith(
-                      fontWeight: FontWeight.w600,
-                    ),
+                style: Theme.of(
+                  context,
+                ).textTheme.titleSmall?.copyWith(fontWeight: FontWeight.w600),
               ),
               const Spacer(),
               Text(
                 '${_page + 1} / ${_questions.length}',
                 style: Theme.of(context).textTheme.labelMedium?.copyWith(
-                      color: scheme.onSurfaceVariant,
-                    ),
+                  color: scheme.onSurfaceVariant,
+                ),
               ),
             ],
           ),
           const SizedBox(height: 8),
           SizedBox(
-            height: (MediaQuery.sizeOf(context).height * 0.32).clamp(180.0, 280.0),
+            height: (MediaQuery.sizeOf(context).height * 0.32).clamp(
+              180.0,
+              280.0,
+            ),
             child: PageView.builder(
               controller: _pageCtrl,
               itemCount: _questions.length,
@@ -194,9 +214,9 @@ class _AskUserPanelState extends State<AskUserPanel> {
                 FilledButton(
                   onPressed: _allAnswered
                       ? () => widget.onSubmit([
-                            for (var i = 0; i < _questions.length; i++)
-                              _drafts[i].toAnswer(_questions[i].id),
-                          ])
+                          for (var i = 0; i < _questions.length; i++)
+                            _drafts[i].toAnswer(_questions[i].id),
+                        ])
                       : null,
                   child: const Text('选好了'),
                 ),
@@ -233,18 +253,18 @@ class _QuestionPage extends StatelessWidget {
       children: [
         Text(
           question.prompt,
-          style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                fontWeight: FontWeight.w600,
-              ),
+          style: Theme.of(
+            context,
+          ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w600),
         ),
         if (question.allowMultiple)
           Padding(
             padding: const EdgeInsets.only(top: 4),
             child: Text(
               '可以多选',
-              style: Theme.of(context).textTheme.labelSmall?.copyWith(
-                    color: scheme.onSurfaceVariant,
-                  ),
+              style: Theme.of(
+                context,
+              ).textTheme.labelSmall?.copyWith(color: scheme.onSurfaceVariant),
             ),
           ),
         const SizedBox(height: 12),
@@ -314,11 +334,11 @@ class _ChoiceTile extends StatelessWidget {
               Icon(
                 multiple
                     ? (selected
-                        ? Icons.check_box
-                        : Icons.check_box_outline_blank)
+                          ? Icons.check_box
+                          : Icons.check_box_outline_blank)
                     : (selected
-                        ? Icons.radio_button_checked
-                        : Icons.radio_button_off),
+                          ? Icons.radio_button_checked
+                          : Icons.radio_button_off),
                 size: 22,
                 color: selected ? scheme.primary : scheme.onSurfaceVariant,
               ),

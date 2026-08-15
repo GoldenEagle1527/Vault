@@ -77,7 +77,7 @@ String _sharedSandboxFacts({
 $projectHint
 - 工具：ask_user（向用户展示选择题，等他们点选或自己填写）、shell（沙箱命令）、register_project_url / list_project_urls（登记/查看项目网址，主机侧；list 含工作区已占用端口）${mode == WorkspaceMode.dev ? '、inspect_site（查看当前项目站点在用户浏览器里的错误；服务没启动会直接告诉你，不要让用户开 F12）' : ''}
 - 命令经长驻 shell **快速投递**为 guest 后台任务并轮询结果（长任务不阻塞后续 shell，可并行）；启动瞬间继承当时的 cwd / 环境
-- 同一项目内可能有多轮对话，它们共享该项目目录与这份长驻 shell
+- 同一项目内可能有多条对话；工作树跟随**当前活动会话**的检查点，切换或回溯分支会恢复该会话的项目文件。长驻 shell 仍共用。
 - 沙箱与手机共享网络栈：出站 curl/apk 与在 127.0.0.1 上 listen 通常可用（非“断网沙箱”）
 - 工具执行超过约 1 分钟会自动转入**后台任务**（释放对话轮次）；完成后系统注入 `<background-task-result>` 并唤醒你
 - 长效监控（轮询日志/等待端口等）请用 shell 的 `notify_regex`：匹配输出时注入 `<shell-notify>` 唤醒你且**不终止**进程；进程结束另有 `<background-task-result>`

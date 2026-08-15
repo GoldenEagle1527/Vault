@@ -2,6 +2,7 @@ import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:path/path.dart' as p;
+import 'package:vault/agent/conversation_state.dart';
 import 'package:vault/agent/conversation_store.dart';
 import 'package:vault/agent/project_store.dart';
 import 'package:vault/agent/vault_meta_db.dart';
@@ -59,9 +60,7 @@ void main() {
     final opened = await store.ensureActive('ws1', projectPath);
     final state = opened.state;
     state.history.messages.add(UserMessage.text('写个贪吃蛇游戏'));
-    state.history.messages.add(
-      ModelMessage(model: 'm', textOutput: '好的'),
-    );
+    state.history.messages.add(ModelMessage(model: 'm', textOutput: '好的'));
     await store.save('ws1', projectPath, state);
 
     final index = await store.list('ws1', projectPath);
@@ -78,8 +77,11 @@ void main() {
     final b = await store.create('ws1', projectPath);
     await store.setActive('ws1', projectPath, a.state.sessionId);
 
-    final after =
-        await store.deleteConversation('ws1', projectPath, b.state.sessionId);
+    final after = await store.deleteConversation(
+      'ws1',
+      projectPath,
+      b.state.sessionId,
+    );
     expect(after.conversations, hasLength(1));
     expect(after.conversations.single.id, a.state.sessionId);
     expect(after.activeConversationId, a.state.sessionId);
@@ -87,8 +89,11 @@ void main() {
 
   test('delete last conversation creates a fresh empty one', () async {
     final a = await store.ensureActive('ws1', projectPath);
-    final after =
-        await store.deleteConversation('ws1', projectPath, a.state.sessionId);
+    final after = await store.deleteConversation(
+      'ws1',
+      projectPath,
+      a.state.sessionId,
+    );
     expect(after.conversations, hasLength(1));
     expect(after.conversations.single.id, isNot(a.state.sessionId));
     expect(after.conversations.single.title, kNewConversationTitle);
@@ -121,22 +126,197 @@ void main() {
     b.state.history.messages.add(UserMessage.text('乙'));
     await store.save('ws1', other.path, b.state);
 
-    final summary =
-        await store.peekProjectsSummary('ws1', [projectPath, other.path]);
+    final summary = await store.peekProjectsSummary('ws1', [
+      projectPath,
+      other.path,
+    ]);
     expect(summary.projectCount, 2);
     expect(summary.conversationCount, greaterThanOrEqualTo(3));
     expect(summary.recentTitle, '乙');
   });
 
   test('workspaces are isolated in the same DB file', () async {
-    final ws2 = await projects.createProject(
-      'ws2',
-      conversationStore: store,
-    );
+    final ws2 = await projects.createProject('ws2', conversationStore: store);
     final list1 = await store.list('ws1', projectPath);
     final list2 = await store.list('ws2', ws2.path);
     expect(list1.conversations, isNotEmpty);
     expect(list2.conversations, hasLength(1));
     expect(list1.conversations.first.id, isNot(list2.conversations.first.id));
+  });
+
+  test(
+    'fork truncates history, records parent, and treeOrder indents',
+    () async {
+      final opened = await store.ensureActive('ws1', projectPath);
+      final parent = opened.state;
+      parent.history.messages.addAll([
+        UserMessage.text('第一问'),
+        ModelMessage(model: 'm', textOutput: '答1'),
+        UserMessage.text('第二问'),
+        ModelMessage(model: 'm', textOutput: '答2'),
+      ]);
+      parent.systemPromptHistory = [
+        SystemPromptHistoryItem(content: 'early', validFromMessageIndex: 0),
+        SystemPromptHistoryItem(content: 'late', validFromMessageIndex: 3),
+      ];
+      parent.plan = PlanState(steps: [PlanStep(description: 'do')]);
+      recordCheckpoint(
+        parent,
+        index: 0,
+        sha: 'a' * 40,
+        kind: kCheckpointUserTurn,
+      );
+      recordCheckpoint(
+        parent,
+        index: 2,
+        sha: 'b' * 40,
+        kind: kCheckpointUserTurn,
+      );
+      recordCheckpoint(
+        parent,
+        index: 4,
+        sha: 'c' * 40,
+        kind: kCheckpointTurnEnd,
+      );
+      await store.save('ws1', projectPath, parent);
+
+      final forked = await store.fork(
+        workspaceId: 'ws1',
+        projectPath: projectPath,
+        parentState: parent,
+        keepCount: 2,
+        forkedFromMessageIndex: 2,
+      );
+
+      expect(forked.state.sessionId, isNot(parent.sessionId));
+      expect(forked.state.history.messages, hasLength(2));
+      expect(forked.state.plan, isNull);
+      expect(forked.state.systemPromptHistory, hasLength(1));
+      expect(forked.state.systemPromptHistory.single.validFromMessageIndex, 0);
+      expect(readCheckpoints(forked.state).every((c) => c.index < 2), isTrue);
+      expect(forked.index.activeConversationId, forked.state.sessionId);
+
+      final childInfo = forked.index.conversations.firstWhere(
+        (c) => c.id == forked.state.sessionId,
+      );
+      expect(childInfo.parentId, parent.sessionId);
+      expect(childInfo.forkedFromMessageIndex, 2);
+      expect(childInfo.isBranch, isTrue);
+
+      final tree = ConversationStore.treeOrder(forked.index.conversations);
+      final childNode = tree.firstWhere(
+        (n) => n.info.id == forked.state.sessionId,
+      );
+      expect(childNode.depth, 1);
+      expect(tree.firstWhere((n) => n.info.id == parent.sessionId).depth, 0);
+    },
+  );
+
+  test('delete child keeps parent; delete parent unlinks child', () async {
+    final opened = await store.ensureActive('ws1', projectPath);
+    final parent = opened.state;
+    parent.history.messages.add(UserMessage.text('根会话'));
+    await store.save('ws1', projectPath, parent);
+
+    final child = await store.fork(
+      workspaceId: 'ws1',
+      projectPath: projectPath,
+      parentState: parent,
+      keepCount: 1,
+      forkedFromMessageIndex: 0,
+    );
+    final grandchild = await store.fork(
+      workspaceId: 'ws1',
+      projectPath: projectPath,
+      parentState: child.state,
+      keepCount: 1,
+      forkedFromMessageIndex: 0,
+    );
+
+    final afterChild = await store.deleteConversation(
+      'ws1',
+      projectPath,
+      grandchild.state.sessionId,
+    );
+    expect(
+      afterChild.conversations.any((c) => c.id == grandchild.state.sessionId),
+      isFalse,
+    );
+    expect(
+      afterChild.conversations.any((c) => c.id == parent.sessionId),
+      isTrue,
+    );
+    expect(
+      afterChild.conversations.any((c) => c.id == child.state.sessionId),
+      isTrue,
+    );
+
+    final afterParent = await store.deleteConversation(
+      'ws1',
+      projectPath,
+      parent.sessionId,
+    );
+    expect(
+      afterParent.conversations.any((c) => c.id == parent.sessionId),
+      isFalse,
+    );
+    final orphan = afterParent.conversations.firstWhere(
+      (c) => c.id == child.state.sessionId,
+    );
+    expect(orphan.parentId, isNull);
+    expect(orphan.isBranch, isFalse);
+  });
+
+  test('branchesAt lists siblings that share a fork point', () {
+    final parent = ConversationInfo(
+      id: 'p',
+      title: '根',
+      createdAt: DateTime.utc(2026, 1, 1),
+      updatedAt: DateTime.utc(2026, 1, 2),
+      messageCount: 2,
+    );
+    final a = ConversationInfo(
+      id: 'a',
+      title: '分支A',
+      createdAt: DateTime.utc(2026, 1, 3),
+      updatedAt: DateTime.utc(2026, 1, 3),
+      messageCount: 1,
+      parentId: 'p',
+      forkedFromMessageIndex: 0,
+    );
+    final b = ConversationInfo(
+      id: 'b',
+      title: '分支B',
+      createdAt: DateTime.utc(2026, 1, 4),
+      updatedAt: DateTime.utc(2026, 1, 4),
+      messageCount: 1,
+      parentId: 'p',
+      forkedFromMessageIndex: 0,
+    );
+    final other = ConversationInfo(
+      id: 'c',
+      title: '另一处',
+      createdAt: DateTime.utc(2026, 1, 5),
+      updatedAt: DateTime.utc(2026, 1, 5),
+      messageCount: 1,
+      parentId: 'p',
+      forkedFromMessageIndex: 2,
+    );
+    final list = [parent, a, b, other];
+    final fromParent = store.branchesAt(
+      conversations: list,
+      currentId: 'p',
+      messageIndex: 0,
+    );
+    expect(fromParent.map((c) => c.id), containsAll(['a', 'b']));
+    expect(fromParent.map((c) => c.id), isNot(contains('c')));
+
+    final fromA = store.branchesAt(
+      conversations: list,
+      currentId: 'a',
+      messageIndex: 0,
+    );
+    expect(fromA.map((c) => c.id), containsAll(['p', 'b']));
+    expect(fromA.map((c) => c.id), isNot(contains('a')));
   });
 }

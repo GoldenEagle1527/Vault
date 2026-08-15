@@ -5,11 +5,26 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:path/path.dart' as p;
 import 'package:vault/agent/agent_service.dart';
 import 'package:vault/agent/agent_settings.dart';
+import 'package:vault/agent/conversation_state.dart';
 import 'package:vault/agent/conversation_store.dart';
 import 'package:vault/agent/project_store.dart';
 import 'package:vault/agent/vault_meta_db.dart';
 import 'package:vault/sandbox/sandbox_models.dart';
 import 'package:vault_agent_core/vault_agent_core.dart';
+
+class _RecordingWorkspace extends _FakeWorkspace {
+  final List<String> commands = [];
+
+  @override
+  Future<CommandResult> run(
+    String cmd, {
+    Map<String, String>? environment,
+    Duration? timeout,
+  }) async {
+    commands.add(cmd);
+    return const CommandResult(exitCode: 0, stdout: '', stderr: '');
+  }
+}
 
 class _FakeWorkspace implements SandboxWorkspace {
   @override
@@ -35,8 +50,7 @@ class _FakeWorkspace implements SandboxWorkspace {
     String cmd, {
     Map<String, String>? environment,
     Duration? timeout,
-  }) async =>
-      const CommandResult(exitCode: 0, stdout: '', stderr: '');
+  }) async => const CommandResult(exitCode: 0, stdout: '', stderr: '');
 
   @override
   Future<void> writeGuestFile(
@@ -111,5 +125,34 @@ void main() {
 
     final index = await store.list('ws-switch', projectPath);
     expect(index.conversations.length, greaterThanOrEqualTo(3));
+  });
+
+  test('switchConversation restores head_tree_sha via guest git', () async {
+    final a = await store.ensureActive('ws-switch', projectPath);
+    a.state.history.messages.add(UserMessage.text('会话甲'));
+    a.state.metadata[kHeadTreeShaMeta] = 'a' * 40;
+    await store.save('ws-switch', projectPath, a.state);
+
+    final b = await store.create('ws-switch', projectPath);
+    b.state.history.messages.add(UserMessage.text('会话乙'));
+    await store.save('ws-switch', projectPath, b.state);
+
+    final workspace = _RecordingWorkspace();
+    final service = AgentService(
+      workspace: workspace,
+      settings: settings,
+      conversationStore: store,
+      projectPath: projectPath,
+      conversationId: b.state.sessionId,
+      initialState: b.state,
+    );
+
+    await service.switchConversation(a.state.sessionId);
+    expect(service.conversationId, a.state.sessionId);
+    expect(
+      workspace.commands.any((cmd) => cmd.contains('git read-tree')),
+      isTrue,
+    );
+    expect(workspace.commands.any((cmd) => cmd.contains('a' * 40)), isTrue);
   });
 }

@@ -1,5 +1,7 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:vault/agent/agent_service.dart';
+import 'package:vault/agent/agent_system_prompt.dart';
+import 'package:vault/agent/ask_user.dart';
 import 'package:vault_agent_core/vault_agent_core.dart';
 
 void main() {
@@ -122,5 +124,53 @@ void main() {
     final notice = events.single as AgentUiSystemNotice;
     expect(notice.text, '后台任务已结束');
     expect(notice.isError, isFalse);
+  });
+
+  test('uiEventsFromHistory maps ask_user call and result with indexes', () {
+    const args = '{"questions":[{"id":"q","prompt":"？","options":["A"]}]}';
+    final events = AgentService.uiEventsFromHistory([
+      UserMessage.text('做个工具'),
+      ModelMessage(
+        model: 'm',
+        functionCalls: [
+          FunctionCall(id: 'a1', name: kAskUserToolName, arguments: args),
+        ],
+      ),
+      FunctionExecutionResultMessage(
+        results: [
+          FunctionExecutionResult(
+            id: 'a1',
+            name: kAskUserToolName,
+            isError: false,
+            arguments: args,
+            content: [TextPart('{"ok":true}')],
+          ),
+        ],
+      ),
+    ]);
+
+    expect(events, hasLength(3));
+    final user = events[0] as AgentUiUserMessage;
+    expect(user.text, '做个工具');
+    expect(user.historyIndex, 0);
+    final call = events[1] as AgentUiToolCall;
+    expect(call.name, kAskUserToolName);
+    expect(call.historyIndex, 1);
+    final result = events[2] as AgentUiToolResult;
+    expect(result.name, kAskUserToolName);
+    expect(result.result, '{"ok":true}');
+    expect(result.historyIndex, 2);
+  });
+
+  test('uiEventsFromHistory strips Vault attachment prefix from user text', () {
+    final stored = composeModelUserPrompt(
+      userText: '看附件',
+      attachmentContext: buildAttachmentContextMessage(['/root/inbox/a.png']),
+    );
+    final events = AgentService.uiEventsFromHistory([UserMessage.text(stored)]);
+    expect(events, hasLength(1));
+    expect(events.single, isA<AgentUiUserMessage>());
+    expect((events.single as AgentUiUserMessage).text, '看附件');
+    expect((events.single as AgentUiUserMessage).historyIndex, 0);
   });
 }
