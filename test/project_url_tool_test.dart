@@ -74,6 +74,35 @@ void main() {
     expect(project.urls.single.startCommand, contains('9090'));
   });
 
+  test(
+    'register_project_url replaces a different name with one entry',
+    () async {
+      final tools = createProjectUrlTools(
+        projectStore: projects,
+        workspaceId: 'ws1',
+        projectPath: projectPath,
+      );
+      final register = tools.firstWhere(
+        (t) => t.name == 'register_project_url',
+      );
+      await runTool(register, {'name': '网站', 'url': 'http://127.0.0.1:8080/'});
+      final json = await runTool(register, {
+        'name': '后台',
+        'url': 'http://127.0.0.1:9090/',
+        'start_command': 'python3 -m http.server 9090 --bind 127.0.0.1',
+      });
+      expect(json['ok'], isTrue);
+      final urls = (json['urls'] as List).cast<Map<String, dynamic>>();
+      expect(urls, hasLength(1));
+      expect(urls.single['name'], '后台');
+      expect(urls.single['url'], 'http://127.0.0.1:9090/');
+
+      final project = await projects.getProject('ws1', projectPath);
+      expect(project!.urls, hasLength(1));
+      expect(project.site!.name, '后台');
+    },
+  );
+
   test('list_project_urls returns registered entries', () async {
     await projects.upsertUrl(
       'ws1',

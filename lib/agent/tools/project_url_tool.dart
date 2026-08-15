@@ -53,8 +53,8 @@ List<Tool> createProjectUrlTools({
       name: 'register_project_url',
       description:
           '把当前项目做好的本地网站登记到 Vault 项目数据（主机侧数据库，不在 Linux 内）。'
-          '网站可用后必须调用本工具，用户才能在 UI 里看到并一键启动。'
-          '同名条目会覆盖；多服务按多次调用登记，sort 顺序为调用先后。'
+          '每个项目只有一个前端入口；再次调用会覆盖上一条。'
+          '网站可用后必须调用本工具，用户才能在侧栏一键启动。'
           'url 是内部监听地址（http://127.0.0.1:端口/），必须换工作区内未被占用、'
           '且当前没有其他进程在听的端口。登记前先 list_project_urls 看 workspace_ports_in_use。'
           '用户打开的是返回的 public_url，不是内部端口。'
@@ -64,7 +64,7 @@ List<Tool> createProjectUrlTools({
       parameters: {
         'type': 'object',
         'properties': {
-          'name': {'type': 'string', 'description': '站点/服务显示名，如「网站」「API」'},
+          'name': {'type': 'string', 'description': '站点显示名，如「网站」'},
           'url': {
             'type': 'string',
             'description': '内部监听地址，如 http://127.0.0.1:8765/',
@@ -75,10 +75,6 @@ List<Tool> createProjectUrlTools({
                 '可选。在项目根目录执行即可启动服务的命令（后台由 App 负责）。'
                 '示例：python3 -m http.server 8765 --bind 127.0.0.1',
           },
-          'replace_all': {
-            'type': 'boolean',
-            'description': '若为 true，清空本项目其它网址，只保留这一条。默认 false。',
-          },
         },
         'required': ['name', 'url'],
       },
@@ -86,7 +82,6 @@ List<Tool> createProjectUrlTools({
         final name = (args['name'] as String?)?.trim() ?? '';
         final url = (args['url'] as String?)?.trim() ?? '';
         final start = (args['start_command'] as String?)?.trim();
-        final replaceAll = args['replace_all'] == true;
         if (name.isEmpty || url.isEmpty) {
           return jsonEncode({'ok': false, 'error': 'name 与 url 不能为空'});
         }
@@ -131,7 +126,6 @@ List<Tool> createProjectUrlTools({
               url: url,
               startCommand: (start == null || start.isEmpty) ? null : start,
             ),
-            replaceAll: replaceAll,
           );
           await refreshGateway();
           final registered = urls.firstWhere((u) => u.name == name);
@@ -158,7 +152,7 @@ List<Tool> createProjectUrlTools({
     Tool(
       name: 'list_project_urls',
       description:
-          '列出当前项目已登记的网址与启动命令，以及整个工作区已占用的内部端口。'
+          '列出当前项目已登记的唯一前端入口与启动命令，以及整个工作区已占用的内部端口。'
           '选端口前先看 workspace_ports_in_use，避免和其它项目冲突。'
           '用户打开的是 public_url。',
       parameterMode: ToolParameterMode.object,

@@ -80,7 +80,7 @@ void main() {
     expect(list.map((p) => p.name), containsAll([a.name, b.name]));
   });
 
-  test('urls are stored in startup order', () async {
+  test('createProject keeps only the first url', () async {
     final created = await projects.createProject(
       'ws1',
       urls: const [
@@ -95,13 +95,31 @@ void main() {
     );
     final listed = await projects.list('ws1');
     final info = listed.firstWhere((p) => p.path == created.path);
-    expect(info.urls, hasLength(2));
-    expect(info.urls.first.name, 'api');
-    expect(info.urls.first.startCommand, 'uvicorn app:app');
-    expect(info.urls.last.name, 'web');
-    expect(info.urls.first.slug, isNotEmpty);
-    expect(info.urls.last.slug, isNotEmpty);
-    expect(info.urls.first.slug, isNot(info.urls.last.slug));
+    expect(info.urls, hasLength(1));
+    expect(info.site!.name, 'api');
+    expect(info.site!.startCommand, 'uvicorn app:app');
+    expect(info.site!.slug, isNotEmpty);
+  });
+
+  test('upsertUrl replaces the only frontend entry', () async {
+    final created = await projects.createProject(
+      'ws1',
+      conversationStore: conversations,
+    );
+    await projects.upsertUrl(
+      'ws1',
+      created.path,
+      const ProjectUrlEntry(name: '网站', url: 'http://127.0.0.1:8080/'),
+    );
+    await projects.upsertUrl(
+      'ws1',
+      created.path,
+      const ProjectUrlEntry(name: '后台', url: 'http://127.0.0.1:9090/'),
+    );
+    final project = await projects.getProject('ws1', created.path);
+    expect(project!.urls, hasLength(1));
+    expect(project.site!.name, '后台');
+    expect(project.site!.url, 'http://127.0.0.1:9090/');
   });
 
   test('upsertUrl rejects port already used in another project', () async {

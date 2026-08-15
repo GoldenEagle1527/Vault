@@ -926,7 +926,8 @@ class AgentService {
     final store = _projectStore;
     if (store == null) return const [];
     final project = await store.getProject(workspaceId, projectPath);
-    return project?.urls ?? const [];
+    final site = project?.site;
+    return site == null ? const [] : [site];
   }
 
   /// Close the current UI turn buffer when the model switches to tools.

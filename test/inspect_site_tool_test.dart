@@ -177,6 +177,6 @@ void main() {
     final site = (json['sites'] as List).cast<Map<String, dynamic>>().single;
     expect(site['up'], isTrue);
     expect(site['events'], isEmpty);
-    expect(site['hint'], contains('还没打开'));
+    expect(site['hint'], contains('还没点侧栏启动'));
   });
 }

@@ -13,7 +13,7 @@ import 'package:vault/sandbox/workspace_guest_fs.dart';
 /// Default display name for a newly created project.
 const kDefaultProjectName = '新项目';
 
-/// One URL/start entry for a project (order = startup sequence top → bottom).
+/// The single frontend URL/start entry for a project.
 class ProjectUrlEntry {
   const ProjectUrlEntry({
     required this.name,
@@ -63,6 +63,9 @@ class ProjectInfo {
   final DateTime createdAt;
   final DateTime updatedAt;
   final List<ProjectUrlEntry> urls;
+
+  /// The project's only frontend entry, if registered.
+  ProjectUrlEntry? get site => urls.isEmpty ? null : urls.first;
 
   String get guestDir => guestProjectDir(path);
 }
@@ -124,6 +127,7 @@ class ProjectStore {
   final WorkspaceGuestFs _fs;
   final Future<CommandResult> Function(String workspaceId, String cmd)
   _runGuest;
+  final Set<String> _bootstrapped = {};
 
   VaultMetaDb get metaDb => _metaDb;
 
@@ -151,6 +155,7 @@ class ProjectStore {
   }
 
   Future<void> ensureBootstrapped(String workspaceId) async {
+    if (_bootstrapped.contains(workspaceId)) return;
     final result = await _runGuest(
       workspaceId,
       workspaceGitAndDirsBootstrapScript(),
@@ -162,6 +167,7 @@ class ProjectStore {
       await _metaDb.withDb((_) {});
     }
     await _migrateLegacyConversationsIfNeeded(workspaceId);
+    _bootstrapped.add(workspaceId);
   }
 
   Future<List<ProjectInfo>> list(String workspaceId) async {
@@ -238,11 +244,14 @@ class ProjectStore {
   }
 
   Future<void> setActive(String workspaceId, String projectPath) async {
-    final projects = await list(workspaceId);
-    if (!projects.any((p) => p.path == projectPath)) {
-      throw StateError('项目不存在：$projectPath');
-    }
     await _metaDb.withDb((db) {
+      final exists = db.select(
+        'SELECT 1 FROM projects WHERE workspace_id = ? AND path = ?',
+        [workspaceId, projectPath],
+      );
+      if (exists.isEmpty) {
+        throw StateError('项目不存在：$projectPath');
+      }
       db.execute(
         'INSERT INTO workspace_state (workspace_id, active_project_path) '
         'VALUES (?, ?) '
@@ -386,15 +395,12 @@ class ProjectStore {
     return null;
   }
 
-  /// Insert or replace a URL entry by [entry.name] (keeps relative order).
-  ///
-  /// When [replaceAll] is true, the project's URL list becomes only [entry].
+  /// Replace the project's single frontend entry.
   Future<List<ProjectUrlEntry>> upsertUrl(
     String workspaceId,
     String projectPath,
-    ProjectUrlEntry entry, {
-    bool replaceAll = false,
-  }) async {
+    ProjectUrlEntry entry,
+  ) async {
     final name = entry.name.trim();
     final url = entry.url.trim();
     if (name.isEmpty) {
@@ -407,13 +413,10 @@ class ProjectStore {
     if (project == null) {
       throw StateError('项目不存在：$projectPath');
     }
-    final previous = [
-      for (final u in project.urls)
-        if (u.name == name) u,
-    ];
+    final previous = project.site;
     final keptSlug = entry.slug?.trim().isNotEmpty == true
         ? entry.slug!.trim()
-        : (previous.isEmpty ? null : previous.first.slug);
+        : previous?.slug;
     final normalized = ProjectUrlEntry(
       name: name,
       url: url,
@@ -421,22 +424,9 @@ class ProjectStore {
       slug: keptSlug,
     );
 
-    if (replaceAll) {
-      await updateUrls(workspaceId, projectPath, [normalized]);
-      final updated = await getProject(workspaceId, projectPath);
-      return updated?.urls ?? [normalized];
-    }
-
-    final urls = [...project.urls];
-    final i = urls.indexWhere((u) => u.name == name);
-    if (i >= 0) {
-      urls[i] = normalized;
-    } else {
-      urls.add(normalized);
-    }
-    await updateUrls(workspaceId, projectPath, urls);
+    await updateUrls(workspaceId, projectPath, [normalized]);
     final updated = await getProject(workspaceId, projectPath);
-    return updated?.urls ?? urls;
+    return updated?.urls ?? [normalized];
   }
 
   Future<void> removeUrl(
@@ -516,7 +506,7 @@ class ProjectStore {
       'WHERE workspace_id = ? AND project_path = ? ORDER BY sort_order ASC',
       [workspaceId, projectPath],
     );
-    return [
+    final loaded = [
       for (final row in rows)
         ProjectUrlEntry(
           name: row['name'] as String,
@@ -525,6 +515,7 @@ class ProjectStore {
           slug: row['slug'] as String?,
         ),
     ];
+    return loaded.isEmpty ? loaded : [loaded.first];
   }
 
   List<ProjectUrlEntry> _prepareUrls(
@@ -539,8 +530,9 @@ class ProjectStore {
             if (entry.slug != null && entry.slug!.trim().isNotEmpty)
               entry.slug!.trim(),
     };
+    final limited = urls.isEmpty ? urls : [urls.first];
     final prepared = <ProjectUrlEntry>[];
-    for (final entry in urls) {
+    for (final entry in limited) {
       final existing = entry.slug?.trim();
       final slug = (existing != null && existing.isNotEmpty)
           ? existing

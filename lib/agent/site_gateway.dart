@@ -295,7 +295,7 @@ class SiteGateway {
         req,
         HttpStatus.badGateway,
         '站点未启动',
-        '请在 Vault 侧栏「站点」里启动「${route.name}」。',
+        '请在 Vault 侧栏点启动打开「${route.name}」。',
       );
     }
   }

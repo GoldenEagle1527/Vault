@@ -12,12 +12,16 @@ class WorkspaceTerminal extends StatefulWidget {
     super.key,
     required this.workspace,
     this.disposeWorkspace = true,
+    this.initialGuestCwd,
   });
 
   final SandboxWorkspace workspace;
 
   /// When false, only the terminal view is torn down (workspace stays alive).
   final bool disposeWorkspace;
+
+  /// Guest path to `cd` into after the PTY is attached.
+  final String? initialGuestCwd;
 
   @override
   State<WorkspaceTerminal> createState() => _WorkspaceTerminalState();
@@ -40,6 +44,10 @@ class _WorkspaceTerminalState extends State<WorkspaceTerminal> {
     _outSub = widget.workspace.output.listen((chunk) {
       _terminal.write(utf8.decode(chunk, allowMalformed: true));
     });
+    final cwd = widget.initialGuestCwd?.trim();
+    if (cwd != null && cwd.isNotEmpty) {
+      widget.workspace.write('cd ${shellSingleQuote(cwd)}\n');
+    }
   }
 
   @override

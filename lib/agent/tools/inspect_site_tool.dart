@@ -23,7 +23,7 @@ Tool createInspectSiteTool({
     description:
         '查看当前项目站点在用户浏览器里积累的控制台错误、未捕获异常和失败请求（以及网关 4xx/5xx）。'
         '用户说「不能用 / 坏了 / 打不开」时先用这个，不要让他们开 F12，也不用传站点名。'
-        '会话已绑定项目：自动看该项目已登记的站点。服务没启动就直接告诉你；起来了则返回缓冲里的全部记录。',
+        '会话已绑定项目：自动看该项目已登记的前端入口。服务没启动就直接告诉你；起来了则返回缓冲里的全部记录。',
     parameterMode: ToolParameterMode.object,
     parameters: {'type': 'object', 'properties': <String, dynamic>{}},
     executable: (Map<String, dynamic> args) async {
@@ -58,14 +58,14 @@ Tool createInspectSiteTool({
           if (slug != null && slug.isNotEmpty) 'slug': slug,
           'up': true,
           'events': events,
-          if (events.isEmpty) 'hint': '用户可能还没打开侧栏站点，或页面尚未加载采集脚本',
+          if (events.isEmpty) 'hint': '用户可能还没点侧栏启动，或页面尚未加载采集脚本',
         });
       }
 
       return jsonEncode({
         'ok': true,
         'sites': reports,
-        if (!anyUp) 'hint': '服务没启动，请让用户在侧栏「站点」里启动后再试',
+        if (!anyUp) 'hint': '服务没启动，请让用户在侧栏点启动后再试',
       });
     },
   );

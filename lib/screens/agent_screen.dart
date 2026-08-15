@@ -5,7 +5,6 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
-import 'package:url_launcher/url_launcher.dart';
 import 'package:vault/util/host_file_picker.dart';
 import 'package:vault/agent/agent_inbox.dart';
 import 'package:vault/agent/agent_service.dart';
@@ -140,8 +139,6 @@ class _AgentScreenState extends State<AgentScreen> {
   bool _booting = true;
   bool _promptedNewProject = false;
 
-  /// 0 项目 · 1 会话 · 2 站点 · 3 工具
-  int _sideTabIndex = 0;
   StreamSubscription<AgentUiEvent>? _backgroundUiSub;
   AskUserHost? _askUserHost;
   final Map<String, bool> _siteUp = {};
@@ -161,13 +158,11 @@ class _AgentScreenState extends State<AgentScreen> {
     return path;
   }
 
-  List<ProjectUrlEntry> get _activeProjectUrls {
-    final path = _activeProjectPath;
-    if (path == null) return const [];
+  ProjectUrlEntry? _siteFor(String projectPath) {
     for (final p in _projects) {
-      if (p.path == path) return p.urls;
+      if (p.path == projectPath) return p.site;
     }
-    return const [];
+    return null;
   }
 
   @override
@@ -785,7 +780,11 @@ class _AgentScreenState extends State<AgentScreen> {
         item.toolCallId ??= callId;
         item.toolJobId ??= jobId;
         if (name == 'register_project_url') {
-          unawaited(_refreshProjects());
+          unawaited(
+            _refreshProjects().then((_) {
+              if (mounted) setState(() {});
+            }),
+          );
         }
         return;
       }
@@ -893,13 +892,9 @@ class _AgentScreenState extends State<AgentScreen> {
   }
 
   Future<void> _switchProject(String projectPath) async {
-    if (projectPath == _activeProjectPath) {
-      Navigator.of(context).maybePop();
-      return;
-    }
+    if (projectPath == _activeProjectPath) return;
     if (!await _confirmLeaveRunning()) return;
     if (!mounted) return;
-    Navigator.of(context).maybePop();
     setState(() => _status = '正在切换项目…');
     try {
       final service = _service;
@@ -907,12 +902,10 @@ class _AgentScreenState extends State<AgentScreen> {
       await service.switchProject(projectPath);
       await _projectStore.setActive(widget.workspace.workspaceId, projectPath);
       _activeProjectPath = projectPath;
-      _siteUp.clear();
-      _siteBusy.clear();
-      await _refreshProjects();
       await _refreshConversationList();
       _hydrateFromService();
       _pendingAttachments.clear();
+      _syncSitePoll();
     } catch (e) {
       if (!mounted) return;
       _items.add(_ChatItem(kind: _ChatKind.error, text: '切换项目失败：$e'));
@@ -927,19 +920,13 @@ class _AgentScreenState extends State<AgentScreen> {
     }
   }
 
-  void _selectSideTab(int index) {
-    setState(() => _sideTabIndex = index);
-    _syncSitePoll();
-  }
-
   void _syncSitePoll() {
     if (!mounted) {
       _sitePollTimer?.cancel();
       _sitePollTimer = null;
       return;
     }
-    final shouldPoll =
-        _sideTabIndex == 2 && _activeProjectUrls.isNotEmpty && !_booting;
+    final shouldPoll = !_booting && _projects.any((p) => p.site != null);
     if (shouldPoll) {
       _sitePollTimer ??= Timer.periodic(const Duration(seconds: 4), (_) {
         unawaited(_refreshSiteStatus());
@@ -953,8 +940,11 @@ class _AgentScreenState extends State<AgentScreen> {
 
   Future<void> _refreshSiteStatus() async {
     if (_siteProbeInFlight) return;
-    final urls = _activeProjectUrls;
-    if (urls.isEmpty) {
+    final pairs = [
+      for (final p in _projects)
+        if (p.site != null) (p.path, p.site!),
+    ];
+    if (pairs.isEmpty) {
       if (_siteUp.isNotEmpty && mounted) {
         setState(_siteUp.clear);
       }
@@ -962,12 +952,21 @@ class _AgentScreenState extends State<AgentScreen> {
     }
     _siteProbeInFlight = true;
     try {
-      final result = await ProjectSiteLauncher(widget.workspace).probeAll(urls);
+      final probe = await widget.workspace.run(
+        siteProbeShellCommand([for (final pair in pairs) pair.$2.url]),
+        timeout: const Duration(seconds: 15),
+      );
+      final codes = probe.stdout.trim().split(RegExp(r'\s+'));
+      final next = <String, bool>{};
+      for (var i = 0; i < pairs.length; i++) {
+        final code = i < codes.length ? codes[i] : '0';
+        next[pairs[i].$1] = isHttpServiceResponding(code);
+      }
       if (!mounted) return;
       setState(() {
         _siteUp
           ..clear()
-          ..addAll(result);
+          ..addAll(next);
       });
     } catch (_) {
       // Keep last known status.
@@ -976,22 +975,13 @@ class _AgentScreenState extends State<AgentScreen> {
     }
   }
 
-  Future<void> _openSiteUrl(ProjectUrlEntry site) async {
-    final url = _sitePublicUrl(site).trim();
-    if (url.isEmpty) return;
-    final uri = Uri.tryParse(url);
-    if (uri == null) return;
-    if (await canLaunchUrl(uri)) {
-      await launchUrl(uri, mode: LaunchMode.externalApplication);
-    }
-  }
-
-  Future<void> _startSite(ProjectUrlEntry entry) async {
-    final projectPath = _activeProjectPath;
-    if (projectPath == null) return;
+  Future<void> _startSite(
+    ProjectUrlEntry entry, {
+    required String projectPath,
+  }) async {
     setState(() {
       _status = '正在启动「${entry.name}」…';
-      _siteBusy.add(entry.name);
+      _siteBusy.add(projectPath);
     });
     var launched = false;
     try {
@@ -1002,7 +992,7 @@ class _AgentScreenState extends State<AgentScreen> {
       );
       if (!mounted) return;
       launched = result.startedProcess || result.alreadyUp;
-      if (launched) _siteUp[entry.name] = true;
+      if (launched) _siteUp[projectPath] = true;
       final parts = <String>[
         if (result.alreadyUp) '服务已在运行',
         if (result.startedProcess) '已后台启动',
@@ -1029,7 +1019,7 @@ class _AgentScreenState extends State<AgentScreen> {
       if (mounted) {
         setState(() {
           _status = null;
-          _siteBusy.remove(entry.name);
+          _siteBusy.remove(projectPath);
         });
         _scrollToEnd();
         if (!launched) unawaited(_refreshSiteStatus());
@@ -1037,19 +1027,20 @@ class _AgentScreenState extends State<AgentScreen> {
     }
   }
 
-  Future<void> _stopSite(ProjectUrlEntry entry) async {
-    final projectPath = _activeProjectPath;
-    if (projectPath == null) return;
+  Future<void> _stopSite(
+    ProjectUrlEntry entry, {
+    required String projectPath,
+  }) async {
     setState(() {
       _status = '正在终止「${entry.name}」…';
-      _siteBusy.add(entry.name);
+      _siteBusy.add(projectPath);
     });
     try {
       final result = await ProjectSiteLauncher(
         widget.workspace,
       ).stop(projectPath: projectPath, entry: entry);
       if (!mounted) return;
-      _siteUp[entry.name] = !result.stopped;
+      _siteUp[projectPath] = !result.stopped;
       _items.add(
         _ChatItem(
           kind: result.stopped ? _ChatKind.status : _ChatKind.error,
@@ -1063,7 +1054,7 @@ class _AgentScreenState extends State<AgentScreen> {
       if (mounted) {
         setState(() {
           _status = null;
-          _siteBusy.remove(entry.name);
+          _siteBusy.remove(projectPath);
         });
         _scrollToEnd();
         unawaited(_refreshSiteStatus());
@@ -1085,35 +1076,44 @@ class _AgentScreenState extends State<AgentScreen> {
     setState(() {});
   }
 
-  Future<void> _openTerminal() async {
+  Future<void> _openTerminalFor(String projectPath) async {
+    _closeDrawerIfOpen();
     await Navigator.of(context).push(
       MaterialPageRoute(
         builder: (_) => TerminalScreen(
           title: widget.title,
           workspace: widget.workspace,
           disposeWorkspace: false,
+          initialGuestCwd: guestProjectDir(projectPath),
         ),
       ),
     );
   }
 
-  Future<void> _openFileBrowser() async {
-    final projectPath = _activeProjectPath;
-    final projectGuest = projectPath == null
-        ? null
-        : guestProjectDir(projectPath);
+  Future<void> _openFileBrowserFor(String projectPath) async {
+    _closeDrawerIfOpen();
+    final projectGuest = guestProjectDir(projectPath);
     await Navigator.of(context).push(
       MaterialPageRoute(
         builder: (_) => FileBrowserScreen(
           provider: widget.provider,
           workspaceId: widget.workspace.workspaceId,
           title: widget.title,
-          // Open at the active project working tree when available.
-          initialPath: projectGuest ?? kGuestHome,
+          initialPath: projectGuest,
           projectGuestPath: projectGuest,
         ),
       ),
     );
+  }
+
+  Future<void> _toggleSiteFor(String projectPath) async {
+    final site = _siteFor(projectPath);
+    if (site == null) return;
+    if (_siteUp[projectPath] == true) {
+      await _stopSite(site, projectPath: projectPath);
+    } else {
+      await _startSite(site, projectPath: projectPath);
+    }
   }
 
   Future<void> _pickFiles() async {
@@ -1158,10 +1158,15 @@ class _AgentScreenState extends State<AgentScreen> {
     return ok == true;
   }
 
-  Future<void> _newConversation() async {
-    if (_activeProjectPath == null) {
+  Future<void> _newConversation({String? projectPath}) async {
+    final path = projectPath ?? _activeProjectPath;
+    if (path == null) {
       await _createProject();
       return;
+    }
+    if (path != _activeProjectPath) {
+      await _switchProject(path);
+      if (!mounted || _activeProjectPath != path) return;
     }
     if (!await _confirmLeaveRunning()) return;
     final service = _service;
@@ -1186,15 +1191,11 @@ class _AgentScreenState extends State<AgentScreen> {
   }
 
   Future<void> _switchConversation(String id) async {
-    if (id == _activeConversationId) {
-      Navigator.of(context).maybePop();
-      return;
-    }
+    if (id == _activeConversationId) return;
     if (!await _confirmLeaveRunning()) return;
     if (!mounted) return;
     final service = _service;
     if (service == null) return;
-    Navigator.of(context).maybePop();
     setState(() => _status = '正在切换会话…');
     try {
       await service.switchConversation(id);
@@ -1392,16 +1393,18 @@ class _AgentScreenState extends State<AgentScreen> {
     });
   }
 
-  String _relativeTime(DateTime when) {
+  String _compactRelativeTime(DateTime when) {
     final local = when.toLocal();
     final now = DateTime.now();
+    final diff = now.difference(local);
+    if (diff.inSeconds < 60) return '${diff.inSeconds.clamp(1, 59)}s';
+    if (diff.inMinutes < 60) return '${diff.inMinutes}m';
     final today = DateTime(now.year, now.month, now.day);
     final day = DateTime(local.year, local.month, local.day);
-    final hm =
-        '${local.hour.toString().padLeft(2, '0')}:${local.minute.toString().padLeft(2, '0')}';
-    if (day == today) return '今天 $hm';
-    if (day == today.subtract(const Duration(days: 1))) return '昨天 $hm';
-    return '${local.month} 月 ${local.day} 日 $hm';
+    if (day == today) return '${diff.inHours.clamp(1, 23)}h';
+    if (day == today.subtract(const Duration(days: 1))) return '昨天';
+    if (local.year == now.year) return '${local.month}/${local.day}';
+    return '${local.year}/${local.month}/${local.day}';
   }
 
   @override
@@ -1430,7 +1433,6 @@ class _AgentScreenState extends State<AgentScreen> {
   }
 
   Future<void> _onSelectProject(String path) async {
-    _closeDrawerIfOpen();
     await _switchProject(path);
   }
 
@@ -1477,269 +1479,215 @@ class _AgentScreenState extends State<AgentScreen> {
               ],
             ),
           ),
-          Padding(
-            padding: const EdgeInsets.fromLTRB(10, 0, 10, 8),
-            child: Row(
-              children: [
-                for (final entry in const [
-                  (0, Icons.folder_outlined, '项目'),
-                  (1, Icons.chat_bubble_outline, '会话'),
-                  (2, Icons.language, '站点'),
-                  (3, Icons.build_outlined, '工具'),
-                ])
-                  Expanded(
-                    child: Padding(
-                      padding: const EdgeInsets.symmetric(horizontal: 2),
-                      child: Material(
-                        color: _sideTabIndex == entry.$1
-                            ? scheme.primaryContainer
-                            : Colors.transparent,
-                        borderRadius: BorderRadius.circular(12),
-                        child: InkWell(
-                          borderRadius: BorderRadius.circular(12),
-                          onTap: () => _selectSideTab(entry.$1),
-                          child: Padding(
-                            padding: const EdgeInsets.symmetric(vertical: 8),
-                            child: Column(
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
-                                Icon(
-                                  entry.$2,
-                                  size: 18,
-                                  color: _sideTabIndex == entry.$1
-                                      ? scheme.onPrimaryContainer
-                                      : scheme.onSurfaceVariant,
-                                ),
-                                const SizedBox(height: 2),
-                                Text(
-                                  entry.$3,
-                                  style: Theme.of(context).textTheme.labelSmall
-                                      ?.copyWith(
-                                        fontWeight: FontWeight.w600,
-                                        color: _sideTabIndex == entry.$1
-                                            ? scheme.onPrimaryContainer
-                                            : scheme.onSurfaceVariant,
-                                      ),
-                                ),
-                              ],
-                            ),
-                          ),
-                        ),
-                      ),
-                    ),
-                  ),
-              ],
-            ),
-          ),
           const Divider(height: 1),
-          Expanded(child: _buildSideTabBody()),
+          Expanded(child: _buildMergedNavBody(scheme)),
         ],
       ),
     );
   }
 
-  Widget _buildSiteTile(ColorScheme scheme, ProjectUrlEntry site) {
-    final up = _siteUp[site.name] == true;
-    final busy = _siteBusy.contains(site.name);
-    final canAct = !_booting && !busy;
-    final url = _sitePublicUrl(site).trim();
-    return ListTile(
-      leading: Icon(
-        Icons.language,
-        color: up ? scheme.primary : scheme.onSurfaceVariant,
-      ),
-      title: Text(site.name, maxLines: 1, overflow: TextOverflow.ellipsis),
-      onTap: url.isEmpty ? null : () => unawaited(_openSiteUrl(site)),
-      trailing: busy
-          ? const SizedBox(
-              width: 40,
-              child: Center(
-                child: SizedBox(
-                  width: 18,
-                  height: 18,
-                  child: CircularProgressIndicator(strokeWidth: 2),
-                ),
-              ),
-            )
-          : IconButton(
-              tooltip: up ? '终止' : '启动',
-              onPressed: canAct
-                  ? () => up ? _stopSite(site) : _startSite(site)
-                  : null,
-              icon: Icon(
-                up ? Icons.stop : Icons.play_arrow,
-                color: up ? scheme.error : scheme.primary,
-              ),
-            ),
+  Widget _headerIconButton({
+    required String tooltip,
+    required IconData icon,
+    required VoidCallback? onPressed,
+    Color? color,
+  }) {
+    return IconButton(
+      tooltip: tooltip,
+      onPressed: onPressed,
+      icon: Icon(icon, size: 20, color: color),
+      visualDensity: VisualDensity.compact,
+      padding: const EdgeInsets.all(4),
+      constraints: const BoxConstraints(minWidth: 32, minHeight: 32),
     );
   }
 
-  Widget _buildSideTabBody() {
-    final scheme = Theme.of(context).colorScheme;
-    switch (_sideTabIndex) {
-      case 0:
-        return Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            Padding(
-              padding: const EdgeInsets.fromLTRB(12, 12, 12, 4),
-              child: FilledButton.tonalIcon(
-                onPressed: _booting ? null : _createProject,
-                icon: const Icon(Icons.create_new_folder_outlined),
-                label: const Text('新项目'),
-              ),
-            ),
-            Expanded(
-              child: ListView(
-                children: [
-                  if (_projects.isEmpty)
-                    ListTile(
-                      title: Text(
-                        '暂无项目',
-                        style: TextStyle(color: scheme.onSurfaceVariant),
-                      ),
-                      subtitle: const Text('点击上方「新项目」开始'),
-                    )
-                  else
-                    for (final p in _projects)
-                      ListTile(
-                        selected: p.path == _activeProjectPath,
-                        leading: Icon(
-                          p.path == _activeProjectPath
-                              ? Icons.folder
-                              : Icons.folder_outlined,
-                        ),
-                        title: Text(
-                          p.name,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                        ),
-                        subtitle: Text(
-                          p.urls.isEmpty
-                              ? p.path
-                              : '${p.path} · ${p.urls.length} 个站点',
-                          maxLines: 2,
-                          overflow: TextOverflow.ellipsis,
-                        ),
-                        onTap: () => _onSelectProject(p.path),
-                      ),
-                ],
-              ),
-            ),
-          ],
-        );
-      case 1:
-        return Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            Padding(
-              padding: const EdgeInsets.fromLTRB(12, 12, 12, 4),
-              child: FilledButton.tonalIcon(
-                onPressed: _booting || _activeProjectPath == null
-                    ? null
-                    : _newConversation,
-                icon: const Icon(Icons.add),
-                label: const Text('新会话'),
-              ),
-            ),
-            Expanded(
-              child: ListView(
-                children: [
-                  if (_activeProjectPath == null)
-                    ListTile(
-                      title: Text(
-                        '请先选择或新建项目',
-                        style: TextStyle(color: scheme.onSurfaceVariant),
-                      ),
-                    )
-                  else if (_conversations.isEmpty)
-                    ListTile(
-                      title: Text(
-                        '暂无会话',
-                        style: TextStyle(color: scheme.onSurfaceVariant),
-                      ),
-                    )
-                  else
-                    for (final c in _conversations)
-                      ListTile(
-                        selected: c.id == _activeConversationId,
-                        leading: Icon(
-                          c.id == _activeConversationId
-                              ? Icons.chat_bubble
-                              : Icons.chat_bubble_outline,
-                        ),
-                        title: Text(
-                          c.title,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                        ),
-                        subtitle: Text(
-                          '${_relativeTime(c.updatedAt)}'
-                          '${c.messageCount > 0 ? ' · ${c.messageCount} 条消息' : ''}',
-                        ),
-                        onTap: () => _onSelectConversation(c.id),
-                        trailing: IconButton(
-                          tooltip: '删除会话',
-                          onPressed: () => _deleteConversation(c.id),
-                          icon: const Icon(Icons.delete_outline),
+  Widget _buildProjectHeader(ColorScheme scheme, ProjectInfo project) {
+    final active = project.path == _activeProjectPath;
+    final site = project.site;
+    final up = _siteUp[project.path] == true;
+    final busy = _siteBusy.contains(project.path);
+    final canAct = !_booting && !busy;
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(4, 4, 0, 0),
+      child: Row(
+        children: [
+          Expanded(
+            child: InkWell(
+              borderRadius: BorderRadius.circular(8),
+              onTap: _booting ? null : () => _onSelectProject(project.path),
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(8, 6, 4, 6),
+                child: Row(
+                  children: [
+                    Icon(
+                      active ? Icons.folder : Icons.folder_outlined,
+                      size: 20,
+                      color: active ? scheme.primary : scheme.onSurfaceVariant,
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        project.name,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                          fontWeight: FontWeight.w600,
                         ),
                       ),
-                ],
-              ),
-            ),
-          ],
-        );
-      case 2:
-        return ListView(
-          children: [
-            if (_activeProjectPath == null)
-              ListTile(
-                title: Text(
-                  '请先选择项目',
-                  style: TextStyle(color: scheme.onSurfaceVariant),
+                    ),
+                  ],
                 ),
-              )
-            else if (_activeProjectUrls.isEmpty)
-              Padding(
-                padding: const EdgeInsets.fromLTRB(16, 24, 16, 16),
-                child: Text(
-                  '暂无已登记站点。让 Agent 做好网站后会自动出现在此，可一键启动。',
-                  textAlign: TextAlign.center,
-                  style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+              ),
+            ),
+          ),
+          _headerIconButton(
+            tooltip: '终端',
+            icon: Icons.terminal,
+            onPressed: _booting
+                ? null
+                : () => unawaited(_openTerminalFor(project.path)),
+          ),
+          _headerIconButton(
+            tooltip: '文件管理器',
+            icon: Icons.folder_open_outlined,
+            onPressed: _booting
+                ? null
+                : () => unawaited(_openFileBrowserFor(project.path)),
+          ),
+          busy
+              ? const SizedBox(
+                  width: 32,
+                  height: 32,
+                  child: Center(
+                    child: SizedBox(
+                      width: 16,
+                      height: 16,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    ),
+                  ),
+                )
+              : _headerIconButton(
+                  tooltip: site == null
+                      ? '尚未登记前端入口，让 Agent 调用 register_project_url'
+                      : (up ? '停止项目' : '启动项目'),
+                  icon: up ? Icons.stop : Icons.play_arrow,
+                  color: site == null
+                      ? scheme.onSurfaceVariant
+                      : (up ? scheme.error : scheme.primary),
+                  onPressed: canAct && site != null
+                      ? () => unawaited(_toggleSiteFor(project.path))
+                      : null,
+                ),
+          _headerIconButton(
+            tooltip: '新会话',
+            icon: Icons.add,
+            onPressed: _booting
+                ? null
+                : () => unawaited(_newConversation(projectPath: project.path)),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildConversationTile(ColorScheme scheme, ConversationInfo c) {
+    final selected = c.id == _activeConversationId;
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(8, 1, 8, 1),
+      child: Material(
+        color: selected ? scheme.surfaceContainerHighest : Colors.transparent,
+        borderRadius: BorderRadius.circular(8),
+        child: InkWell(
+          borderRadius: BorderRadius.circular(8),
+          onTap: () => _onSelectConversation(c.id),
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(12, 8, 4, 8),
+            child: Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    c.title,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                      fontWeight: selected ? FontWeight.w600 : FontWeight.w400,
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Text(
+                  _compactRelativeTime(c.updatedAt),
+                  style: Theme.of(context).textTheme.labelSmall?.copyWith(
                     color: scheme.onSurfaceVariant,
                   ),
                 ),
-              )
-            else
-              for (final site in _activeProjectUrls)
-                _buildSiteTile(scheme, site),
-          ],
-        );
-      case 3:
-      default:
-        return ListView(
-          children: [
-            ListTile(
-              leading: const Icon(Icons.folder_open_outlined),
-              title: const Text('文件浏览器'),
-              subtitle: const Text('浏览 / 预览当前工作区文件'),
-              onTap: () {
-                _closeDrawerIfOpen();
-                unawaited(_openFileBrowser());
-              },
+                IconButton(
+                  tooltip: '删除会话',
+                  onPressed: () => _deleteConversation(c.id),
+                  icon: const Icon(Icons.delete_outline, size: 18),
+                  visualDensity: VisualDensity.compact,
+                  padding: const EdgeInsets.all(4),
+                  constraints: const BoxConstraints(
+                    minWidth: 28,
+                    minHeight: 28,
+                  ),
+                ),
+              ],
             ),
-            ListTile(
-              leading: const Icon(Icons.terminal),
-              title: const Text('Linux 终端'),
-              subtitle: const Text('高级调试 · 当前工作区'),
-              onTap: () {
-                _closeDrawerIfOpen();
-                unawaited(_openTerminal());
-              },
-            ),
-          ],
-        );
-    }
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildMergedNavBody(ColorScheme scheme) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Expanded(
+          child: ListView(
+            padding: const EdgeInsets.only(bottom: 8),
+            children: [
+              if (_projects.isEmpty)
+                ListTile(
+                  title: Text(
+                    '暂无项目',
+                    style: TextStyle(color: scheme.onSurfaceVariant),
+                  ),
+                  subtitle: const Text('点击下方「新项目」开始'),
+                )
+              else
+                for (final p in _projects) ...[
+                  _buildProjectHeader(scheme, p),
+                  if (p.path == _activeProjectPath)
+                    if (_conversations.isEmpty)
+                      Padding(
+                        padding: const EdgeInsets.fromLTRB(36, 8, 16, 8),
+                        child: Text(
+                          '暂无会话',
+                          style: Theme.of(context).textTheme.bodySmall
+                              ?.copyWith(color: scheme.onSurfaceVariant),
+                        ),
+                      )
+                    else
+                      for (final c in _conversations)
+                        _buildConversationTile(scheme, c),
+                ],
+            ],
+          ),
+        ),
+        const Divider(height: 1),
+        Padding(
+          padding: const EdgeInsets.fromLTRB(12, 8, 12, 12),
+          child: FilledButton.tonalIcon(
+            onPressed: _booting ? null : _createProject,
+            icon: const Icon(Icons.create_new_folder_outlined),
+            label: const Text('新项目'),
+          ),
+        ),
+      ],
+    );
   }
 
   Widget _buildProfileSwitcher(ColorScheme scheme) {

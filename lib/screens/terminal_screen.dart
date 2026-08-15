@@ -8,6 +8,7 @@ class TerminalScreen extends StatelessWidget {
     required this.title,
     required this.workspace,
     this.disposeWorkspace = true,
+    this.initialGuestCwd,
   });
 
   final String title;
@@ -15,6 +16,9 @@ class TerminalScreen extends StatelessWidget {
 
   /// When false, the PTY stays owned by the caller (e.g. [AgentScreen]).
   final bool disposeWorkspace;
+
+  /// Guest path to `cd` into after the PTY is attached.
+  final String? initialGuestCwd;
 
   @override
   Widget build(BuildContext context) {
@@ -46,7 +50,9 @@ class TerminalScreen extends StatelessWidget {
                   const SizedBox(width: 10),
                   Expanded(
                     child: Text(
-                      '高级调试模式：命令会在当前工作区的独立 Linux 空间中执行。',
+                      initialGuestCwd == null || initialGuestCwd!.trim().isEmpty
+                          ? '高级调试模式：命令会在当前工作区的独立 Linux 空间中执行。'
+                          : '已进入项目目录 $initialGuestCwd',
                       style: Theme.of(context).textTheme.bodySmall,
                     ),
                   ),
@@ -58,6 +64,7 @@ class TerminalScreen extends StatelessWidget {
             child: WorkspaceTerminal(
               workspace: workspace,
               disposeWorkspace: disposeWorkspace,
+              initialGuestCwd: initialGuestCwd,
             ),
           ),
         ],
