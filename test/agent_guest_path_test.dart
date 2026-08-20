@@ -1,6 +1,7 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:vault/agent/agent_service.dart';
 import 'package:vault/agent/agent_system_prompt.dart';
+import 'package:vault/agent/vault_host_device.dart';
 import 'package:vault/agent/workspace_mode.dart';
 import 'package:vault/sandbox/sandbox_models.dart';
 
@@ -28,14 +29,30 @@ void main() {
   });
 
   test('system prompt pins Alpine workspace + inbox', () {
-    final prompts = vaultAgentSystemPrompts(workspaceId: 'abc123');
+    final prompts = vaultAgentSystemPrompts(
+      workspaceId: 'abc123',
+      hostDevice: VaultHostDevice.desktop,
+    );
     final joined = prompts.join('\n');
     expect(joined, contains('workspaceId=abc123'));
     expect(joined, contains('Alpine'));
     expect(joined, contains('/root/inbox'));
-    expect(joined, contains('不是用户的 Windows/Android 主机'));
+    expect(joined, contains('不是用户的 Windows 主机'));
+    expect(joined, contains('用户当前在 **电脑**'));
     expect(joined, contains('Python 3.12'));
     expect(joined, contains('python3'));
+  });
+
+  test('system prompt includes mobile host device', () {
+    final joined = vaultAgentSystemPrompts(
+      workspaceId: 'abc123',
+      hostDevice: VaultHostDevice.mobile,
+    ).join('\n');
+    expect(joined, contains('用户当前在 **手机**'));
+    expect(joined, contains('Android'));
+    expect(joined, contains('proot'));
+    expect(joined, contains('触屏'));
+    expect(joined, contains('不是用户的 Android 主机'));
   });
 
   test('attachment context lists guest paths', () {

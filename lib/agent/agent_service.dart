@@ -18,6 +18,7 @@ import 'package:vault/agent/tools/ask_user_tool.dart';
 import 'package:vault/agent/tools/inspect_site_tool.dart';
 import 'package:vault/agent/tools/project_url_tool.dart';
 import 'package:vault/agent/tools/shell_tool.dart';
+import 'package:vault/agent/vault_host_device.dart';
 import 'package:vault/agent/vault_meta_db.dart';
 import 'package:vault/agent/workspace_mode.dart';
 import 'package:vault/sandbox/sandbox_provider.dart';
@@ -430,6 +431,7 @@ class AgentService {
         workspaceId: workspaceId,
         projectPath: projectPath,
         mode: _mode,
+        hostDevice: VaultHostDevice.current(),
       ),
       controller: AgentController(),
       autoSaveStateFunc: _store == null ? null : (s) => _persistIfNeeded(s),
