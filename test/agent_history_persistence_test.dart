@@ -39,6 +39,9 @@ class _FakeWorkspace implements SandboxWorkspace {
   ) async {}
 
   @override
+  Future<Uint8List?> readGuestFile(String guestAbsolutePath) async => null;
+
+  @override
   Future<void> dispose() async {}
 }
 
@@ -71,6 +74,7 @@ void main() {
       workspace: _FakeWorkspace(),
       settings: settingsA,
       initialState: prior,
+      projectPath: 'p1',
     );
     expect(service.historyMessageCount, 2);
 

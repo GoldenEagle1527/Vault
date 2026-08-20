@@ -75,7 +75,10 @@ class ProotProvider implements SandboxProvider {
     if (_live.isEmpty) {
       await ProotHost.stopForegroundService();
     } else {
-      await ProotHost.startForegroundService();
+      await ProotHost.startForegroundService(
+        title: 'Vault 工作区运行中',
+        text: '沙箱与 Agent 任务在后台继续运行，点按返回应用。',
+      );
     }
   }
 
@@ -672,6 +675,14 @@ class ProotWorkspace implements SandboxWorkspace {
     final file = File(hostPath);
     await file.parent.create(recursive: true);
     await file.writeAsBytes(bytes, flush: true);
+  }
+
+  @override
+  Future<Uint8List?> readGuestFile(String guestAbsolutePath) async {
+    final guestPath = assertGuestPathUnderHome(guestAbsolutePath);
+    final file = File(p.join(rootfsPath, guestPath.substring(1)));
+    if (!await file.exists()) return null;
+    return Uint8List.fromList(await file.readAsBytes());
   }
 
   @override

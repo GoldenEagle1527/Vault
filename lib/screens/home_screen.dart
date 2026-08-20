@@ -7,6 +7,7 @@ import 'package:vault/agent/project_store.dart';
 import 'package:vault/agent/vault_meta_db.dart';
 import 'package:vault/agent/workspace_mode.dart';
 import 'package:vault/agent/workspace_store.dart';
+import 'package:vault/sandbox/android_keep_alive.dart';
 import 'package:vault/sandbox/network_reachability.dart';
 import 'package:vault/sandbox/sandbox_provider.dart';
 import 'package:vault/permissions/active_workspace_holder.dart';
@@ -228,6 +229,8 @@ class _HomeScreenState extends State<HomeScreen> {
       await workspaceStore.setName(id, displayName);
       await workspaceStore.setMode(id, selectedMode);
       if (!mounted) return;
+      await AndroidKeepAlive.ensurePermissions(context);
+      if (!mounted) return;
       await Navigator.of(context).push(
         MaterialPageRoute(
           builder: (_) => AgentScreen(
@@ -263,6 +266,8 @@ class _HomeScreenState extends State<HomeScreen> {
           ? WorkspaceMode.chat
           : await workspaceStore.getMode(info.workspaceId);
       final workspace = await widget.provider.attach(info.workspaceId);
+      if (!mounted) return;
+      await AndroidKeepAlive.ensurePermissions(context);
       if (!mounted) return;
       await Navigator.of(context).push(
         MaterialPageRoute(

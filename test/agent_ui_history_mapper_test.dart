@@ -2,6 +2,8 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:vault/agent/agent_service.dart';
 import 'package:vault/agent/agent_system_prompt.dart';
 import 'package:vault/agent/ask_user.dart';
+import 'package:vault/agent/chat_attachment.dart';
+import 'package:vault/sandbox/guest_media_kind.dart';
 import 'package:vault_agent_core/vault_agent_core.dart';
 
 void main() {
@@ -172,5 +174,31 @@ void main() {
     expect(events.single, isA<AgentUiUserMessage>());
     expect((events.single as AgentUiUserMessage).text, '看附件');
     expect((events.single as AgentUiUserMessage).historyIndex, 0);
+  });
+
+  test('uiEventsFromHistory restores attachment metadata', () {
+    final events = AgentService.uiEventsFromHistory([
+      UserMessage(
+        [TextPart('看图')],
+        metadata: {
+          'attachments': [
+            const ChatAttachmentMeta(
+              guestPath: '/root/projects/p1/inbox/shot.png',
+              displayName: 'shot.png',
+              kind: GuestMediaKind.image,
+            ).toJson(),
+          ],
+        },
+      ),
+    ]);
+    expect(events, hasLength(1));
+    final user = events.single as AgentUiUserMessage;
+    expect(user.text, '看图');
+    expect(user.attachments, hasLength(1));
+    expect(
+      user.attachments.single.guestPath,
+      '/root/projects/p1/inbox/shot.png',
+    );
+    expect(user.attachments.single.kind, GuestMediaKind.image);
   });
 }

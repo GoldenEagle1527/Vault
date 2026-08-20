@@ -39,6 +39,22 @@ GuestMediaKind guestMediaKindForPath(String guestPath) {
   return GuestMediaKind.binary;
 }
 
+/// MIME for a guest/host image path, or null if not a known image extension.
+String? imageMimeTypeForPath(String path) {
+  final base = path.replaceAll('\\', '/').split('/').last.toLowerCase();
+  final dot = base.lastIndexOf('.');
+  if (dot <= 0 || dot == base.length - 1) return null;
+  return switch (base.substring(dot + 1)) {
+    'png' => 'image/png',
+    'jpg' || 'jpeg' => 'image/jpeg',
+    'gif' => 'image/gif',
+    'webp' => 'image/webp',
+    'bmp' || 'wbmp' => 'image/bmp',
+    'ico' => 'image/x-icon',
+    _ => null,
+  };
+}
+
 const _imageExt = {
   'png',
   'jpg',

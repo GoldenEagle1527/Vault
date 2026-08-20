@@ -1,10 +1,13 @@
 import 'dart:async';
 import 'dart:convert';
 
+import 'package:desktop_drop/desktop_drop.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
+import 'package:path/path.dart' as p;
+import 'package:super_clipboard/super_clipboard.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:vault/util/host_file_picker.dart';
 import 'package:vault/agent/agent_inbox.dart';
@@ -22,12 +25,16 @@ import 'package:vault/agent/system_notice.dart';
 import 'package:vault/agent/workspace_mode.dart';
 import 'package:vault/agent/workspace_store.dart';
 import 'package:vault/permissions/active_workspace_holder.dart';
+import 'package:vault/sandbox/android_keep_alive.dart';
+import 'package:vault/sandbox/keep_alive.dart';
+import 'package:vault/sandbox/guest_media_kind.dart';
 import 'package:vault/sandbox/sandbox_provider.dart';
 import 'package:vault/screens/file_browser_screen.dart';
 import 'package:vault/screens/settings_screen.dart';
 import 'package:vault/screens/terminal_screen.dart';
 import 'package:vault/widgets/ask_user_panel.dart';
 import 'package:vault/widgets/ask_user_transcript.dart';
+import 'package:vault/widgets/chat_attachment_preview.dart';
 import 'package:vault/widgets/glass.dart';
 import 'package:vault/widgets/new_project_dialog.dart';
 
@@ -72,6 +79,7 @@ class _ChatItem {
     this.duration,
     this.at,
     this.historyIndex,
+    this.attachments = const [],
   });
 
   factory _ChatItem.tool({
@@ -119,11 +127,14 @@ class _ChatItem {
   Duration? duration;
   DateTime? at;
   int? historyIndex;
+  List<ChatAttachmentMeta> attachments;
 }
 
 enum _ChatKind { user, assistant, tool, status, error }
 
-class _AgentScreenState extends State<AgentScreen> {
+enum _InboxCollisionChoice { rename, autoRename, cancel }
+
+class _AgentScreenState extends State<AgentScreen> with WidgetsBindingObserver {
   late final AgentSettingsStore _settingsStore;
   late final ConversationStore _conversationStore;
   late final ProjectStore _projectStore;
@@ -134,6 +145,7 @@ class _AgentScreenState extends State<AgentScreen> {
   final _scrollCtrl = ScrollController();
   final List<_ChatItem> _items = [];
   final List<AgentAttachment> _pendingAttachments = [];
+  bool _dragging = false;
   final _scaffoldKey = GlobalKey<ScaffoldState>();
   AgentService? _service;
   List<ProjectInfo> _projects = const [];
@@ -152,6 +164,7 @@ class _AgentScreenState extends State<AgentScreen> {
   final Set<String> _siteBusy = {};
   Timer? _sitePollTimer;
   bool _siteProbeInFlight = false;
+  bool _leaveConfirmInFlight = false;
   List<AgentSettings> _profiles = const [AgentSettings.defaults];
   String _activeProfileId = AgentSettings.defaultProfileId;
   AgentSettings? _pendingProfile;
@@ -175,12 +188,15 @@ class _AgentScreenState extends State<AgentScreen> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _settingsStore = widget.settingsStore ?? AgentSettingsStore();
     _inputFocus = FocusNode(onKeyEvent: _onInputKeyEvent);
     _conversationStore = widget.conversationStore;
     _projectStore = widget.projectStore;
     _workspaceStore = WorkspaceStore(metaDb: _projectStore.metaDb);
     ActiveWorkspaceHolder.current = widget.workspace;
+    AndroidKeepAlive.bindNotificationActions();
+    AndroidKeepAlive.onStopSiteRequested = _onNotificationStopSite;
     _boot();
   }
 
@@ -251,6 +267,7 @@ class _AgentScreenState extends State<AgentScreen> {
         setState(() => _booting = false);
         _syncSitePoll();
         _scrollToEnd();
+        unawaited(AndroidKeepAlive.ensurePermissions(context));
         if (_projects.isEmpty && !_promptedNewProject) {
           _promptedNewProject = true;
           WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -364,6 +381,7 @@ class _AgentScreenState extends State<AgentScreen> {
     int? promptTokens,
     DateTime? at,
     int? historyIndex,
+    List<ChatAttachmentMeta> attachments = const [],
   }) {
     final notice = systemNoticeForUserText(text);
     if (notice != null) {
@@ -382,6 +400,7 @@ class _AgentScreenState extends State<AgentScreen> {
         promptTokens: promptTokens,
         at: at,
         historyIndex: historyIndex,
+        attachments: attachments,
       ),
     );
   }
@@ -393,12 +412,14 @@ class _AgentScreenState extends State<AgentScreen> {
         :final promptTokens,
         :final at,
         :final historyIndex,
+        :final attachments,
       ):
         _addUserOrSystemNotice(
           text,
           promptTokens: promptTokens,
           at: at,
           historyIndex: historyIndex,
+          attachments: attachments,
         );
       case AgentUiSystemNotice(:final text, :final isError):
         _items.add(
@@ -537,12 +558,14 @@ class _AgentScreenState extends State<AgentScreen> {
         :final promptTokens,
         :final at,
         :final historyIndex,
+        :final attachments,
       ):
         _addUserOrSystemNotice(
           text,
           promptTokens: promptTokens,
           at: at ?? DateTime.now(),
           historyIndex: historyIndex,
+          attachments: attachments,
         );
       case AgentUiSystemNotice(:final text, :final isError):
         _items.add(
@@ -998,6 +1021,30 @@ class _AgentScreenState extends State<AgentScreen> {
     }
   }
 
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      unawaited(_onAppResumed());
+    }
+  }
+
+  Future<void> _onAppResumed() async {
+    if (!mounted || _booting) return;
+    // A probe started before backgrounding may never complete until resume.
+    _siteProbeInFlight = false;
+    try {
+      await _ensureSiteGateway();
+    } catch (_) {
+      // Gateway may already be running; keep last routes.
+    }
+    await _refreshSiteStatus();
+    await _syncKeepAliveNotification();
+    await Future<void>.delayed(const Duration(milliseconds: 800));
+    if (mounted && !_booting) {
+      await _refreshSiteStatus();
+    }
+  }
+
   void _syncSitePoll() {
     if (!mounted) {
       _sitePollTimer?.cancel();
@@ -1030,15 +1077,13 @@ class _AgentScreenState extends State<AgentScreen> {
     }
     _siteProbeInFlight = true;
     try {
-      final probe = await widget.workspace.run(
-        siteProbeShellCommand([for (final pair in pairs) pair.$2.url]),
-        timeout: const Duration(seconds: 15),
-      );
-      final codes = probe.stdout.trim().split(RegExp(r'\s+'));
+      final launcher = ProjectSiteLauncher(widget.workspace);
       final next = <String, bool>{};
-      for (var i = 0; i < pairs.length; i++) {
-        final code = i < codes.length ? codes[i] : '0';
-        next[pairs[i].$1] = isHttpServiceResponding(code);
+      for (final pair in pairs) {
+        next[pair.$1] = await launcher.isProjectSiteUp(
+          projectPath: pair.$1,
+          entry: pair.$2,
+        );
       }
       if (!mounted) return;
       setState(() {
@@ -1046,6 +1091,7 @@ class _AgentScreenState extends State<AgentScreen> {
           ..clear()
           ..addAll(next);
       });
+      unawaited(_syncKeepAliveNotification());
     } catch (_) {
       // Keep last known status.
     } finally {
@@ -1061,6 +1107,11 @@ class _AgentScreenState extends State<AgentScreen> {
       _status = '正在启动「${entry.name}」…';
       _siteBusy.add(projectPath);
     });
+    await AndroidKeepAlive.ensurePermissions(
+      context,
+      forceBatteryPrompt: true,
+    );
+    await VaultKeepAlive.sync(siteName: entry.name);
     var launched = false;
     try {
       final result = await ProjectSiteLauncher(widget.workspace).start(
@@ -1070,7 +1121,10 @@ class _AgentScreenState extends State<AgentScreen> {
       );
       if (!mounted) return;
       launched = result.startedProcess || result.alreadyUp;
-      if (launched) _siteUp[projectPath] = true;
+      if (launched) {
+        _siteUp[projectPath] = true;
+        await VaultKeepAlive.sync(siteName: entry.name);
+      }
       final parts = <String>[
         if (result.alreadyUp) '服务已在运行',
         if (result.startedProcess) '已后台启动',
@@ -1206,24 +1260,372 @@ class _AgentScreenState extends State<AgentScreen> {
     }
   }
 
+  void _showAttachNeedsProject() {
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(const SnackBar(content: Text('请先新建或选择一个项目再添加附件')));
+  }
+
+  bool get _desktopDropEnabled {
+    if (kIsWeb) return false;
+    switch (defaultTargetPlatform) {
+      case TargetPlatform.windows:
+      case TargetPlatform.linux:
+      case TargetPlatform.macOS:
+        return true;
+      default:
+        return false;
+    }
+  }
+
+  Future<Set<String>> _inboxTakenNames() async {
+    final project = _activeProjectPath;
+    if (project == null) return {};
+    try {
+      final entries = await widget.provider.listGuestDirectory(
+        widget.workspace.workspaceId,
+        guestProjectInboxDir(project),
+      );
+      return {
+        for (final e in entries)
+          if (!e.isDirectory) e.name,
+      };
+    } catch (_) {
+      return {};
+    }
+  }
+
+  Future<String?> _resolveInboxCollision(String name, Set<String> taken) async {
+    if (!mounted) return null;
+    final choice = await showDialog<_InboxCollisionChoice>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('文件重名'),
+        content: Text('当前项目 inbox 已有 `$name`'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, _InboxCollisionChoice.cancel),
+            child: const Text('取消'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, _InboxCollisionChoice.rename),
+            child: const Text('重命名'),
+          ),
+          FilledButton(
+            onPressed: () =>
+                Navigator.pop(ctx, _InboxCollisionChoice.autoRename),
+            child: const Text('自动重命名'),
+          ),
+        ],
+      ),
+    );
+    if (!mounted) return null;
+    switch (choice) {
+      case _InboxCollisionChoice.rename:
+        final renamed = await _promptInboxFileName(name);
+        if (renamed == null) return null;
+        final sanitized = sanitizeInboxFileName(renamed);
+        if (taken.contains(sanitized)) {
+          return _resolveInboxCollision(sanitized, taken);
+        }
+        return sanitized;
+      case _InboxCollisionChoice.autoRename:
+        return allocateInboxFileName(name, taken);
+      case _InboxCollisionChoice.cancel:
+      case null:
+        return null;
+    }
+  }
+
+  Future<String?> _promptInboxFileName(String initial) async {
+    final ctrl = TextEditingController(text: initial);
+    final name = await showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('重命名附件'),
+        content: TextField(
+          controller: ctrl,
+          autofocus: true,
+          decoration: const InputDecoration(hintText: '新文件名'),
+          onSubmitted: (v) => Navigator.pop(ctx, v),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(ctx, ctrl.text),
+            child: const Text('确定'),
+          ),
+        ],
+      ),
+    );
+    ctrl.dispose();
+    final trimmed = name?.trim() ?? '';
+    if (trimmed.isEmpty) return null;
+    return trimmed;
+  }
+
+  Future<void> _offerAttachments(List<AgentAttachment> incoming) async {
+    if (incoming.isEmpty) return;
+    if (_activeProjectPath == null) {
+      _showAttachNeedsProject();
+      return;
+    }
+    final taken = {
+      ..._pendingAttachments.map((a) => sanitizeInboxFileName(a.displayName)),
+      ...await _inboxTakenNames(),
+    };
+    final accepted = <AgentAttachment>[];
+    for (final a in incoming) {
+      var name = sanitizeInboxFileName(a.displayName);
+      if (taken.contains(name)) {
+        final resolved = await _resolveInboxCollision(name, taken);
+        if (resolved == null) continue;
+        name = resolved;
+      }
+      taken.add(name);
+      accepted.add(
+        AgentAttachment(
+          hostPath: a.hostPath,
+          bytes: a.bytes,
+          displayName: name,
+          mimeType: a.mimeType,
+          source: a.source,
+        ),
+      );
+    }
+    if (!mounted || accepted.isEmpty) return;
+    setState(() => _pendingAttachments.addAll(accepted));
+  }
+
   Future<void> _pickFiles() async {
     if (_running) return;
-    // file_picker 11 + FileType.image → ACTION_GET_CONTENT DocumentsUI
-    // (最近/图片/音频/文档), matching raincurtain.
-    final result = await pickHostFilesForUi(
+    if (_activeProjectPath == null) {
+      _showAttachNeedsProject();
+      return;
+    }
+    final result = await pickHostFilesForAgent(
       allowMultiple: true,
       withData: false,
     );
     if (result == null || !mounted) return;
-    setState(() {
-      for (final f in result.files) {
-        final path = f.path;
-        if (path == null || path.isEmpty) continue;
-        _pendingAttachments.add(
-          AgentAttachment(hostPath: path, displayName: f.name),
-        );
+    final next = <AgentAttachment>[];
+    for (final f in result.files) {
+      final path = f.path;
+      if (path == null || path.isEmpty) continue;
+      next.add(
+        AgentAttachment(
+          hostPath: path,
+          displayName: f.name,
+          source: AgentAttachmentSource.picked,
+        ),
+      );
+    }
+    await _offerAttachments(next);
+  }
+
+  Future<void> _onDropDone(DropDoneDetails details) async {
+    setState(() => _dragging = false);
+    if (_running) return;
+    final next = <AgentAttachment>[];
+    for (final item in details.files) {
+      if (item.path.isEmpty) continue;
+      final name = item.name.trim().isEmpty
+          ? p.basename(item.path)
+          : item.name.trim();
+      next.add(
+        AgentAttachment(
+          hostPath: item.path,
+          displayName: name,
+          source: AgentAttachmentSource.dropped,
+        ),
+      );
+    }
+    await _offerAttachments(next);
+  }
+
+  Future<void> _handlePaste() async {
+    if (_running) return;
+    if (_activeProjectPath == null) {
+      await _pastePlainText();
+      return;
+    }
+    final clipboard = SystemClipboard.instance;
+    if (clipboard != null) {
+      try {
+        final reader = await clipboard.read();
+        final fromClip = await _attachmentsFromClipboard(reader);
+        if (fromClip.isNotEmpty) {
+          await _offerAttachments(fromClip);
+          return;
+        }
+      } catch (_) {}
+    }
+    await _pastePlainText();
+  }
+
+  Future<List<AgentAttachment>> _attachmentsFromClipboard(
+    ClipboardReader reader,
+  ) async {
+    final out = <AgentAttachment>[];
+    const imageFormats = <SimpleFileFormat>[
+      Formats.png,
+      Formats.jpeg,
+      Formats.gif,
+      Formats.webp,
+      Formats.bmp,
+    ];
+    for (final format in imageFormats) {
+      if (!reader.canProvide(format)) continue;
+      final bytes = await _readClipboardFile(reader, format);
+      if (bytes == null || bytes.isEmpty) continue;
+      final ext = switch (format) {
+        Formats.jpeg => 'jpg',
+        Formats.gif => 'gif',
+        Formats.webp => 'webp',
+        Formats.bmp => 'bmp',
+        _ => 'png',
+      };
+      out.add(
+        AgentAttachment(
+          bytes: bytes,
+          displayName: newPasteImageFileName(extension: ext),
+          mimeType: 'image/$ext',
+          source: AgentAttachmentSource.pasted,
+        ),
+      );
+      return out;
+    }
+
+    if (reader.canProvide(Formats.fileUri)) {
+      final uri = await reader.readValue(Formats.fileUri);
+      if (uri != null && uri.isScheme('file')) {
+        final path = uri.toFilePath();
+        if (path.isNotEmpty) {
+          out.add(
+            AgentAttachment(
+              hostPath: path,
+              displayName: p.basename(path),
+              source: AgentAttachmentSource.pasted,
+            ),
+          );
+        }
       }
-    });
+    }
+    return out;
+  }
+
+  Future<Uint8List?> _readClipboardFile(
+    ClipboardReader reader,
+    FileFormat format,
+  ) {
+    final completer = Completer<Uint8List?>();
+    reader.getFile(
+      format,
+      (file) async {
+        try {
+          final bytes = await file.readAll();
+          if (!completer.isCompleted) completer.complete(bytes);
+        } catch (e, st) {
+          if (!completer.isCompleted) completer.completeError(e, st);
+        }
+      },
+      onError: (error) {
+        if (!completer.isCompleted) completer.complete(null);
+      },
+    );
+    return completer.future.timeout(
+      const Duration(seconds: 8),
+      onTimeout: () => null,
+    );
+  }
+
+  Future<void> _pastePlainText() async {
+    final data = await Clipboard.getData(Clipboard.kTextPlain);
+    final text = data?.text;
+    if (text == null || text.isEmpty || !mounted) return;
+    final value = _inputCtrl.value;
+    final sel = value.selection;
+    final start = sel.isValid ? sel.start : value.text.length;
+    final end = sel.isValid ? sel.end : value.text.length;
+    final next = value.text.replaceRange(start, end, text);
+    _inputCtrl.value = TextEditingValue(
+      text: next,
+      selection: TextSelection.collapsed(offset: start + text.length),
+    );
+  }
+
+  List<(String, ProjectUrlEntry)> get _runningSitePairs => [
+    for (final p in _projects)
+      if (p.site != null && _siteUp[p.path] == true) (p.path, p.site!),
+  ];
+
+  Iterable<String> get _runningSiteNames =>
+      _runningSitePairs.map((e) => e.$2.name);
+
+  bool get _leaveNeedsConfirm => shouldConfirmLeaveWorkspace(
+    agentRunning: _running,
+    runningSiteNames: _runningSiteNames,
+  );
+
+  Future<void> _syncKeepAliveNotification() async {
+    final names = _runningSiteNames.toList();
+    await VaultKeepAlive.sync(siteName: names.isEmpty ? null : names.first);
+  }
+
+  void _onNotificationStopSite() {
+    if (!mounted) return;
+    unawaited(_stopAllRunningSites());
+  }
+
+  Future<void> _stopAllRunningSites() async {
+    final pairs = _runningSitePairs.toList();
+    for (final pair in pairs) {
+      if (!mounted) return;
+      await _stopSite(pair.$2, projectPath: pair.$1);
+    }
+  }
+
+  Future<bool> _confirmLeaveWorkspace() async {
+    if (!_leaveNeedsConfirm) return true;
+    if (_leaveConfirmInFlight) return false;
+    _leaveConfirmInFlight = true;
+    try {
+      if (!mounted) return false;
+      final ok = await showDialog<bool>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          title: const Text('离开工作区？'),
+          content: Text(
+            leaveWorkspaceConfirmMessage(
+              agentRunning: _running,
+              runningSiteNames: _runningSiteNames,
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx, false),
+              child: const Text('取消'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(ctx, true),
+              child: Text(
+                _runningSitePairs.isEmpty ? '离开并取消' : '停止站点并离开',
+              ),
+            ),
+          ],
+        ),
+      );
+      if (ok != true) return false;
+      if (_runningSitePairs.isNotEmpty) {
+        await _stopAllRunningSites();
+      }
+      return true;
+    } finally {
+      _leaveConfirmInFlight = false;
+    }
   }
 
   Future<bool> _confirmLeaveRunning() async {
@@ -1606,6 +2008,8 @@ class _AgentScreenState extends State<AgentScreen> {
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    AndroidKeepAlive.onStopSiteRequested = null;
     if (identical(ActiveWorkspaceHolder.current, widget.workspace)) {
       ActiveWorkspaceHolder.current = null;
     }
@@ -1744,14 +2148,10 @@ class _AgentScreenState extends State<AgentScreen> {
             ),
           ),
           _headerIconButton(
-            tooltip: site == null
-                ? '尚未登记前端入口'
-                : (up ? '打开站点' : '站点未启动'),
+            tooltip: site == null ? '尚未登记前端入口' : (up ? '打开站点' : '站点未启动'),
             icon: Icons.link,
             color: up ? scheme.primary : scheme.onSurfaceVariant,
-            onPressed: up
-                ? () => unawaited(_openSiteUrl(project.path))
-                : null,
+            onPressed: up ? () => unawaited(_openSiteUrl(project.path)) : null,
           ),
           _headerIconButton(
             tooltip: '终端',
@@ -1886,17 +2286,14 @@ class _AgentScreenState extends State<AgentScreen> {
                   padding: const EdgeInsets.fromLTRB(36, 8, 16, 8),
                   child: Text(
                     '暂无会话',
-                    style: Theme.of(context).textTheme.bodySmall
-                        ?.copyWith(color: scheme.onSurfaceVariant),
+                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                      color: scheme.onSurfaceVariant,
+                    ),
                   ),
                 )
               else
                 for (final node in ConversationStore.treeOrder(_conversations))
-                  _buildConversationTile(
-                    scheme,
-                    node.info,
-                    depth: node.depth,
-                  ),
+                  _buildConversationTile(scheme, node.info, depth: node.depth),
           ],
       ],
     );
@@ -1946,192 +2343,253 @@ class _AgentScreenState extends State<AgentScreen> {
   }
 
   Widget _buildChatColumn(ColorScheme scheme, bool hasChatContent) {
-    return Column(
-      children: [
-        if (_status != null)
-          Padding(
-            padding: const EdgeInsets.fromLTRB(12, 0, 12, 8),
-            child: GlassPanel(
-              borderRadius: 16,
-              tone: GlassTone.regular,
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-              child: SizedBox(width: double.infinity, child: Text(_status!)),
-            ),
-          ),
-        Expanded(
-          child: Align(
-            alignment: Alignment.topCenter,
-            child: ConstrainedBox(
-              constraints: const BoxConstraints(maxWidth: 840),
-              child: _activeProjectPath == null
-                  ? _EmptyProject(onCreate: _createProject)
-                  : !hasChatContent
-                  ? _EmptyChat(
-                      mode: widget.mode,
-                      onPrompt: (p) {
-                        _inputCtrl.text = p;
-                        _inputCtrl.selection = TextSelection.collapsed(
-                          offset: p.length,
-                        );
-                      },
-                    )
-                  : ListView.builder(
-                      controller: _scrollCtrl,
-                      padding: const EdgeInsets.fromLTRB(16, 16, 16, 24),
-                      itemCount: _items.length,
-                      itemBuilder: (context, i) {
-                        final item = _items[i];
-                        return KeyedSubtree(
-                          key: _chatItemKey(item, i),
-                          child: _ChatBubble(
-                            item: item,
-                            running: _running,
-                            onCopy: () {
-                              if (item.kind == _ChatKind.tool) {
-                                unawaited(
-                                  _copyText(
-                                    [
-                                      item.toolArguments ?? item.text,
-                                      if (item.toolResult != null)
-                                        item.toolResult!,
-                                    ].join('\n\n'),
-                                    done: '已复制工具输出',
-                                  ),
-                                );
-                              } else {
-                                unawaited(_copyText(item.text));
-                              }
-                            },
-                            onEdit:
-                                item.kind == _ChatKind.user &&
-                                    item.historyIndex != null
-                                ? () => unawaited(_editUserMessage(item))
-                                : null,
-                            onReselectAskUser:
-                                item.kind == _ChatKind.tool &&
-                                    item.toolName == kAskUserToolName
-                                ? () => unawaited(_reselectAskUser(item))
-                                : null,
-                            branchSwitcher: _branchSwitcher(item.historyIndex),
-                          ),
-                        );
-                      },
+    final dropEnabled =
+        _desktopDropEnabled &&
+        !_running &&
+        _activeProjectPath != null &&
+        (ModalRoute.of(context)?.isCurrent ?? true);
+
+    return DropTarget(
+      enable: dropEnabled,
+      onDragEntered: (_) => setState(() => _dragging = true),
+      onDragExited: (_) => setState(() => _dragging = false),
+      onDragDone: (details) => unawaited(_onDropDone(details)),
+      child: Stack(
+        children: [
+          Column(
+            children: [
+              if (_status != null)
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(12, 0, 12, 8),
+                  child: GlassPanel(
+                    borderRadius: 16,
+                    tone: GlassTone.regular,
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 16,
+                      vertical: 10,
                     ),
-            ),
-          ),
-        ),
-        if (_pendingAttachments.isNotEmpty)
-          SizedBox(
-            height: 44,
-            child: Align(
-              alignment: Alignment.center,
-              child: ConstrainedBox(
-                constraints: const BoxConstraints(maxWidth: 840),
-                child: ListView.separated(
-                  scrollDirection: Axis.horizontal,
-                  padding: const EdgeInsets.symmetric(horizontal: 16),
-                  itemCount: _pendingAttachments.length,
-                  separatorBuilder: (_, _) => const SizedBox(width: 6),
-                  itemBuilder: (context, i) {
-                    final a = _pendingAttachments[i];
-                    return InputChip(
-                      label: Text(a.displayName),
-                      onDeleted: _running
-                          ? null
-                          : () =>
-                                setState(() => _pendingAttachments.removeAt(i)),
-                    );
-                  },
+                    child: SizedBox(
+                      width: double.infinity,
+                      child: Text(_status!),
+                    ),
+                  ),
+                ),
+              Expanded(
+                child: Align(
+                  alignment: Alignment.topCenter,
+                  child: ConstrainedBox(
+                    constraints: const BoxConstraints(maxWidth: 840),
+                    child: _activeProjectPath == null
+                        ? _EmptyProject(onCreate: _createProject)
+                        : !hasChatContent
+                        ? _EmptyChat(
+                            mode: widget.mode,
+                            onPrompt: (p) {
+                              _inputCtrl.text = p;
+                              _inputCtrl.selection = TextSelection.collapsed(
+                                offset: p.length,
+                              );
+                            },
+                          )
+                        : ListView.builder(
+                            controller: _scrollCtrl,
+                            padding: const EdgeInsets.fromLTRB(16, 16, 16, 24),
+                            itemCount: _items.length,
+                            itemBuilder: (context, i) {
+                              final item = _items[i];
+                              return KeyedSubtree(
+                                key: _chatItemKey(item, i),
+                                child: _ChatBubble(
+                                  item: item,
+                                  running: _running,
+                                  provider: widget.provider,
+                                  workspaceId: widget.workspace.workspaceId,
+                                  onCopy:
+                                      item.kind == _ChatKind.user ||
+                                          item.kind == _ChatKind.assistant
+                                      ? () => unawaited(_copyText(item.text))
+                                      : null,
+                                  onEdit:
+                                      item.kind == _ChatKind.user &&
+                                          item.historyIndex != null
+                                      ? () => unawaited(_editUserMessage(item))
+                                      : null,
+                                  onReselectAskUser:
+                                      item.kind == _ChatKind.tool &&
+                                          item.toolName == kAskUserToolName
+                                      ? () => unawaited(_reselectAskUser(item))
+                                      : null,
+                                  branchSwitcher: _branchSwitcher(
+                                    item.historyIndex,
+                                  ),
+                                ),
+                              );
+                            },
+                          ),
+                  ),
                 ),
               ),
-            ),
-          ),
-        SafeArea(
-          top: false,
-          child: Padding(
-            padding: const EdgeInsets.fromLTRB(12, 4, 12, 10),
-            child: Align(
-              alignment: Alignment.center,
-              child: ConstrainedBox(
-                constraints: const BoxConstraints(maxWidth: 840),
-                child: Column(
-                  children: [
-                    if (_askUserHost?.pending.value != null) ...[
-                      AskUserPanel(
-                        questionnaire:
-                            _askUserHost!.pending.value!.questionnaire,
-                        onSubmit: (answers) {
-                          _askUserHost?.pending.value?.complete(
-                            AskUserSubmission.ok(answers),
+              if (_pendingAttachments.isNotEmpty)
+                SizedBox(
+                  height: 104,
+                  child: Align(
+                    alignment: Alignment.center,
+                    child: ConstrainedBox(
+                      constraints: const BoxConstraints(maxWidth: 840),
+                      child: ListView.separated(
+                        scrollDirection: Axis.horizontal,
+                        padding: const EdgeInsets.fromLTRB(16, 8, 16, 4),
+                        itemCount: _pendingAttachments.length,
+                        separatorBuilder: (_, _) => const SizedBox(width: 10),
+                        itemBuilder: (context, i) {
+                          final a = _pendingAttachments[i];
+                          return ChatAttachmentTile(
+                            displayName: a.displayName,
+                            kind: guestMediaKindForPath(a.displayName),
+                            bytes: a.bytes,
+                            hostPath: a.hostPath,
+                            onRemove: _running
+                                ? null
+                                : () => setState(
+                                    () => _pendingAttachments.removeAt(i),
+                                  ),
                           );
                         },
                       ),
-                      const SizedBox(height: 8),
-                    ],
-                    GlassPanel(
-                      borderRadius: 28,
-                      tone: GlassTone.strong,
-                      padding: const EdgeInsets.fromLTRB(4, 4, 4, 4),
-                      child: Row(
-                        crossAxisAlignment: CrossAxisAlignment.end,
+                    ),
+                  ),
+                ),
+              SafeArea(
+                top: false,
+                child: Padding(
+                  padding: const EdgeInsets.fromLTRB(12, 4, 12, 10),
+                  child: Align(
+                    alignment: Alignment.center,
+                    child: ConstrainedBox(
+                      constraints: const BoxConstraints(maxWidth: 840),
+                      child: Column(
                         children: [
-                          IconButton(
-                            tooltip: '添加文件',
-                            onPressed: _running ? null : _pickFiles,
-                            icon: const Icon(Icons.attach_file),
-                          ),
-                          Expanded(
-                            child: TextField(
-                              controller: _inputCtrl,
-                              focusNode: _inputFocus,
-                              minLines: 1,
-                              maxLines: 5,
-                              enabled: !_running,
-                              textInputAction: TextInputAction.newline,
-                              keyboardType: TextInputType.multiline,
-                              decoration: const InputDecoration(
-                                hintText: '继续描述你的需求…',
-                                border: InputBorder.none,
-                                enabledBorder: InputBorder.none,
-                                focusedBorder: InputBorder.none,
-                                filled: false,
-                                contentPadding: EdgeInsets.symmetric(
-                                  horizontal: 4,
-                                  vertical: 12,
+                          if (_askUserHost?.pending.value != null) ...[
+                            AskUserPanel(
+                              questionnaire:
+                                  _askUserHost!.pending.value!.questionnaire,
+                              onSubmit: (answers) {
+                                _askUserHost?.pending.value?.complete(
+                                  AskUserSubmission.ok(answers),
+                                );
+                              },
+                            ),
+                            const SizedBox(height: 8),
+                          ],
+                          GlassPanel(
+                            borderRadius: 28,
+                            tone: GlassTone.strong,
+                            padding: const EdgeInsets.fromLTRB(4, 4, 4, 4),
+                            child: Row(
+                              crossAxisAlignment: CrossAxisAlignment.end,
+                              children: [
+                                IconButton(
+                                  tooltip: '添加文件',
+                                  onPressed: _running ? null : _pickFiles,
+                                  icon: const Icon(Icons.attach_file),
                                 ),
-                              ),
+                                Expanded(
+                                  child: Actions(
+                                    actions: {
+                                      PasteTextIntent:
+                                          CallbackAction<PasteTextIntent>(
+                                            onInvoke: (_) {
+                                              unawaited(_handlePaste());
+                                              return null;
+                                            },
+                                          ),
+                                    },
+                                    child: TextField(
+                                      controller: _inputCtrl,
+                                      focusNode: _inputFocus,
+                                      minLines: 1,
+                                      maxLines: 5,
+                                      enabled: !_running,
+                                      textInputAction: TextInputAction.newline,
+                                      keyboardType: TextInputType.multiline,
+                                      decoration: const InputDecoration(
+                                        hintText: '继续描述你的需求…',
+                                        border: InputBorder.none,
+                                        enabledBorder: InputBorder.none,
+                                        focusedBorder: InputBorder.none,
+                                        filled: false,
+                                        contentPadding: EdgeInsets.symmetric(
+                                          horizontal: 4,
+                                          vertical: 12,
+                                        ),
+                                      ),
+                                    ),
+                                  ),
+                                ),
+                                _buildProfileSwitcher(scheme),
+                                Padding(
+                                  padding: const EdgeInsets.only(
+                                    right: 4,
+                                    bottom: 2,
+                                  ),
+                                  child: IconButton.filled(
+                                    tooltip: _running ? '停止' : '发送',
+                                    onPressed: _running ? _cancel : _send,
+                                    icon: Icon(
+                                      _running
+                                          ? Icons.stop_rounded
+                                          : Icons.send,
+                                    ),
+                                  ),
+                                ),
+                              ],
                             ),
                           ),
-                          _buildProfileSwitcher(scheme),
-                          Padding(
-                            padding: const EdgeInsets.only(right: 4, bottom: 2),
-                            child: IconButton.filled(
-                              tooltip: _running ? '停止' : '发送',
-                              onPressed: _running ? _cancel : _send,
-                              icon: Icon(
-                                _running ? Icons.stop_rounded : Icons.send,
-                              ),
-                            ),
+                          const SizedBox(height: 6),
+                          Text(
+                            desktopEnterHint(defaultTargetPlatform)
+                                ? '回车发送 · Shift+回车换行。重要操作执行前会请求确认。'
+                                : '重要操作执行前会请求确认。',
+                            style: Theme.of(context).textTheme.labelSmall
+                                ?.copyWith(color: scheme.onSurfaceVariant),
                           ),
                         ],
                       ),
                     ),
-                    const SizedBox(height: 6),
-                    Text(
-                      desktopEnterHint(defaultTargetPlatform)
-                          ? '回车发送 · Shift+回车换行。重要操作执行前会请求确认。'
-                          : '重要操作执行前会请求确认。',
-                      style: Theme.of(context).textTheme.labelSmall?.copyWith(
-                        color: scheme.onSurfaceVariant,
+                  ),
+                ),
+              ),
+            ],
+          ),
+          if (_dragging)
+            Positioned.fill(
+              child: IgnorePointer(
+                child: DecoratedBox(
+                  decoration: BoxDecoration(
+                    color: scheme.primary.withValues(alpha: 0.12),
+                    border: Border.all(color: scheme.primary, width: 2),
+                  ),
+                  child: Center(
+                    child: Material(
+                      color: scheme.surface,
+                      borderRadius: BorderRadius.circular(12),
+                      child: Padding(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 20,
+                          vertical: 14,
+                        ),
+                        child: Text(
+                          '释放以添加到待发送附件',
+                          style: Theme.of(context).textTheme.titleMedium,
+                        ),
                       ),
                     ),
-                  ],
+                  ),
                 ),
               ),
             ),
-          ),
-        ),
-      ],
+        ],
+      ),
     );
   }
 
@@ -2219,24 +2677,33 @@ class _AgentScreenState extends State<AgentScreen> {
       body: chatBody,
     );
 
-    if (!wide) {
-      return AmbientBackdrop(child: scaffold);
-    }
-
-    return AmbientBackdrop(
-      child: Row(
-        children: [
-          SizedBox(
-            width: 300,
-            child: GlassPanel(
-              borderRadius: 0,
-              tone: GlassTone.strong,
-              child: _buildNavPanel(showClose: false),
+    final child = !wide
+        ? AmbientBackdrop(child: scaffold)
+        : AmbientBackdrop(
+            child: Row(
+              children: [
+                SizedBox(
+                  width: 300,
+                  child: GlassPanel(
+                    borderRadius: 0,
+                    tone: GlassTone.strong,
+                    child: _buildNavPanel(showClose: false),
+                  ),
+                ),
+                Expanded(child: scaffold),
+              ],
             ),
-          ),
-          Expanded(child: scaffold),
-        ],
-      ),
+          );
+
+    return PopScope(
+      canPop: !_leaveNeedsConfirm,
+      onPopInvokedWithResult: (didPop, _) async {
+        if (didPop) return;
+        final leave = await _confirmLeaveWorkspace();
+        if (!leave || !mounted) return;
+        Navigator.of(this.context).pop();
+      },
+      child: child,
     );
   }
 }
@@ -2430,6 +2897,8 @@ class _ChatBubble extends StatelessWidget {
   const _ChatBubble({
     required this.item,
     this.running = false,
+    this.provider,
+    this.workspaceId,
     this.onCopy,
     this.onEdit,
     this.onReselectAskUser,
@@ -2438,6 +2907,8 @@ class _ChatBubble extends StatelessWidget {
 
   final _ChatItem item;
   final bool running;
+  final SandboxProvider? provider;
+  final String? workspaceId;
   final VoidCallback? onCopy;
   final VoidCallback? onEdit;
   final VoidCallback? onReselectAskUser;
@@ -2480,19 +2951,7 @@ class _ChatBubble extends StatelessWidget {
             constraints: BoxConstraints(
               maxWidth: MediaQuery.sizeOf(context).width * 0.92,
             ),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                _ToolCallCard(item: item),
-                if (onCopy != null)
-                  IconButton(
-                    tooltip: '复制',
-                    onPressed: onCopy,
-                    icon: const Icon(Icons.copy_outlined, size: 16),
-                    visualDensity: VisualDensity.compact,
-                  ),
-              ],
-            ),
+            child: _ToolCallCard(item: item),
           ),
         ),
       );
@@ -2532,7 +2991,35 @@ class _ChatBubble extends StatelessWidget {
     };
 
     final contentColor = fg;
-    final Widget body = _ChatMarkdown(data: item.text, color: contentColor);
+    final showText =
+        item.text.trim().isNotEmpty &&
+        !(item.attachments.isNotEmpty && item.text.trim() == '（仅附件）');
+    final Widget body = Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        if (item.attachments.isNotEmpty)
+          Padding(
+            padding: EdgeInsets.only(bottom: showText ? 8 : 0),
+            child: Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: [
+                for (final a in item.attachments)
+                  ChatAttachmentTile(
+                    displayName: a.displayName,
+                    kind: a.kind,
+                    guestPath: a.guestPath,
+                    provider: provider,
+                    workspaceId: workspaceId,
+                    size: 88,
+                  ),
+              ],
+            ),
+          ),
+        if (showText) _ChatMarkdown(data: item.text, color: contentColor),
+      ],
+    );
 
     final bubble = solid
         ? DecoratedBox(

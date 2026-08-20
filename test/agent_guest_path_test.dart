@@ -28,6 +28,16 @@ void main() {
     expect(sanitizeInboxFileName('foo/bar.png'), 'bar.png');
   });
 
+  test('project inbox helpers stay under the project', () {
+    expect(guestProjectInboxDir('p1'), '/root/projects/p1/inbox');
+    expect(
+      projectInboxGuestPath('p1', 'a.png'),
+      '/root/projects/p1/inbox/a.png',
+    );
+    expect(allocateInboxFileName('a.png', {'a.png'}), 'a-2.png');
+    expect(allocateInboxFileName('a.png', {'a.png', 'a-2.png'}), 'a-3.png');
+  });
+
   test('system prompt pins Alpine workspace + inbox', () {
     final prompts = vaultAgentSystemPrompts(
       workspaceId: 'abc123',
@@ -41,6 +51,7 @@ void main() {
     expect(joined, contains('用户当前在 **电脑**'));
     expect(joined, contains('Python 3.12'));
     expect(joined, contains('python3'));
+    expect(joined, contains('read（读文本或图片'));
   });
 
   test('system prompt includes mobile host device', () {
@@ -53,6 +64,18 @@ void main() {
     expect(joined, contains('proot'));
     expect(joined, contains('触屏'));
     expect(joined, contains('不是用户的 Android 主机'));
+  });
+
+  test('system prompt with project uses project inbox', () {
+    final joined = vaultAgentSystemPrompts(
+      workspaceId: 'abc123',
+      projectPath: '20260101',
+    ).join('\n');
+    expect(joined, contains('/root/projects/20260101/inbox'));
+    expect(
+      joined,
+      isNot(contains('用户通过 App 附带的文件会写入当前项目的 inbox/（/root/inbox）')),
+    );
   });
 
   test('attachment context lists guest paths', () {

@@ -824,6 +824,30 @@ class WslWorkspace implements SandboxWorkspace {
     }
   }
 
+  @override
+  Future<Uint8List?> readGuestFile(String guestAbsolutePath) async {
+    final guestPath = assertGuestPathUnderHome(guestAbsolutePath);
+    try {
+      final file = File(_wslUncPath(guestPath));
+      if (await file.exists()) {
+        return Uint8List.fromList(await file.readAsBytes());
+      }
+    } catch (_) {
+      // Fall through to wsl base64.
+    }
+    final result = await run(
+      'if [ -f ${shellSingleQuote(guestPath)} ]; then base64 ${shellSingleQuote(guestPath)}; else exit 2; fi',
+    );
+    if (result.exitCode == 2 || result.exitCode != 0) return null;
+    try {
+      final b64 = result.stdout.replaceAll(RegExp(r'\s+'), '');
+      if (b64.isEmpty) return null;
+      return Uint8List.fromList(base64Decode(b64));
+    } catch (_) {
+      return null;
+    }
+  }
+
   String _wslUncPath(String guestAbsolutePath) {
     final relative = guestAbsolutePath.startsWith('/')
         ? guestAbsolutePath.substring(1)

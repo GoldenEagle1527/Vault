@@ -2,10 +2,7 @@ import 'package:file_picker/file_picker.dart';
 
 /// Resolved [FilePicker.pickFiles] args after MIME → [FileType] mapping.
 class HostFilePickerSelection {
-  const HostFilePickerSelection({
-    required this.type,
-    this.allowedExtensions,
-  });
+  const HostFilePickerSelection({required this.type, this.allowedExtensions});
 
   final FileType type;
   final List<String>? allowedExtensions;
@@ -20,8 +17,13 @@ class HostFilePickerSelection {
 HostFilePickerSelection resolveHostFilePickerType({
   Iterable<String>? mimeTypes,
   List<String>? allowedExtensions,
+  bool unrestricted = false,
 }) {
-  final mimes = mimeTypes
+  if (unrestricted) {
+    return const HostFilePickerSelection(type: FileType.any);
+  }
+  final mimes =
+      mimeTypes
           ?.map((m) => m.trim().toLowerCase())
           .where((m) => m.isNotEmpty)
           .toList() ??
@@ -60,7 +62,7 @@ HostFilePickerSelection resolveHostFilePickerType({
 
 /// Parse `showOpenFilePicker({ types: [{ accept: { mime: ['.ext', ...] } }] })`.
 ({List<String> mimeTypes, List<String> allowedExtensions})
-    parseOpenFilePickerTypes(Iterable<dynamic>? types) {
+parseOpenFilePickerTypes(Iterable<dynamic>? types) {
   final mimeTypes = <String>[];
   final extensions = <String>[];
   if (types == null) {
@@ -92,19 +94,20 @@ Future<FilePickerResult?> pickHostFiles({
   Iterable<String>? mimeTypes,
   List<String>? allowedExtensions,
   Iterable<dynamic>? openFilePickerTypes,
+  bool unrestricted = false,
 }) async {
   var mimes = mimeTypes?.toList();
   var exts = allowedExtensions;
   if (openFilePickerTypes != null) {
     final parsed = parseOpenFilePickerTypes(openFilePickerTypes);
     mimes ??= parsed.mimeTypes.isEmpty ? null : parsed.mimeTypes;
-    exts ??=
-        parsed.allowedExtensions.isEmpty ? null : parsed.allowedExtensions;
+    exts ??= parsed.allowedExtensions.isEmpty ? null : parsed.allowedExtensions;
   }
 
   final selection = resolveHostFilePickerType(
     mimeTypes: mimes,
     allowedExtensions: exts,
+    unrestricted: unrestricted,
   );
   // Same API surface as raincurtain (`FilePicker.pickFiles`).
   return FilePicker.pickFiles(
@@ -127,5 +130,17 @@ Future<FilePickerResult?> pickHostFilesForUi({
     // Explicit image/* so mapping stays FileType.image even if empty-set
     // semantics change.
     mimeTypes: const ['image/*'],
+  );
+}
+
+/// Agent composer: any file type (code, docs, images, …).
+Future<FilePickerResult?> pickHostFilesForAgent({
+  bool allowMultiple = true,
+  bool withData = false,
+}) {
+  return pickHostFiles(
+    allowMultiple: allowMultiple,
+    withData: withData,
+    unrestricted: true,
   );
 }

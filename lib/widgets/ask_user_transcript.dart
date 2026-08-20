@@ -1,9 +1,8 @@
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 import 'package:vault/agent/ask_user.dart';
 import 'package:vault/widgets/glass.dart';
 
-/// Completed `ask_user` turn: questions, answers, raw JSON, copy / reselect.
+/// Completed `ask_user` turn: questions, answers, raw JSON, reselect.
 class AskUserTranscript extends StatefulWidget {
   const AskUserTranscript({
     super.key,
@@ -32,30 +31,6 @@ class _AskUserTranscriptState extends State<AskUserTranscript> {
     final raw = widget.result;
     if (raw == null || raw.isEmpty) return const [];
     return AskUserAnswer.tryParseResult(raw);
-  }
-
-  String get _copyText {
-    final q = _questionnaire;
-    if (q == null) return widget.arguments;
-    return formatAskUserTranscript(questionnaire: q, answers: _answers);
-  }
-
-  Future<void> _copy({required bool raw}) async {
-    final text = raw
-        ? [
-            widget.arguments,
-            if (widget.result != null && widget.result!.isNotEmpty)
-              widget.result!,
-          ].join('\n\n')
-        : _copyText;
-    await Clipboard.setData(ClipboardData(text: text));
-    if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text(raw ? '已复制原始数据' : '已复制提问内容'),
-        duration: const Duration(seconds: 1),
-      ),
-    );
   }
 
   @override
@@ -88,12 +63,6 @@ class _AskUserTranscriptState extends State<AskUserTranscript> {
                           fontWeight: FontWeight.w600,
                         ),
                       ),
-                    ),
-                    IconButton(
-                      tooltip: '复制',
-                      onPressed: () => _copy(raw: false),
-                      icon: const Icon(Icons.copy_outlined, size: 18),
-                      visualDensity: VisualDensity.compact,
                     ),
                     if (widget.onReselect != null)
                       TextButton(
@@ -138,12 +107,6 @@ class _AskUserTranscriptState extends State<AskUserTranscript> {
                         style: Theme.of(context).textTheme.labelMedium
                             ?.copyWith(color: scheme.onSurfaceVariant),
                       ),
-                      const Spacer(),
-                      if (_showRaw)
-                        TextButton(
-                          onPressed: () => _copy(raw: true),
-                          child: const Text('复制原始数据'),
-                        ),
                     ],
                   ),
                 ),

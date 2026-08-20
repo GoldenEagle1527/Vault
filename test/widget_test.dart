@@ -21,7 +21,10 @@ class _FakeProvider implements SandboxProvider {
   }
 
   @override
-  Future<SandboxWorkspace> create(String workspaceId) {
+  Future<SandboxWorkspace> create(
+    String workspaceId, {
+    WorkspaceInitProgressCallback? onProgress,
+  }) {
     throw UnimplementedError();
   }
 
@@ -70,6 +73,13 @@ class _FakeProvider implements SandboxProvider {
 
   @override
   Future<void> stopRunningGuests() async {}
+
+  @override
+  Future<List<GuestFsEntry>> listGuestDirectory(
+    String workspaceId,
+    String guestAbsolutePath,
+  ) async =>
+      const [];
 }
 
 void main() {

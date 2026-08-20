@@ -342,13 +342,12 @@ Map<String, dynamic> _createRequestBody(
     } else if (m is FunctionExecutionResultMessage) {
       for (final res in m.results) {
         final List<String> textParts = [];
+        final imageParts = <ImagePart>[];
         for (final part in res.content) {
           if (part is TextPart) {
             textParts.add(part.text);
-          } else {
-            throw Exception(
-              'Unsupported tool call result content type for model ${modelConfig.model}: ${part.runtimeType}',
-            );
+          } else if (part is ImagePart) {
+            imageParts.add(part);
           }
         }
         final textContent = textParts.join('\n');
@@ -357,6 +356,25 @@ Map<String, dynamic> _createRequestBody(
           'tool_call_id': res.id,
           'content': textContent,
         });
+        if (imageParts.isNotEmpty) {
+          finalMessages.add({
+            'role': 'user',
+            'content': [
+              {
+                'type': 'text',
+                'text': 'Image from tool ${res.name} (${res.id})',
+              },
+              ...imageParts.map(
+                (p) => {
+                  'type': 'image_url',
+                  'image_url': {
+                    'url': _convertBase64ToUrl(p.base64Data, p.mimeType),
+                  },
+                },
+              ),
+            ],
+          });
+        }
       }
     }
   }

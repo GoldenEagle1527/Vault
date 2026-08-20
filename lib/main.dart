@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 import 'dart:ui' show AppExitResponse;
 
@@ -6,6 +7,7 @@ import 'package:fvp/fvp.dart' as fvp;
 import 'package:vault/offload/offload_host_server.dart';
 import 'package:vault/permissions/active_workspace_holder.dart';
 import 'package:vault/permissions/offload_permission_manager.dart';
+import 'package:vault/sandbox/desktop_keep_alive.dart';
 import 'package:vault/sandbox/offload_host.dart';
 import 'package:vault/sandbox/offload_permission_channel.dart';
 import 'package:vault/agent/vault_meta_db.dart';
@@ -13,6 +15,7 @@ import 'package:vault/sandbox/sandbox_provider.dart';
 import 'package:vault/screens/home_screen.dart';
 import 'package:vault/theme/app_theme.dart';
 import 'package:vault/theme/theme_controller.dart';
+import 'package:window_manager/window_manager.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -46,6 +49,13 @@ Future<void> main() async {
       stderr.writeln('OffloadHostServer start failed: $e\n$st');
     }
   }
+  if (DesktopKeepAlive.shouldAttach) {
+    try {
+      await windowManager.ensureInitialized();
+    } catch (e, st) {
+      stderr.writeln('windowManager init failed: $e\n$st');
+    }
+  }
   final provider = createSandboxProvider();
   runApp(VaultApp(provider: provider, themeController: themeController));
 }
@@ -68,10 +78,13 @@ class VaultApp extends StatefulWidget {
 
 class _VaultAppState extends State<VaultApp> {
   late final AppLifecycleListener _lifecycleListener;
+  final _navKey = GlobalKey<NavigatorState>();
 
   @override
   void initState() {
     super.initState();
+    DesktopKeepAlive.instance.navigatorKey = _navKey;
+    unawaited(DesktopKeepAlive.instance.attach());
     _lifecycleListener = AppLifecycleListener(
       onExitRequested: _onExitRequested,
     );
@@ -115,6 +128,7 @@ class _VaultAppState extends State<VaultApp> {
         listenable: widget.themeController,
         builder: (context, _) {
           return MaterialApp(
+            navigatorKey: _navKey,
             title: 'Vault',
             debugShowCheckedModeBanner: false,
             theme: AppTheme.light(widget.themeController.accent),

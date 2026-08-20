@@ -50,6 +50,9 @@ class _FakeWorkspace implements SandboxWorkspace {
   ) async {}
 
   @override
+  Future<Uint8List?> readGuestFile(String guestAbsolutePath) async => null;
+
+  @override
   Future<void> dispose() async {}
 }
 
@@ -137,6 +140,9 @@ class _DetachedJobWorkspace implements SandboxWorkspace {
     String guestAbsolutePath,
     List<int> bytes,
   ) async {}
+
+  @override
+  Future<Uint8List?> readGuestFile(String guestAbsolutePath) async => null;
 
   @override
   Future<void> dispose() async {}

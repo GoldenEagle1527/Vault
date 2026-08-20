@@ -24,6 +24,11 @@ class GuestMediaSource {
   /// Optional in-memory bytes (images prefer this to avoid a second disk hit).
   final Uint8List? bytes;
 
+  /// Existing host file (composer drop / paste preview). Not deleted on [dispose].
+  factory GuestMediaSource.hostFile(File file, {Uint8List? bytes}) {
+    return GuestMediaSource._(hostFile: file, isTemporary: false, bytes: bytes);
+  }
+
   Future<void> dispose() async {
     if (!isTemporary) return;
     try {

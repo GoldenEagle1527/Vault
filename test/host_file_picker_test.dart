@@ -32,9 +32,7 @@ void main() {
     });
 
     test('image + video mix → FileType.media', () {
-      final s = resolveHostFilePickerType(
-        mimeTypes: ['image/*', 'video/mp4'],
-      );
+      final s = resolveHostFilePickerType(mimeTypes: ['image/*', 'video/mp4']);
       expect(s.type, FileType.media);
       expect(s.allowedExtensions, isNull);
     });
@@ -53,6 +51,12 @@ void main() {
         mimeTypes: ['application/pdf', 'text/plain'],
       );
       expect(s.type, FileType.any);
+    });
+
+    test('unrestricted → FileType.any (Agent paperclip)', () {
+      final s = resolveHostFilePickerType(unrestricted: true);
+      expect(s.type, FileType.any);
+      expect(s.allowedExtensions, isNull);
     });
   });
 

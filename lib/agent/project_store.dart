@@ -294,8 +294,9 @@ class ProjectStore {
     final guestDir = guestProjectDir(path);
     final init = await _runGuest(
       workspaceId,
-      'mkdir -p ${shellSingleQuote(guestDir)} && '
-      'git -C ${shellSingleQuote(guestDir)} init',
+      'mkdir -p ${shellSingleQuote(guestDir)}/${kProjectInboxDirName} && '
+      'git -C ${shellSingleQuote(guestDir)} init && '
+      'printf "inbox/\\n" >> ${shellSingleQuote(guestDir)}/.gitignore',
     );
     if (init.exitCode != 0) {
       throw StateError(
@@ -647,8 +648,9 @@ class ProjectStore {
     final guestDir = guestProjectDir(path);
     await _runGuest(
       workspaceId,
-      'mkdir -p ${shellSingleQuote(guestDir)} && '
-      'git -C ${shellSingleQuote(guestDir)} init',
+      'mkdir -p ${shellSingleQuote(guestDir)}/${kProjectInboxDirName} && '
+      'git -C ${shellSingleQuote(guestDir)} init && '
+      'printf "inbox/\\n" >> ${shellSingleQuote(guestDir)}/.gitignore',
     );
 
     final createdAt = now.toIso8601String();

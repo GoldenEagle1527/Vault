@@ -194,6 +194,22 @@ class ProjectSiteLauncher {
     return map[entry.name] ?? false;
   }
 
+  /// Whether this project's site should show as running in the UI.
+  ///
+  /// Prefer the pid file we wrote at start — port probes can briefly read `0`
+  /// on mobile when the app resumes from an external browser.
+  Future<bool> isProjectSiteUp({
+    required String projectPath,
+    required ProjectUrlEntry entry,
+  }) async {
+    if (await isOwnProcessAlive(projectPath: projectPath, entry: entry)) {
+      return true;
+    }
+    final url = entry.url.trim();
+    if (url.isEmpty) return false;
+    return isUp(entry);
+  }
+
   /// True when this entry's pid-file process is still alive (not just the port).
   Future<bool> isOwnProcessAlive({
     required String projectPath,

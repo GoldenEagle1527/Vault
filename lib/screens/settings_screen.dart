@@ -7,6 +7,9 @@ import 'package:vault/permissions/active_workspace_holder.dart';
 import 'package:vault/permissions/offload_permission_manager.dart';
 import 'package:vault/permissions/permission_models.dart';
 import 'package:vault/permissions/permission_registry.dart';
+import 'package:vault/sandbox/android_keep_alive.dart';
+import 'package:vault/sandbox/desktop_keep_alive.dart';
+import 'package:vault/sandbox/proot_host.dart';
 import 'package:vault/sandbox/sandbox_models.dart';
 import 'package:vault/widgets/appearance_sheet.dart';
 
@@ -52,6 +55,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
   bool _includeIntegrations = false;
   bool _smokeRunning = false;
   bool _permsReady = false;
+  AndroidKeepAliveStatus? _keepAliveStatus;
+  bool _keepAliveBusy = false;
 
   @override
   void initState() {
@@ -67,15 +72,133 @@ class _SettingsScreenState extends State<SettingsScreen> {
     try {
       final bundle = await widget.store.loadBundle();
       await widget.permissionManager.ensureLoaded();
+      AndroidKeepAliveStatus? keepAlive;
+      if (Platform.isAndroid) {
+        keepAlive = await AndroidKeepAlive.status();
+      }
       if (!mounted) return;
       _applyBundle(bundle);
       _permsReady = true;
+      _keepAliveStatus = keepAlive;
     } catch (e) {
       if (!mounted) return;
       setState(() => _error = '加载设置失败：$e');
     } finally {
-      if (mounted) setState(() => _loading = false);
+      if (mounted) {
+        setState(() => _loading = false);
+      }
     }
+  }
+
+  Future<void> _refreshKeepAliveStatus() async {
+    if (!Platform.isAndroid) return;
+    setState(() => _keepAliveBusy = true);
+    try {
+      final status = await AndroidKeepAlive.status();
+      if (!mounted) return;
+      setState(() => _keepAliveStatus = status);
+    } finally {
+      if (mounted) setState(() => _keepAliveBusy = false);
+    }
+  }
+
+  Future<void> _requestKeepAlivePermissions() async {
+    if (!Platform.isAndroid || !mounted) return;
+    await AndroidKeepAlive.ensurePermissions(
+      context,
+      forceBatteryPrompt: true,
+    );
+    await _refreshKeepAliveStatus();
+  }
+
+  Future<void> _openBatterySettings() async {
+    if (!Platform.isAndroid) return;
+    await ProotHost.openBatteryOptimizationSettings();
+    await _refreshKeepAliveStatus();
+  }
+
+  List<Widget> _keepAliveSection(ColorScheme scheme) {
+    if (DesktopKeepAlive.supported) {
+      return _desktopKeepAliveSection(scheme);
+    }
+    if (!Platform.isAndroid) return const [];
+    final status = _keepAliveStatus;
+    return [
+      const SizedBox(height: 28),
+      const Divider(),
+      const SizedBox(height: 16),
+      Text('Android 后台保活', style: Theme.of(context).textTheme.titleLarge),
+      const SizedBox(height: 4),
+      Text(
+        '工作区、开发站点与 Agent 任务切到浏览器或锁屏时，依赖前台服务与电池优化豁免。',
+        style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+          color: scheme.onSurfaceVariant,
+        ),
+      ),
+      const SizedBox(height: 12),
+      if (status == null)
+        const LinearProgressIndicator(minHeight: 2)
+      else
+        ...androidKeepAliveStatusLines(status).map(
+          (line) => Padding(
+            padding: const EdgeInsets.only(bottom: 6),
+            child: Text(
+              '• $line',
+              style: Theme.of(context).textTheme.bodyMedium,
+            ),
+          ),
+        ),
+      const SizedBox(height: 8),
+      Wrap(
+        spacing: 8,
+        runSpacing: 8,
+        children: [
+          FilledButton.tonalIcon(
+            onPressed: _keepAliveBusy ? null : _requestKeepAlivePermissions,
+            icon: _keepAliveBusy
+                ? const SizedBox(
+                    width: 16,
+                    height: 16,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  )
+                : const Icon(Icons.notifications_active_outlined),
+            label: const Text('请求通知与电池优化'),
+          ),
+          OutlinedButton.icon(
+            onPressed: _keepAliveBusy ? null : _openBatterySettings,
+            icon: const Icon(Icons.battery_saver_outlined),
+            label: const Text('电池优化设置'),
+          ),
+        ],
+      ),
+    ];
+  }
+
+  List<Widget> _desktopKeepAliveSection(ColorScheme scheme) {
+    return [
+      const SizedBox(height: 28),
+      const Divider(),
+      const SizedBox(height: 16),
+      Text('桌面后台保活', style: Theme.of(context).textTheme.titleLarge),
+      const SizedBox(height: 4),
+      Text(
+        '关闭窗口会最小化到系统托盘，工作区、开发站点与 Agent 任务继续运行。'
+        '右键托盘图标可显示窗口、停止站点或退出。只有从托盘选择「退出 Vault」才会结束沙箱。',
+        style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+          color: scheme.onSurfaceVariant,
+        ),
+      ),
+      const SizedBox(height: 12),
+      ...desktopKeepAliveStatusLines(siteRunning: false).map(
+        (line) => Padding(
+          padding: const EdgeInsets.only(bottom: 6),
+          child: Text(
+            '• $line',
+            style: Theme.of(context).textTheme.bodyMedium,
+          ),
+        ),
+      ),
+    ];
   }
 
   void _applyBundle(AgentSettingsBundle bundle) {
@@ -475,6 +598,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   ),
                   const SizedBox(height: 16),
                   const AppearanceControls(showHeader: false),
+                  ..._keepAliveSection(scheme),
                   const SizedBox(height: 28),
                   const Divider(),
                   const SizedBox(height: 16),

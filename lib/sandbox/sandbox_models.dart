@@ -3,8 +3,12 @@ import 'dart:typed_data';
 /// Default working directory / home inside every Vault guest workspace.
 const String kGuestHome = '/root';
 
-/// Host → guest file drop directory for Agent attachments.
+/// Legacy workspace-level drop directory. New attachments go to
+/// [guestProjectInboxDir] instead.
 const String kGuestInboxDir = '$kGuestHome/inbox';
+
+/// Per-project user attachment folder name (under [guestProjectDir]).
+const String kProjectInboxDirName = 'inbox';
 
 /// Vault-managed metadata inside the guest Linux (conversations, etc.).
 const String kGuestVaultDir = '$kGuestHome/.vault';
@@ -18,8 +22,29 @@ const String kGuestProjectsDir = '$kGuestHome/projects';
 const String kGuestLegacyConversationsDir = '$kGuestVaultDir/conversations';
 
 /// Absolute guest path for one project's working directory.
-String guestProjectDir(String projectPath) =>
-    '$kGuestProjectsDir/$projectPath';
+String guestProjectDir(String projectPath) => '$kGuestProjectsDir/$projectPath';
+
+/// Per-project attachment directory: `/root/projects/{id}/inbox`.
+String guestProjectInboxDir(String projectPath) =>
+    '${guestProjectDir(projectPath)}/$kProjectInboxDirName';
+
+/// Absolute guest path for one file in the project's inbox.
+String projectInboxGuestPath(String projectPath, String fileName) =>
+    '${guestProjectInboxDir(projectPath)}/${sanitizeInboxFileName(fileName)}';
+
+/// Pick `name`, then `stem-2.ext`, `stem-3.ext`, … not in [taken].
+String allocateInboxFileName(String desired, Set<String> taken) {
+  final name = sanitizeInboxFileName(desired);
+  if (!taken.contains(name)) return name;
+  final dot = name.lastIndexOf('.');
+  final stem = dot > 0 ? name.substring(0, dot) : name;
+  final ext = dot > 0 ? name.substring(dot) : '';
+  var i = 2;
+  while (taken.contains('$stem-$i$ext')) {
+    i++;
+  }
+  return '$stem-$i$ext';
+}
 
 /// Result of probing the host for sandbox support.
 class SandboxCapabilities {
@@ -67,7 +92,8 @@ class WorkspaceInitProgress {
   }
 }
 
-typedef WorkspaceInitProgressCallback = void Function(WorkspaceInitProgress progress);
+typedef WorkspaceInitProgressCallback =
+    void Function(WorkspaceInitProgress progress);
 
 /// Metadata for one isolated Linux workspace (WSL distro or proot rootfs).
 class WorkspaceInfo {
@@ -180,10 +206,13 @@ abstract class SandboxWorkspace {
     Duration? timeout,
   });
 
-  /// Write [bytes] to an absolute guest path (e.g. `/root/inbox/a.txt`).
+  /// Write [bytes] to an absolute guest path (e.g. `/root/projects/…/inbox/a.txt`).
   ///
   /// Creates parent directories. Path must stay under [kGuestHome] (no `..` escape).
   Future<void> writeGuestFile(String guestAbsolutePath, List<int> bytes);
+
+  /// Read an absolute guest path. Returns null if missing / unreadable.
+  Future<Uint8List?> readGuestFile(String guestAbsolutePath) async => null;
 
   Future<void> dispose();
 }

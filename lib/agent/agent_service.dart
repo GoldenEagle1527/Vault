@@ -6,6 +6,7 @@ import 'package:uuid/uuid.dart';
 import 'package:vault/agent/agent_inbox.dart';
 import 'package:vault/agent/agent_settings.dart';
 import 'package:vault/agent/agent_system_prompt.dart';
+import 'package:vault/agent/hydrate_images_hook.dart';
 import 'package:vault/agent/conversation_store.dart';
 import 'package:vault/agent/project_site_launcher.dart';
 import 'package:vault/agent/project_store.dart';
@@ -17,6 +18,7 @@ import 'package:vault/agent/project_checkpoint.dart';
 import 'package:vault/agent/tools/ask_user_tool.dart';
 import 'package:vault/agent/tools/inspect_site_tool.dart';
 import 'package:vault/agent/tools/project_url_tool.dart';
+import 'package:vault/agent/tools/read_tool.dart';
 import 'package:vault/agent/tools/shell_tool.dart';
 import 'package:vault/agent/vault_host_device.dart';
 import 'package:vault/agent/vault_meta_db.dart';
@@ -35,11 +37,13 @@ class AgentUiUserMessage extends AgentUiEvent {
     this.promptTokens,
     this.at,
     this.historyIndex,
+    this.attachments = const [],
   });
   final String text;
   final int? promptTokens;
   final DateTime? at;
   final int? historyIndex;
+  final List<ChatAttachmentMeta> attachments;
 }
 
 class AgentUiAssistantDelta extends AgentUiEvent {
@@ -399,6 +403,7 @@ class AgentService {
     final gateway = _siteGateway;
     final tools = <Tool>[
       createAskUserTool(askUser, onPresent: _snapshotAskUserPresented),
+      createReadTool(_workspace, projectPath: projectPath),
       createShellTool(
         _workspace,
         timeout: _shellTimeout,
@@ -434,6 +439,9 @@ class AgentService {
         hostDevice: VaultHostDevice.current(),
       ),
       controller: AgentController(),
+      hooks: [
+        HydrateConversationImagesHook(_workspace.readGuestFile),
+      ],
       autoSaveStateFunc: _store == null ? null : (s) => _persistIfNeeded(s),
       toolBackgroundAfter: kAgentToolBackgroundAfter,
       withGeneralPrinciples: _mode != WorkspaceMode.dev,
@@ -1088,9 +1096,9 @@ class AgentService {
 
   /// Runs one user turn; yields UI events until complete, cancelled, or failed.
   ///
-  /// [attachments] are copied into the guest [kGuestInboxDir] before the model runs.
-  /// Completions that arrive while this turn is active are drained at the end
-  /// of the stream; later idle completions go to [backgroundUiEvents].
+  /// [attachments] are copied into the current project's `inbox/` before the
+  /// model runs. Completions that arrive while this turn is active are drained
+  /// at the end of the stream; later idle completions go to [backgroundUiEvents].
   Stream<AgentUiEvent> run(
     String userText, {
     List<AgentAttachment> attachments = const [],
@@ -1116,24 +1124,37 @@ class AgentService {
     final turnIndex = historyMessageCount;
     await _snapshotCurrent(kind: kCheckpointUserTurn, index: turnIndex);
 
-    yield AgentUiUserMessage(
-      userTurnDisplayText(trimmed, attachmentCount: attachments.length),
-      historyIndex: turnIndex,
-    );
-
     try {
-      List<String> guestPaths = const [];
+      var metas = const <ChatAttachmentMeta>[];
       if (attachments.isNotEmpty) {
-        yield const AgentUiStatus('正在把附件写入工作区 Linux…');
-        guestPaths = await injectAttachmentsIntoInbox(_workspace, attachments);
-        yield AgentUiStatus('已写入 ${guestPaths.length} 个文件到 $kGuestInboxDir');
+        final projectPath = _projectPath;
+        if (projectPath == null || projectPath.isEmpty) {
+          yield const AgentUiError('请先新建或选择一个项目再添加附件');
+          return;
+        }
+        yield const AgentUiStatus('正在把附件写入项目 inbox…');
+        metas = await injectAttachmentsIntoInbox(
+          _workspace,
+          projectPath: projectPath,
+          attachments: attachments,
+        );
+        yield AgentUiStatus(
+          '已写入 ${metas.length} 个文件到 ${guestProjectInboxDir(projectPath)}',
+        );
       }
+
+      yield AgentUiUserMessage(
+        userTurnDisplayText(trimmed),
+        historyIndex: turnIndex,
+        attachments: metas,
+      );
 
       yield const AgentUiStatus('正在思考…');
       _ensureAgent();
       final agent = _agent!;
       final buffer = StringBuffer();
 
+      final guestPaths = [for (final m in metas) m.guestPath];
       final context = buildAttachmentContextMessage(
         guestPaths,
         projectPath: _projectPath,
@@ -1144,7 +1165,13 @@ class AgentService {
       );
 
       await for (final event in agent.runStream([
-        UserMessage.text(prompt),
+        UserMessage(
+          [TextPart(prompt)],
+          metadata: {
+            if (metas.isNotEmpty)
+              'attachments': metas.map((m) => m.toJson()).toList(),
+          },
+        ),
       ], cancelToken: _cancelToken)) {
         yield* _mapStreamingEvent(event, buffer);
       }
@@ -1214,9 +1241,8 @@ class AgentService {
 
   /// Chat-bubble text for a user turn (never includes hidden Vault context).
   static String userTurnDisplayText(String trimmed, {int attachmentCount = 0}) {
-    final display = trimmed.isEmpty ? '（仅附件）' : trimmed;
-    if (attachmentCount == 0) return display;
-    return '$display\n[附件 $attachmentCount 个]';
+    if (trimmed.isNotEmpty) return trimmed;
+    return '（仅附件）';
   }
 
   Future<List<ProjectUrlEntry>> _projectSites(String projectPath) async {
@@ -1255,19 +1281,36 @@ class AgentService {
             .map((p) => p.text)
             .join('\n')
             .trim();
+        final attachments = ChatAttachmentMeta.listFromJson(
+          m.metadata?['attachments'],
+        );
         if (raw.isNotEmpty) {
           final notice = systemNoticeForUserText(raw);
           if (notice != null) {
             out.add(AgentUiSystemNotice(notice.text, isError: notice.isError));
           } else {
+            var display = displayTextFromStoredUserPrompt(raw);
+            if (display.isEmpty && attachments.isNotEmpty) {
+              display = '（仅附件）';
+            }
             out.add(
               AgentUiUserMessage(
-                displayTextFromStoredUserPrompt(raw),
+                display,
                 at: DateTime.fromMicrosecondsSinceEpoch(m.timestamp),
                 historyIndex: i,
+                attachments: attachments,
               ),
             );
           }
+        } else if (attachments.isNotEmpty) {
+          out.add(
+            AgentUiUserMessage(
+              '（仅附件）',
+              at: DateTime.fromMicrosecondsSinceEpoch(m.timestamp),
+              historyIndex: i,
+              attachments: attachments,
+            ),
+          );
         }
       } else if (m is ModelMessage) {
         final usage = m.usage;

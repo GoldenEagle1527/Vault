@@ -49,7 +49,7 @@ Tool createShellTool(
         '长效监控可传 notify_regex：输出匹配时在不终止进程的情况下唤醒你并附上片段。'
         '主 shell 的 cwd / 导出变量在启动瞬间被继承；返回 exitCode、stdout、stderr。'
         '用于 apk、文件、编译、脚本、本地 HTTP 服务等。'
-        '用户附件在 $kGuestInboxDir/。'
+        '用户附件在 ${projectDir == null ? kGuestInboxDir : '$projectDir/inbox'}/。'
         '不要使用主机路径；不要做需要交互输入的命令。'
         '网站可用后请再调用 register_project_url。',
     parameterMode: ToolParameterMode.object,
@@ -60,7 +60,7 @@ Tool createShellTool(
           'type': 'string',
           'description':
               '在 Linux 沙箱内执行的命令。示例：'
-              'pwd; ls -la $kGuestInboxDir; '
+              'pwd; ls -la ${projectDir == null ? kGuestInboxDir : '$projectDir/inbox'}; '
               'apk update && apk add curl; '
               '${projectDir == null ? 'cd $kGuestHome && python3 -m http.server 8765 --bind 127.0.0.1' : 'cd $projectDir && python3 -m http.server 8765 --bind 127.0.0.1'}',
         },

@@ -47,6 +47,9 @@ class _FakeWorkspace implements SandboxWorkspace {
   ) async {}
 
   @override
+  Future<Uint8List?> readGuestFile(String guestAbsolutePath) async => null;
+
+  @override
   Future<void> dispose() async {}
 }
 
@@ -215,5 +218,22 @@ void main() {
     ).stop(projectPath: 'p1', entry: _site);
     expect(result.stopped, isTrue);
     expect(result.message, '已终止');
+  });
+
+  test('isProjectSiteUp prefers own pid over port probe', () async {
+    final ws = _FakeWorkspace((cmd) async {
+      if (cmd.contains('vault_site_own_pid')) {
+        return const CommandResult(exitCode: 0, stdout: '1', stderr: '');
+      }
+      if (cmd.contains('/proc/net/tcp')) {
+        return const CommandResult(exitCode: 0, stdout: '0', stderr: '');
+      }
+      return const CommandResult(exitCode: 0, stdout: '', stderr: '');
+    });
+    final up = await ProjectSiteLauncher(
+      ws,
+    ).isProjectSiteUp(projectPath: 'p1', entry: _site);
+    expect(up, isTrue);
+    expect(ws.commands.where((c) => c.contains('/proc/net/tcp')), isEmpty);
   });
 }

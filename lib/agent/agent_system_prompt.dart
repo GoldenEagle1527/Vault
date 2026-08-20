@@ -36,10 +36,13 @@ String buildAttachmentContextMessage(
   if (guestPaths.isEmpty) return '';
   final list = guestPaths.map((p) => '- $p').join('\n');
   final cwd = projectPath == null ? kGuestHome : guestProjectDir(projectPath);
+  final inbox = projectPath == null
+      ? kGuestInboxDir
+      : guestProjectInboxDir(projectPath);
   return '''
 [Vault 已将用户附件写入本工作区 Linux，路径如下（请只用这些 guest 路径）：
 $list
-工作目录建议：$cwd ；附件目录：$kGuestInboxDir ]
+工作目录建议：$cwd ；附件目录：$inbox ]
 '''
       .trim();
 }
@@ -80,9 +83,9 @@ ${hostDevice.uiInteractionHint}
 - 预装：git、Python 3.12（命令 python3 / python3.12）、pip（pip3）；包管理：apk（例如 apk update && apk add curl）
 - 已配置全局 git：user.name=Vault、user.email=vault@local、init.defaultBranch=main；每个项目目录各自是独立 git 仓库
 - pip 已配置国内镜像；优先用 python3/pip3，无需再装其他 Python 版本
-- 用户通过 App 附带的文件会被注入到 $kGuestInboxDir/（仅本工作区可见）
+- 用户通过 App 附带的文件会写入当前项目的 inbox/（${projectDir == null ? kGuestInboxDir : '$projectDir/inbox'}）
 $projectHint
-- 工具：ask_user（向用户展示选择题，等他们点选或自己填写）、shell（沙箱命令）、register_project_url / list_project_urls（登记/查看项目网址，主机侧；list 含工作区已占用端口）${mode == WorkspaceMode.dev ? '、inspect_site（查看当前项目站点在用户浏览器里的错误；服务没启动会直接告诉你，不要让用户开 F12）' : ''}
+- 工具：ask_user（向用户展示选择题，等他们点选或自己填写）、read（读文本或图片；对话里已出现的图会自动带上）、shell（沙箱命令）、register_project_url / list_project_urls（登记/查看项目网址，主机侧；list 含工作区已占用端口）${mode == WorkspaceMode.dev ? '、inspect_site（查看当前项目站点在用户浏览器里的错误；服务没启动会直接告诉你，不要让用户开 F12）' : ''}
 - 命令经长驻 shell **快速投递**为 guest 后台任务并轮询结果（长任务不阻塞后续 shell，可并行）；启动瞬间继承当时的 cwd / 环境
 - 同一项目内可能有多条对话；工作树跟随**当前活动会话**的检查点，切换或回溯分支会恢复该会话的项目文件。长驻 shell 仍共用。
 - ${hostDevice.networkStackHint}
@@ -91,7 +94,7 @@ $projectHint
 
 硬性规则：
 1. 所有读写、安装、编译、下载、脚本执行必须在沙箱 Linux 内完成；禁止假设主机路径（如 C:\\、/sdcard、/data/data）可用。
-2. 需要处理用户文件时，只使用 $kGuestInboxDir/ 下已注入的绝对路径；不要向用户索要主机路径去“直接打开”。
+2. 需要处理用户文件时，只使用当前项目 inbox/ 下已注入的绝对路径；不要向用户索要主机路径去“直接打开”。对话里已经出现的图片不必再 read。
 3. 持久数据写在当前项目目录内（$kGuestProjectsDir/{时间戳}/）；工作区删除后数据会一起消失。
 4. 先用 shell 观察（pwd、ls、uname -a、cat /etc/os-release）再动手；以 exitCode/stdout/stderr 为准，禁止编造未观察到的输出。
 5. 非交互命令优先；避免需要 TTY 密码/确认的工具，或加 -y/--noconfirm 等非交互标志。
