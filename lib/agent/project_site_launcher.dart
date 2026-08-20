@@ -92,12 +92,15 @@ String siteStartShellCommand({
   required String logFileName,
   required String pidFileName,
 }) {
+  final logQ = shellSingleQuote('$projectDir/$logFileName');
+  final pidQ = shellSingleQuote('$projectDir/$pidFileName');
   return 'mkdir -p ${shellSingleQuote(projectDir)} && '
       'cd ${shellSingleQuote(projectDir)} && '
-      'nohup sh -c ${shellSingleQuote(startCmd)} '
-      '>${shellSingleQuote(logFileName)} 2>&1 & '
-      'echo \$! > ${shellSingleQuote(pidFileName)} && '
-      'echo \$!';
+      '{ nohup sh -c ${shellSingleQuote(startCmd)} '
+      '>$logQ 2>&1 & '
+      'pid=\$!; '
+      'echo "\$pid" > $pidQ; '
+      'echo "\$pid"; }';
 }
 
 /// Best-effort TERM/KILL of the pid-file process tree and port listeners.

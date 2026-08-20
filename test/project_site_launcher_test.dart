@@ -93,8 +93,12 @@ void main() {
       pidFileName: 'vault_site_web.pid',
     );
     expect(cmd, contains('nohup sh -c'));
-    expect(cmd, contains('vault_site_web.pid'));
-    expect(cmd, contains(r'echo $!'));
+    expect(cmd, contains("'/root/projects/p1/vault_site_web.pid'"));
+    expect(cmd, contains("'/root/projects/p1/vault_site_web.log'"));
+    expect(cmd, contains(r'pid=$!'));
+    // `cd ... && command & echo > relative.pid` backgrounds the `cd` list,
+    // leaving the echo in the old cwd. Runtime files must use absolute paths.
+    expect(cmd, isNot(contains("> 'vault_site_web.pid'")));
   });
 
   test('siteStopShellCommand kills pid file and port', () {

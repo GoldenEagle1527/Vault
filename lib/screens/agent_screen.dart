@@ -164,6 +164,7 @@ class _AgentScreenState extends State<AgentScreen> with WidgetsBindingObserver {
   final Set<String> _siteBusy = {};
   Timer? _sitePollTimer;
   bool _siteProbeInFlight = false;
+  int _siteProbeGeneration = 0;
   bool _leaveConfirmInFlight = false;
   List<AgentSettings> _profiles = const [AgentSettings.defaults];
   String _activeProfileId = AgentSettings.defaultProfileId;
@@ -1030,8 +1031,9 @@ class _AgentScreenState extends State<AgentScreen> with WidgetsBindingObserver {
 
   Future<void> _onAppResumed() async {
     if (!mounted || _booting) return;
-    // A probe started before backgrounding may never complete until resume.
-    _siteProbeInFlight = false;
+    // A probe started before backgrounding can finish after resume with a
+    // stale `down` result. Invalidate it before starting the foreground probe.
+    _invalidateSiteProbe();
     try {
       await _ensureSiteGateway();
     } catch (_) {
@@ -1065,6 +1067,7 @@ class _AgentScreenState extends State<AgentScreen> with WidgetsBindingObserver {
 
   Future<void> _refreshSiteStatus() async {
     if (_siteProbeInFlight) return;
+    final generation = _siteProbeGeneration;
     final pairs = [
       for (final p in _projects)
         if (p.site != null) (p.path, p.site!),
@@ -1085,7 +1088,7 @@ class _AgentScreenState extends State<AgentScreen> with WidgetsBindingObserver {
           entry: pair.$2,
         );
       }
-      if (!mounted) return;
+      if (!mounted || generation != _siteProbeGeneration) return;
       setState(() {
         _siteUp
           ..clear()
@@ -1095,22 +1098,29 @@ class _AgentScreenState extends State<AgentScreen> with WidgetsBindingObserver {
     } catch (_) {
       // Keep last known status.
     } finally {
-      _siteProbeInFlight = false;
+      if (generation == _siteProbeGeneration) {
+        _siteProbeInFlight = false;
+      }
     }
+  }
+
+  void _invalidateSiteProbe() {
+    _siteProbeGeneration++;
+    _siteProbeInFlight = false;
   }
 
   Future<void> _startSite(
     ProjectUrlEntry entry, {
     required String projectPath,
   }) async {
+    // Do not let a periodic probe that began before this start overwrite the
+    // optimistic running state after the external browser takes focus.
+    _invalidateSiteProbe();
     setState(() {
       _status = '正在启动「${entry.name}」…';
       _siteBusy.add(projectPath);
     });
-    await AndroidKeepAlive.ensurePermissions(
-      context,
-      forceBatteryPrompt: true,
-    );
+    await AndroidKeepAlive.ensurePermissions(context, forceBatteryPrompt: true);
     await VaultKeepAlive.sync(siteName: entry.name);
     var launched = false;
     try {
@@ -1122,7 +1132,8 @@ class _AgentScreenState extends State<AgentScreen> with WidgetsBindingObserver {
       if (!mounted) return;
       launched = result.startedProcess || result.alreadyUp;
       if (launched) {
-        _siteUp[projectPath] = true;
+        _invalidateSiteProbe();
+        setState(() => _siteUp[projectPath] = true);
         await VaultKeepAlive.sync(siteName: entry.name);
       }
       final parts = <String>[
@@ -1163,6 +1174,7 @@ class _AgentScreenState extends State<AgentScreen> with WidgetsBindingObserver {
     ProjectUrlEntry entry, {
     required String projectPath,
   }) async {
+    _invalidateSiteProbe();
     setState(() {
       _status = '正在终止「${entry.name}」…';
       _siteBusy.add(projectPath);
@@ -1611,9 +1623,7 @@ class _AgentScreenState extends State<AgentScreen> with WidgetsBindingObserver {
             ),
             FilledButton(
               onPressed: () => Navigator.pop(ctx, true),
-              child: Text(
-                _runningSitePairs.isEmpty ? '离开并取消' : '停止站点并离开',
-              ),
+              child: Text(_runningSitePairs.isEmpty ? '离开并取消' : '停止站点并离开'),
             ),
           ],
         ),
