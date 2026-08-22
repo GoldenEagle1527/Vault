@@ -1,6 +1,13 @@
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:vault_agent_core/eval.dart';
+import 'package:vault_agent_core/src/eval/reporting/file_report_store.dart'
+    as file_store;
+import 'package:vault_agent_core/src/eval/reporting/report_models.dart'
+    as report_models;
+import 'package:vault_agent_core/src/eval/reporting/report_store_interface.dart'
+    as report_store_api;
 import 'package:test/test.dart';
 
 import '_helpers.dart';
@@ -228,6 +235,119 @@ void main() {
 
       final twoOnly = await store.listRecent(suiteName: 'two');
       expect(twoOnly.map((e) => e.runName), ['newest']);
+    });
+
+    test('partitioned libraries retain the facade type identities', () {
+      final report_store_api.ReportStore directStore =
+          file_store.FileReportStore(tmp);
+      final ReportStore facadeStore = directStore;
+      const directModel = report_models.SuiteSnapshot(
+        name: 'suite',
+        kind: SuiteKind.mixed,
+        taskIds: ['task'],
+        taskPassThreshold: 1,
+        requireReferenceSolution: false,
+      );
+      const SuiteSnapshot facadeModel = directModel;
+
+      expect(facadeStore, isA<FileReportStore>());
+      expect(facadeModel.name, 'suite');
+    });
+
+    test('preserves index and report JSON shapes', () async {
+      final store = FileReportStore(tmp);
+      final run = _buildRun(
+        name: 'json-shape',
+        taskPassRates: const {'a': 1.0},
+      );
+
+      await store.save(run);
+
+      final indexLines = await File('${tmp.path}/index.jsonl').readAsLines();
+      expect(indexLines, hasLength(1));
+      expect(jsonDecode(indexLines.single), {
+        'runName': 'json-shape',
+        'suiteName': 's',
+        'suiteKind': 'regression',
+        'startedAt': '2025-01-01T00:00:00.000',
+        'endedAt': '2025-01-01T00:00:00.000',
+        'taskPassRate': 1.0,
+        'trialPassRate': 1.0,
+        'numTrials': 4,
+      });
+
+      final reportJson =
+          jsonDecode(
+                await File(
+                  '${tmp.path}/reports/json-shape.json',
+                ).readAsString(),
+              )
+              as Map<String, dynamic>;
+      expect(reportJson.keys, [
+        'runName',
+        'suite',
+        'startedAt',
+        'endedAt',
+        'trials',
+      ]);
+      expect((reportJson['suite'] as Map<String, dynamic>).keys, [
+        'name',
+        'kind',
+        'taskIds',
+        'taskPassThreshold',
+        'requireReferenceSolution',
+      ]);
+    });
+
+    test('sanitizes report paths without changing indexed run names', () async {
+      final store = FileReportStore(tmp);
+      await store.save(
+        _buildRun(
+          name: r'folder/run:name\part',
+          taskPassRates: const {'a': 1.0},
+        ),
+      );
+
+      expect(
+        await File('${tmp.path}/reports/folder_run_name_part.json').exists(),
+        isTrue,
+      );
+      expect(await store.listRunNames(), [r'folder/run:name\part']);
+      expect(await store.load(r'folder/run:name\part'), isNotNull);
+    });
+
+    test('skips malformed index lines and keeps newest-first limits', () async {
+      final store = FileReportStore(tmp);
+      await store.save(
+        _buildRun(name: 'older', taskPassRates: const {'a': 1.0}),
+      );
+      final newer = _buildRun(name: 'newer', taskPassRates: const {'a': 1.0});
+      await store.indexFile.writeAsString(
+        'not-json\n${jsonEncode({'runName': newer.runName, 'suiteName': newer.suite.name, 'suiteKind': newer.suite.kind.name, 'startedAt': DateTime(2026).toIso8601String(), 'endedAt': DateTime(2026).toIso8601String(), 'taskPassRate': newer.taskPassRate, 'trialPassRate': newer.trialPassRate, 'numTrials': newer.trials.length})}\n',
+        mode: FileMode.append,
+      );
+
+      expect(await store.listRunNames(limit: 1), ['newer']);
+      expect(
+        (await store.listRecent(
+          suiteName: 's',
+          limit: 2,
+        )).map((entry) => entry.runName),
+        ['newer', 'older'],
+      );
+    });
+
+    test('propagates filesystem write errors', () async {
+      final store = FileReportStore(tmp);
+      await store.indexFile.delete();
+      await Directory(store.indexFile.path).create();
+
+      await expectLater(
+        store.save(
+          _buildRun(name: 'io-error', taskPassRates: const {'a': 1.0}),
+        ),
+        throwsA(isA<FileSystemException>()),
+      );
     });
   });
 }

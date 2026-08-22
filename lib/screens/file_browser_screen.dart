@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:convert';
 import 'dart:io';
 
 import 'package:desktop_drop/desktop_drop.dart';
@@ -7,13 +6,17 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:path/path.dart' as p;
-import 'package:vault/sandbox/guest_code_highlight.dart';
 import 'package:vault/sandbox/guest_fs_ops.dart';
 import 'package:vault/sandbox/guest_media_kind.dart';
-import 'package:vault/sandbox/guest_media_source.dart';
 import 'package:vault/sandbox/sandbox_provider.dart';
+import 'package:vault/screens/file_browser/file_browser_controller.dart';
+import 'package:vault/screens/file_browser/file_browser_operation_menu.dart';
+import 'package:vault/screens/file_browser/file_browser_path_navigation.dart';
+import 'package:vault/screens/file_browser/file_preview_screen.dart';
 import 'package:vault/util/host_file_picker.dart';
-import 'package:vault/widgets/guest_media_preview.dart';
+
+export 'package:vault/screens/file_browser/file_browser_controller.dart';
+export 'package:vault/screens/file_browser/file_preview_screen.dart';
 
 /// Browse / preview / edit text files under guest [kGuestHome].
 class FileBrowserScreen extends StatefulWidget {
@@ -58,10 +61,8 @@ class _ImportProgress {
 }
 
 class _FileBrowserScreenState extends State<FileBrowserScreen> {
-  late String _cwd;
-  String? _projectPath;
+  late final FileBrowserController _controller;
   List<GuestFsEntry> _entries = const [];
-  final Set<String> _selected = {};
   _GuestClipboard? _clipboard;
   bool _loading = true;
   bool _busy = false;
@@ -71,17 +72,22 @@ class _FileBrowserScreenState extends State<FileBrowserScreen> {
   @override
   void initState() {
     super.initState();
-    _cwd = assertGuestPathUnderHome(widget.initialPath);
-    final project = widget.projectGuestPath;
-    if (project != null && project.isNotEmpty) {
-      try {
-        _projectPath = assertGuestPathUnderHome(project);
-      } catch (_) {
-        _projectPath = null;
-      }
-    }
+    _controller = FileBrowserController(
+      initialPath: widget.initialPath,
+      projectGuestPath: widget.projectGuestPath,
+    );
     _load();
   }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  String get _cwd => _controller.currentPath;
+  String? get _projectPath => _controller.projectPath;
+  Set<String> get _selected => _controller.selected;
 
   bool get _actionsEnabled => !_loading && !_busy;
 
@@ -110,41 +116,30 @@ class _FileBrowserScreenState extends State<FileBrowserScreen> {
     }
   }
 
-  bool get _canGoUp => _cwd != kGuestHome && _cwd.startsWith('$kGuestHome/');
+  bool get _canGoUp => _controller.canGoUp;
 
-  String get _relativeLabel {
-    if (_cwd == kGuestHome) return '/root';
-    return _cwd;
-  }
+  String get _relativeLabel => _controller.pathLabel;
 
   void _clearSelection() {
-    if (_selected.isEmpty) return;
-    setState(() => _selected.clear());
+    setState(_controller.clearSelection);
   }
 
   Future<void> _goUp() async {
-    if (!_canGoUp) return;
-    final parent = _cwd.substring(0, _cwd.lastIndexOf('/'));
-    final next = parent.isEmpty || parent == '/' ? kGuestHome : parent;
-    setState(() {
-      _cwd = assertGuestPathUnderHome(next);
-      _selected.clear();
-    });
+    if (!_controller.goUp()) return;
+    setState(() {});
     await _load();
   }
 
   Future<void> _openDir(GuestFsEntry entry) async {
-    setState(() {
-      _cwd = entry.guestPath;
-      _selected.clear();
-    });
+    _controller.openPath(entry.guestPath);
+    setState(() {});
     await _load();
   }
 
   Future<void> _openFile(GuestFsEntry entry) async {
     await Navigator.of(context).push(
       MaterialPageRoute(
-        builder: (_) => _FilePreviewScreen(
+        builder: (_) => FilePreviewScreen(
           provider: widget.provider,
           workspaceId: widget.workspaceId,
           guestPath: entry.guestPath,
@@ -154,9 +149,8 @@ class _FileBrowserScreenState extends State<FileBrowserScreen> {
   }
 
   Future<void> _jumpToProject() async {
-    final path = _projectPath;
-    if (path == null) return;
-    setState(() => _cwd = path);
+    if (!_controller.jumpToProject()) return;
+    setState(() {});
     await _load();
   }
 
@@ -218,7 +212,9 @@ class _FileBrowserScreenState extends State<FileBrowserScreen> {
     return result;
   }
 
-  Future<void> _importHostPaths(List<({String path, String name})> files) async {
+  Future<void> _importHostPaths(
+    List<({String path, String name})> files,
+  ) async {
     if (files.isEmpty) return;
     setState(() => _busy = true);
 
@@ -380,8 +376,9 @@ class _FileBrowserScreenState extends State<FileBrowserScreen> {
     final files = <({String path, String name})>[];
     Future<void> collect(DropItem item) async {
       if (item.path.isEmpty) return;
-      final name =
-          item.name.trim().isEmpty ? p.basename(item.path) : item.name.trim();
+      final name = item.name.trim().isEmpty
+          ? p.basename(item.path)
+          : item.name.trim();
       files.add((path: item.path, name: name));
     }
 
@@ -447,29 +444,17 @@ class _FileBrowserScreenState extends State<FileBrowserScreen> {
   }
 
   void _toggleSelected(String path) {
-    setState(() {
-      if (_selected.contains(path)) {
-        _selected.remove(path);
-      } else {
-        _selected.add(path);
-      }
-    });
+    setState(() => _controller.toggleSelection(path));
   }
 
   void _selectOnly(String path) {
-    setState(() {
-      _selected
-        ..clear()
-        ..add(path);
-    });
+    setState(() => _controller.selectOnly(path));
   }
 
   void _selectAll() {
-    setState(() {
-      _selected
-        ..clear()
-        ..addAll(_entries.map((e) => e.guestPath));
-    });
+    setState(
+      () => _controller.selectAll(_entries.map((entry) => entry.guestPath)),
+    );
   }
 
   void _onEntryTap(GuestFsEntry entry) {
@@ -507,35 +492,22 @@ class _FileBrowserScreenState extends State<FileBrowserScreen> {
         : null;
     final canPaste = _clipboard != null && _clipboard!.paths.isNotEmpty;
 
-    final action = await showMenu<String>(
+    final action = await showMenu<FileBrowserOperation>(
       context: context,
       position: RelativeRect.fromRect(
         globalPosition & const Size(1, 1),
         Offset.zero & overlay.size,
       ),
-      items: [
-        if (single != null)
-          PopupMenuItem(
-            value: 'open',
-            child: Text(single.isDirectory ? '打开' : '打开'),
-          ),
-        if (single != null)
-          const PopupMenuItem(value: 'rename', child: Text('重命名')),
-        if (hasSelection)
-          const PopupMenuItem(value: 'copy', child: Text('复制')),
-        if (hasSelection) const PopupMenuItem(value: 'cut', child: Text('剪切')),
-        if (canPaste) const PopupMenuItem(value: 'paste', child: Text('粘贴')),
-        if (hasSelection)
-          const PopupMenuItem(value: 'delete', child: Text('删除')),
-        if (_entries.isNotEmpty)
-          const PopupMenuItem(value: 'select_all', child: Text('全选')),
-        if (hasSelection)
-          const PopupMenuItem(value: 'clear', child: Text('取消选择')),
-      ],
+      items: buildFileBrowserOperationItems(
+        hasSingleSelection: single != null,
+        hasSelection: hasSelection,
+        canPaste: canPaste,
+        hasEntries: _entries.isNotEmpty,
+      ),
     );
     if (!mounted || action == null) return;
     switch (action) {
-      case 'open':
+      case FileBrowserOperation.open:
         if (single != null) {
           if (single.isDirectory) {
             await _openDir(single);
@@ -543,19 +515,19 @@ class _FileBrowserScreenState extends State<FileBrowserScreen> {
             await _openFile(single);
           }
         }
-      case 'rename':
+      case FileBrowserOperation.rename:
         await _renameSelected();
-      case 'copy':
+      case FileBrowserOperation.copy:
         _copySelected(cut: false);
-      case 'cut':
+      case FileBrowserOperation.cut:
         _copySelected(cut: true);
-      case 'paste':
+      case FileBrowserOperation.paste:
         await _pasteClipboard();
-      case 'delete':
+      case FileBrowserOperation.delete:
         await _deleteSelected();
-      case 'select_all':
+      case FileBrowserOperation.selectAll:
         _selectAll();
-      case 'clear':
+      case FileBrowserOperation.clear:
         _clearSelection();
     }
   }
@@ -591,9 +563,7 @@ class _FileBrowserScreenState extends State<FileBrowserScreen> {
         fromPath: path,
         toPath: dest,
       );
-      _selected
-        ..clear()
-        ..add(dest);
+      _controller.replaceSelection(dest);
       await _load();
       _snack('已重命名为 ${sanitizeInboxFileName(name)}');
     } catch (e) {
@@ -643,11 +613,12 @@ class _FileBrowserScreenState extends State<FileBrowserScreen> {
           debugPrint('delete failed $path: $e');
         }
       }
-      _selected.clear();
+      _controller.clearSelection();
       final clip = _clipboard;
       if (clip != null) {
-        final remain =
-            clip.paths.where((p) => !paths.contains(p)).toList(growable: false);
+        final remain = clip.paths
+            .where((p) => !paths.contains(p))
+            .toList(growable: false);
         _clipboard = remain.isEmpty
             ? null
             : _GuestClipboard(paths: remain, isCut: clip.isCut);
@@ -703,7 +674,7 @@ class _FileBrowserScreenState extends State<FileBrowserScreen> {
       if (clip.isCut) {
         _clipboard = null;
       }
-      _selected.clear();
+      _controller.clearSelection();
       await _load();
       if (failed == 0) {
         _snack(clip.isCut ? '已移动 $ok 项' : '已粘贴 $ok 项');
@@ -737,9 +708,9 @@ class _FileBrowserScreenState extends State<FileBrowserScreen> {
                   : '${widget.title} · $_relativeLabel',
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
-              style: Theme.of(context).textTheme.labelSmall?.copyWith(
-                color: scheme.onSurfaceVariant,
-              ),
+              style: Theme.of(
+                context,
+              ).textTheme.labelSmall?.copyWith(color: scheme.onSurfaceVariant),
             ),
           ],
         ),
@@ -768,8 +739,9 @@ class _FileBrowserScreenState extends State<FileBrowserScreen> {
             ),
             IconButton(
               tooltip: '剪切',
-              onPressed:
-                  _actionsEnabled ? () => _copySelected(cut: true) : null,
+              onPressed: _actionsEnabled
+                  ? () => _copySelected(cut: true)
+                  : null,
               icon: const Icon(Icons.content_cut),
             ),
             IconButton(
@@ -832,43 +804,12 @@ class _FileBrowserScreenState extends State<FileBrowserScreen> {
           children: [
             Column(
               children: [
-                Material(
-                  color: scheme.surfaceContainerHigh,
-                  child: Padding(
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 8,
-                      vertical: 4,
-                    ),
-                    child: Row(
-                      children: [
-                        IconButton(
-                          tooltip: '上一级',
-                          onPressed:
-                              !_actionsEnabled || !_canGoUp ? null : _goUp,
-                          icon: const Icon(Icons.arrow_upward),
-                        ),
-                        Expanded(
-                          child: SingleChildScrollView(
-                            scrollDirection: Axis.horizontal,
-                            child: Text(
-                              _relativeLabel,
-                              style: Theme.of(context).textTheme.bodyMedium
-                                  ?.copyWith(fontFamily: 'monospace'),
-                            ),
-                          ),
-                        ),
-                        if (dropEnabled)
-                          Padding(
-                            padding: const EdgeInsets.only(right: 8),
-                            child: Text(
-                              '可拖拽导入',
-                              style: Theme.of(context).textTheme.labelSmall
-                                  ?.copyWith(color: scheme.onSurfaceVariant),
-                            ),
-                          ),
-                      ],
-                    ),
-                  ),
+                FileBrowserPathNavigation(
+                  pathLabel: _relativeLabel,
+                  canGoUp: _canGoUp,
+                  enabled: _actionsEnabled,
+                  dropEnabled: dropEnabled,
+                  onGoUp: () => unawaited(_goUp()),
                 ),
                 Expanded(child: _buildBody(scheme)),
               ],
@@ -919,17 +860,14 @@ class _FileBrowserScreenState extends State<FileBrowserScreen> {
             children: [
               Icon(Icons.error_outline, color: scheme.error, size: 40),
               const SizedBox(height: 12),
-              Text(
-                '无法打开目录',
-                style: Theme.of(context).textTheme.titleMedium,
-              ),
+              Text('无法打开目录', style: Theme.of(context).textTheme.titleMedium),
               const SizedBox(height: 8),
               Text(
                 _error!,
                 textAlign: TextAlign.center,
-                style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                  color: scheme.onSurfaceVariant,
-                ),
+                style: Theme.of(
+                  context,
+                ).textTheme.bodySmall?.copyWith(color: scheme.onSurfaceVariant),
               ),
               const SizedBox(height: 16),
               FilledButton.tonal(onPressed: _load, child: const Text('重试')),
@@ -968,21 +906,18 @@ class _FileBrowserScreenState extends State<FileBrowserScreen> {
         final cutHere =
             _clipboard?.isCut == true &&
             _clipboard!.paths.contains(entry.guestPath);
-        final sizeLabel =
-            entry.isDirectory ? null : _formatSize(entry.sizeBytes);
+        final sizeLabel = entry.isDirectory
+            ? null
+            : _formatSize(entry.sizeBytes);
         final kind = entry.isDirectory
             ? null
             : guestMediaKindForPath(entry.guestPath);
         return GestureDetector(
           onSecondaryTapDown: (details) {
-            unawaited(
-              _showContextMenu(details.globalPosition, entry: entry),
-            );
+            unawaited(_showContextMenu(details.globalPosition, entry: entry));
           },
           onLongPressStart: (details) {
-            unawaited(
-              _showContextMenu(details.globalPosition, entry: entry),
-            );
+            unawaited(_showContextMenu(details.globalPosition, entry: entry));
           },
           child: ListTile(
             selected: selected,
@@ -1029,311 +964,5 @@ IconData _iconForMediaKind(GuestMediaKind kind) {
       return Icons.description_outlined;
     case GuestMediaKind.binary:
       return Icons.insert_drive_file_outlined;
-  }
-}
-
-class _FilePreviewScreen extends StatefulWidget {
-  const _FilePreviewScreen({
-    required this.provider,
-    required this.workspaceId,
-    required this.guestPath,
-  });
-
-  final SandboxProvider provider;
-  final String workspaceId;
-  final String guestPath;
-
-  @override
-  State<_FilePreviewScreen> createState() => _FilePreviewScreenState();
-}
-
-class _FilePreviewScreenState extends State<_FilePreviewScreen> {
-  bool _loading = true;
-  bool _editing = false;
-  bool _saving = false;
-  GuestMediaKind _kind = GuestMediaKind.binary;
-  String? _error;
-  String? _text;
-  GuestMediaSource? _media;
-  late final TextEditingController _editCtrl;
-
-  @override
-  void initState() {
-    super.initState();
-    _editCtrl = TextEditingController();
-    _load();
-  }
-
-  @override
-  void dispose() {
-    _editCtrl.dispose();
-    unawaited(_media?.dispose() ?? Future<void>.value());
-    super.dispose();
-  }
-
-  String get _fileName {
-    final parts = widget.guestPath.split('/');
-    return parts.isEmpty ? widget.guestPath : parts.last;
-  }
-
-  bool get _isText => _kind == GuestMediaKind.text;
-  bool get _isMedia =>
-      _kind == GuestMediaKind.image ||
-      _kind == GuestMediaKind.video ||
-      _kind == GuestMediaKind.audio;
-
-  Future<void> _load() async {
-    final previous = _media;
-    _media = null;
-    unawaited(previous?.dispose() ?? Future<void>.value());
-
-    setState(() {
-      _loading = true;
-      _error = null;
-      _editing = false;
-      _text = null;
-      _kind = guestMediaKindForPath(widget.guestPath);
-    });
-
-    try {
-      if (_isMedia) {
-        final source = await openGuestMediaSource(
-          provider: widget.provider,
-          workspaceId: widget.workspaceId,
-          guestAbsolutePath: widget.guestPath,
-          loadBytes: _kind == GuestMediaKind.image ||
-              _kind == GuestMediaKind.audio,
-        );
-        if (!mounted) {
-          await source.dispose();
-          return;
-        }
-        setState(() {
-          _media = source;
-          _loading = false;
-        });
-        return;
-      }
-
-      final bytes = await widget.provider.readGuestFile(
-        widget.workspaceId,
-        widget.guestPath,
-      );
-      if (!mounted) return;
-      if (bytes == null) {
-        setState(() {
-          _loading = false;
-          _error = '文件不存在或无法读取';
-        });
-        return;
-      }
-
-      final treatAsText =
-          _kind == GuestMediaKind.text || looksLikeTextBytes(bytes);
-      if (!treatAsText) {
-        setState(() {
-          _loading = false;
-          _kind = GuestMediaKind.binary;
-        });
-        return;
-      }
-
-      final text = utf8.decode(bytes, allowMalformed: true);
-      _editCtrl.text = text;
-      setState(() {
-        _loading = false;
-        _kind = GuestMediaKind.text;
-        _text = text;
-      });
-    } catch (e) {
-      if (!mounted) return;
-      setState(() {
-        _loading = false;
-        _error = e.toString();
-      });
-    }
-  }
-
-  Future<void> _save() async {
-    setState(() => _saving = true);
-    try {
-      await widget.provider.writeGuestFile(
-        widget.workspaceId,
-        widget.guestPath,
-        utf8.encode(_editCtrl.text),
-      );
-      if (!mounted) return;
-      setState(() {
-        _text = _editCtrl.text;
-        _editing = false;
-        _saving = false;
-      });
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(const SnackBar(content: Text('已保存')));
-    } catch (e) {
-      if (!mounted) return;
-      setState(() => _saving = false);
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text('保存失败：$e')));
-    }
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final scheme = Theme.of(context).colorScheme;
-    final immersiveVideo = !_loading &&
-        _error == null &&
-        _kind == GuestMediaKind.video &&
-        _media != null;
-
-    if (immersiveVideo) {
-      return Scaffold(
-        backgroundColor: Colors.black,
-        body: GuestVideoPreview(
-          source: _media!,
-          title: _fileName,
-          subtitle: widget.guestPath,
-          onClose: () => Navigator.of(context).maybePop(),
-        ),
-      );
-    }
-
-    return Scaffold(
-      appBar: AppBar(
-        title: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(_fileName, maxLines: 1, overflow: TextOverflow.ellipsis),
-            Text(
-              widget.guestPath,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: Theme.of(context).textTheme.labelSmall?.copyWith(
-                color: scheme.onSurfaceVariant,
-              ),
-            ),
-          ],
-        ),
-        actions: [
-          if (!_loading && _isText && _error == null && _text != null) ...[
-            if (_editing) ...[
-              IconButton(
-                tooltip: '取消',
-                onPressed: _saving
-                    ? null
-                    : () {
-                        _editCtrl.text = _text ?? '';
-                        setState(() => _editing = false);
-                      },
-                icon: const Icon(Icons.close),
-              ),
-              IconButton(
-                tooltip: '保存',
-                onPressed: _saving ? null : _save,
-                icon: _saving
-                    ? const SizedBox(
-                        width: 20,
-                        height: 20,
-                        child: CircularProgressIndicator(strokeWidth: 2),
-                      )
-                    : const Icon(Icons.save_outlined),
-              ),
-            ] else
-              IconButton(
-                tooltip: '编辑',
-                onPressed: () => setState(() => _editing = true),
-                icon: const Icon(Icons.edit_outlined),
-              ),
-          ],
-          IconButton(
-            tooltip: '刷新',
-            onPressed: _loading || _saving ? null : _load,
-            icon: const Icon(Icons.refresh),
-          ),
-        ],
-      ),
-      body: _buildBody(scheme),
-    );
-  }
-
-  Widget _buildBody(ColorScheme scheme) {
-    if (_loading) {
-      return const Center(child: CircularProgressIndicator());
-    }
-    if (_error != null) {
-      return Center(
-        child: Padding(
-          padding: const EdgeInsets.all(24),
-          child: Text(
-            _error!,
-            textAlign: TextAlign.center,
-            style: TextStyle(color: scheme.error),
-          ),
-        ),
-      );
-    }
-
-    final media = _media;
-    if (_isMedia && media != null) {
-      switch (_kind) {
-        case GuestMediaKind.image:
-          return GuestImagePreview(source: media);
-        case GuestMediaKind.video:
-          // Immersive player is built in [build]; keep a fallback for safety.
-          return GuestVideoPreview(
-            source: media,
-            title: _fileName,
-            subtitle: widget.guestPath,
-            onClose: () => Navigator.of(context).maybePop(),
-          );
-        case GuestMediaKind.audio:
-          return GuestAudioPreview(source: media, title: _fileName);
-        case GuestMediaKind.text:
-        case GuestMediaKind.binary:
-          break;
-      }
-    }
-
-    if (_kind == GuestMediaKind.binary) {
-      return Center(
-        child: Padding(
-          padding: const EdgeInsets.all(24),
-          child: Text(
-            '暂不支持预览此类型文件',
-            style: Theme.of(
-              context,
-            ).textTheme.bodyLarge?.copyWith(color: scheme.onSurfaceVariant),
-          ),
-        ),
-      );
-    }
-
-    if (_editing) {
-      return Padding(
-        padding: const EdgeInsets.all(12),
-        child: TextField(
-          controller: _editCtrl,
-          maxLines: null,
-          expands: true,
-          textAlignVertical: TextAlignVertical.top,
-          style: Theme.of(
-            context,
-          ).textTheme.bodyMedium?.copyWith(fontFamily: 'monospace'),
-          decoration: const InputDecoration(
-            border: OutlineInputBorder(),
-            contentPadding: EdgeInsets.all(12),
-          ),
-        ),
-      );
-    }
-    final language = highlightLanguageForPath(widget.guestPath);
-    final theme = highlightThemeForBrightness(scheme.brightness);
-    return SelectableHighlightView(
-      source: _text ?? '',
-      language: language,
-      theme: theme,
-    );
   }
 }

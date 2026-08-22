@@ -51,10 +51,7 @@ class BackgroundToolJob {
       if (error != null) return 'Error: $error';
       return '';
     }
-    return r.content
-        .whereType<TextPart>()
-        .map((p) => p.text)
-        .join('\n');
+    return r.content.whereType<TextPart>().map((p) => p.text).join('\n');
   }
 }
 
@@ -224,8 +221,7 @@ String buildBackgroundToolStubText({
 
 /// User-turn payload that reactivates the model after background jobs finish.
 String buildBackgroundTaskResultMessage(List<BackgroundToolJob> jobs) {
-  final buffer = StringBuffer()
-    ..writeln('以下后台工具任务已结束，请根据结果继续：');
+  final buffer = StringBuffer()..writeln('以下后台工具任务已结束，请根据结果继续：');
   for (final job in jobs) {
     final status = job.status == BackgroundToolJobStatus.failed
         ? 'failed'
@@ -258,7 +254,8 @@ String buildShellNotifyMessage({
 <shell-notify job_id="$jobId" tool="$toolName" call_id="$callId" regex="${_xmlEscape(regex)}" still_running="true">
 $matchText
 </shell-notify>
-'''.trim();
+'''
+      .trim();
 }
 
 String _xmlEscape(String value) {

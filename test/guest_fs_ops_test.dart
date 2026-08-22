@@ -24,8 +24,10 @@ class _LocalSandboxProvider implements SandboxProvider {
   );
 
   @override
-  Future<SandboxWorkspace> create(String workspaceId) =>
-      throw UnimplementedError();
+  Future<SandboxWorkspace> create(
+    String workspaceId, {
+    WorkspaceInitProgressCallback? onProgress,
+  }) => throw UnimplementedError();
 
   @override
   Future<SandboxWorkspace> attach(String workspaceId) =>
@@ -77,15 +79,13 @@ class _LocalSandboxProvider implements SandboxProvider {
   Future<List<GuestFsEntry>> listGuestDirectory(
     String workspaceId,
     String guestAbsolutePath,
-  ) async =>
-      const [];
+  ) async => const [];
 
   @override
   Future<String> resolveGuestHostPath(
     String workspaceId,
     String guestAbsolutePath,
-  ) async =>
-      _host(workspaceId, guestAbsolutePath);
+  ) async => _host(workspaceId, guestAbsolutePath);
 
   @override
   Future<CommandResult> runGuestCommand(String workspaceId, String cmd) async =>
@@ -117,7 +117,10 @@ void main() {
       fileName: 'a.txt',
     );
     expect(file, '/root/a.txt');
-    expect(await File(p.join(tmp.path, 'ws', 'root', 'a.txt')).exists(), isTrue);
+    expect(
+      await File(p.join(tmp.path, 'ws', 'root', 'a.txt')).exists(),
+      isTrue,
+    );
 
     final dir = await createGuestEmptyDirectory(
       provider: provider,

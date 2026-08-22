@@ -43,8 +43,7 @@ class _FakeProvider implements SandboxProvider {
   Future<Uint8List?> readGuestFile(
     String workspaceId,
     String guestAbsolutePath,
-  ) async =>
-      null;
+  ) async => null;
 
   @override
   Future<void> writeGuestFile(
@@ -64,8 +63,7 @@ class _FakeProvider implements SandboxProvider {
   Future<String> resolveGuestHostPath(
     String workspaceId,
     String guestAbsolutePath,
-  ) async =>
-      guestAbsolutePath;
+  ) async => guestAbsolutePath;
 
   @override
   Future<CommandResult> runGuestCommand(String workspaceId, String cmd) async =>
@@ -78,8 +76,7 @@ class _FakeProvider implements SandboxProvider {
   Future<List<GuestFsEntry>> listGuestDirectory(
     String workspaceId,
     String guestAbsolutePath,
-  ) async =>
-      const [];
+  ) async => const [];
 }
 
 void main() {
@@ -98,10 +95,9 @@ void main() {
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 50));
 
-    expect(find.text('Vault'), findsWidgets);
-    expect(find.textContaining('今天想让 Vault 帮你做什么'), findsOneWidget);
-    expect(find.textContaining('环境不可用'), findsWidgets);
-    expect(find.textContaining('还没有工作区'), findsOneWidget);
+    expect(find.text('工作区'), findsWidgets);
+    expect(find.text('一个工作区 = 一套独立 Linux 环境'), findsOneWidget);
+    expect(find.text('全部工作区'), findsOneWidget);
     expect(find.text('新建工作区'), findsOneWidget);
 
     await tester.pumpWidget(const SizedBox.shrink());

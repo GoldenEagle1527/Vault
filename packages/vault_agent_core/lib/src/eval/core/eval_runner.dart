@@ -1,8 +1,3 @@
-import 'dart:async';
-
-import 'package:logging/logging.dart';
-
-import '../graders/score.dart';
 import '../llm/rate_limit_gate.dart';
 import '../llm/recording_store.dart';
 import '../observability/composite_trace_exporter.dart';
@@ -13,13 +8,10 @@ import 'eval_environment.dart';
 import 'eval_run_report.dart';
 import 'eval_suite.dart';
 import 'eval_task.dart';
-import 'outcome.dart';
-import 'transcript.dart';
-import 'transcript_recorder.dart';
-import 'trial.dart';
+import 'trial_executor.dart';
+import 'trial_planner.dart';
 import 'trial_result.dart';
-
-final _logger = Logger('EvalRunner');
+import 'trial_scheduler.dart';
 
 /// Runs evaluation suites with bounded concurrency and optional rate
 /// limiting. See RFC §6.8 and §6.15.
@@ -78,30 +70,22 @@ extension EvalRunnerOps on EvalRunner {
         ? suite.tasks
         : suite.tasks.where(filter).toList();
 
-    // Build the work queue: (task, trialIndex) pairs.
-    final queue = <_PlannedTrial>[];
-    for (final task in tasks) {
-      final trialsPerRun = trialsOverride ?? task.trialsPerRun;
-      for (var i = 0; i < trialsPerRun; i++) {
-        queue.add(_PlannedTrial(task: task, trialIndex: i));
-      }
-    }
-
-    final results = <TrialResult>[];
-    final startedAt = DateTime.now();
-
-    // Bounded concurrency via a simple semaphore over an async queue.
-    final iterator = queue.iterator;
-    final pool = List<Future<void>>.generate(
-      concurrency,
-      (_) => _worker(
-        iterator: iterator,
-        suite: suite,
-        runName: runName,
-        results: results,
-      ),
+    final plannedTrials = const TrialPlanner().plan(
+      tasks: tasks,
+      trialsOverride: trialsOverride,
     );
-    await Future.wait(pool);
+    final startedAt = DateTime.now();
+    final executor = TrialExecutor(
+      environment: environment,
+      harnessFactory: harnessFactory,
+      exporter: exporter,
+      defaultTimeout: defaultTimeout,
+    );
+    final results = await TrialScheduler(concurrency: concurrency).run(
+      trials: plannedTrials,
+      execute: (planned) =>
+          executor.run(planned: planned, suite: suite, runName: runName),
+    );
 
     final endedAt = DateTime.now();
 
@@ -171,201 +155,5 @@ extension EvalRunnerOps on EvalRunner {
       trialsOverride: trialsOverride,
     );
     return report.trials;
-  }
-}
-
-class _PlannedTrial {
-  final EvalTask task;
-  final int trialIndex;
-  _PlannedTrial({required this.task, required this.trialIndex});
-}
-
-extension on EvalRunner {
-  Future<void> _worker({
-    required Iterator<_PlannedTrial> iterator,
-    required EvalSuite suite,
-    required String runName,
-    required List<TrialResult> results,
-  }) async {
-    while (true) {
-      _PlannedTrial planned;
-      // The dart Iterator on List is single-thread safe within one isolate
-      // because moveNext()/current are synchronous; we just need a critical
-      // section that's atomic in the cooperative-scheduling sense.
-      if (!iterator.moveNext()) return;
-      planned = iterator.current;
-
-      final result = await _runOneTrial(
-        planned: planned,
-        suite: suite,
-        runName: runName,
-      );
-      results.add(result);
-    }
-  }
-
-  Future<TrialResult> _runOneTrial({
-    required _PlannedTrial planned,
-    required EvalSuite suite,
-    required String runName,
-  }) async {
-    final task = planned.task;
-    final trialIndex = planned.trialIndex;
-
-    final startedAt = DateTime.now();
-    Trial trial = Trial(
-      runName: runName,
-      suiteName: suite.name,
-      taskId: task.id,
-      trialIndex: trialIndex,
-      startedAt: startedAt,
-      endedAt: startedAt, // updated below
-      status: TrialStatus.errored,
-    );
-
-    try {
-      await exporter.onTrialStart(trial, task);
-    } catch (e, st) {
-      _logger.warning('exporter.onTrialStart failed', e, st);
-    }
-
-    final timeout = task.timeout ?? defaultTimeout;
-    Transcript? transcript;
-    Outcome? outcome;
-    var status = TrialStatus.errored;
-    String? failureReason;
-
-    final context = await environment.prepare(trial: trial, task: task);
-    final recorder = EvalTranscriptRecorder(
-      controller: context.controller,
-      startedAt: startedAt,
-      now: context.clock.now,
-    );
-    try {
-      final session = await harnessFactory.create(
-        task: task,
-        trial: trial,
-        context: context,
-      );
-      try {
-        final r = await session.run().timeout(timeout);
-        transcript = r.transcript;
-        outcome = r.outcome;
-        status = TrialStatus.passed; // tentative; graders decide below
-      } on TimeoutException catch (e) {
-        status = TrialStatus.timedOut;
-        failureReason = 'Trial timed out after $timeout: $e';
-      } catch (e, st) {
-        status = TrialStatus.errored;
-        failureReason = '$e';
-        _logger.warning('trial run threw', e, st);
-      } finally {
-        await session.dispose();
-      }
-    } finally {
-      // EventBus notifications are scheduled as microtasks by default. Give
-      // controller listeners a chance to drain before snapshotting.
-      await Future<void>.delayed(Duration.zero);
-      final currentTranscript = transcript;
-      if (currentTranscript == null || _isEmptyTranscript(currentTranscript)) {
-        transcript = recorder.snapshot();
-      }
-      await recorder.dispose();
-      await environment.dispose(context);
-    }
-
-    final endedAt = DateTime.now();
-
-    // If the harness produced no transcript/outcome (timeout/error), make
-    // placeholders so graders can still decide what to do.
-    final effectiveTranscript =
-        transcript ??
-        Transcript(
-          messages: const [],
-          toolCalls: const [],
-          metrics: const TranscriptMetrics(
-            nTurns: 0,
-            nToolCalls: 0,
-            nTotalTokens: 0,
-          ),
-        );
-    outcome ??= const Outcome(environmentState: {});
-
-    // Run graders. Each grader returns a Score; runner does not enforce
-    // pass/fail above the grader's own threshold.
-    final scores = <Score>[];
-    for (final grader in task.graders) {
-      try {
-        final score = await grader.grade(
-          trial: trial,
-          transcript: effectiveTranscript,
-          outcome: outcome,
-          context: context,
-          referenceSolution: task.referenceSolution,
-        );
-        scores.add(score);
-      } catch (e, st) {
-        _logger.warning('grader ${grader.name} threw', e, st);
-        scores.add(
-          Score(
-            graderName: grader.name,
-            value: null,
-            passed: null,
-            rationale: 'grader exception: $e',
-          ),
-        );
-      }
-    }
-
-    // Final trial status reflects graders.
-    final passed = scores
-        .where((s) => s.passed != null)
-        .every((s) => s.passed == true);
-    if (status == TrialStatus.passed && !passed) status = TrialStatus.failed;
-
-    trial = Trial(
-      runName: trial.runName,
-      suiteName: trial.suiteName,
-      taskId: trial.taskId,
-      trialIndex: trial.trialIndex,
-      startedAt: startedAt,
-      endedAt: endedAt,
-      status: status,
-      failureReason: failureReason,
-    );
-
-    final result = TrialResult(
-      trial: trial,
-      transcript: effectiveTranscript,
-      outcome: outcome,
-      scores: scores,
-    );
-
-    try {
-      await exporter.onTrialEnd(
-        trial: trial,
-        transcript: effectiveTranscript,
-        outcome: outcome,
-        scores: scores,
-      );
-    } catch (e, st) {
-      _logger.warning('exporter.onTrialEnd failed', e, st);
-    }
-
-    return result;
-  }
-
-  bool _isEmptyTranscript(Transcript transcript) {
-    final metrics = transcript.metrics;
-    return transcript.messages.isEmpty &&
-        transcript.toolCalls.isEmpty &&
-        transcript.reasoningSteps.isEmpty &&
-        transcript.events.isEmpty &&
-        metrics.nTurns == 0 &&
-        metrics.nToolCalls == 0 &&
-        metrics.nTotalTokens == 0 &&
-        metrics.timeToFirstToken == null &&
-        metrics.timeToLastToken == null &&
-        metrics.outputTokensPerSec == null;
   }
 }

@@ -52,11 +52,7 @@ void main() {
             ),
           ]),
         );
-        expect(
-          result.isLoop,
-          isFalse,
-          reason: '同一工具不同参数第 ${i + 1} 次不应触发环路',
-        );
+        expect(result.isLoop, isFalse, reason: '同一工具不同参数第 ${i + 1} 次不应触发环路');
       }
     });
 

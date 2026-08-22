@@ -104,6 +104,107 @@ void main() {
       expect(functionResponse['name'], 'Glob');
       expect(functionResponse['response'], {'content': '["lib/main.dart"]'});
     });
+
+    test('stream preserves chunks, usage, and function calls', () async {
+      final adapter = _CaptureAdapter([
+        (_) => _jsonResponse({
+          'candidates': [
+            {
+              'content': {
+                'parts': [
+                  {'text': 'hello'},
+                  {
+                    'functionCall': {
+                      'id': 'call_stream',
+                      'name': 'Glob',
+                      'args': {'pattern': '*.dart'},
+                    },
+                  },
+                ],
+              },
+              'finishReason': 'STOP',
+            },
+          ],
+          'usageMetadata': {
+            'promptTokenCount': 2,
+            'candidatesTokenCount': 3,
+            'totalTokenCount': 5,
+          },
+        }),
+      ]);
+      final client = GeminiClient(
+        apiKey: 'test-key',
+        client: Dio()..httpClientAdapter = adapter,
+      );
+
+      final stream = await client.stream([
+        UserMessage.text('find files'),
+      ], modelConfig: ModelConfig(model: 'gemini-test'));
+      final events = await stream.toList();
+
+      expect(events, hasLength(1));
+      final message = events.single.modelMessage!;
+      expect(message.textOutput, 'hello');
+      expect(message.functionCalls.single.id, 'call_stream');
+      expect(message.usage!.promptTokens, 2);
+      expect(message.usage!.completionTokens, 3);
+      expect(message.usage!.totalTokens, 5);
+    });
+
+    test('generate preserves HTTP and stop-reason error semantics', () async {
+      final httpErrorAdapter = _CaptureAdapter([
+        (_) => ResponseBody.fromString('bad request', 400),
+      ]);
+      final httpErrorClient = GeminiClient(
+        apiKey: 'test-key',
+        client: Dio()..httpClientAdapter = httpErrorAdapter,
+        maxRetries: 0,
+      );
+
+      await expectLater(
+        httpErrorClient.generate([
+          UserMessage.text('hello'),
+        ], modelConfig: ModelConfig(model: 'gemini-test')),
+        throwsA(
+          predicate(
+            (error) => error.toString().contains(
+              'Failed to generate from Gemini: 400',
+            ),
+          ),
+        ),
+      );
+
+      final stopReasonAdapter = _CaptureAdapter([
+        (_) => _jsonResponse({
+          'candidates': [
+            {
+              'content': {
+                'parts': [
+                  {'text': 'bad call'},
+                ],
+              },
+              'finishReason': 'OTHER',
+            },
+          ],
+        }),
+      ]);
+      final stopReasonClient = GeminiClient(
+        apiKey: 'test-key',
+        client: Dio()..httpClientAdapter = stopReasonAdapter,
+        maxRetries: 0,
+      );
+
+      await expectLater(
+        stopReasonClient.generate([
+          UserMessage.text('hello'),
+        ], modelConfig: ModelConfig(model: 'gemini-test')),
+        throwsA(
+          predicate(
+            (error) => error.toString() == 'Exception: Stop reason is OTHER',
+          ),
+        ),
+      );
+    });
   });
 }
 

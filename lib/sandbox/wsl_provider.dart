@@ -2,17 +2,19 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter/services.dart';
-import 'package:flutter_pty/flutter_pty.dart';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 import 'package:vault/offload/offload_host_server.dart';
 import 'package:vault/offload/wsl_offload_install.dart';
 import 'package:vault/sandbox/alpine_mirrors.dart';
 import 'package:vault/sandbox/guest_fs_list.dart';
-import 'package:vault/sandbox/persistent_shell.dart';
 import 'package:vault/sandbox/sandbox_provider.dart';
 import 'package:vault/sandbox/workspace_bootstrap.dart';
 import 'package:vault/sandbox/wsl_output.dart';
+import 'package:vault/sandbox/wsl_process_config.dart';
+import 'package:vault/sandbox/wsl_workspace.dart';
+
+export 'package:vault/sandbox/wsl_workspace.dart';
 
 /// 每个工作区对应一个独立的 WSL2 发行版。
 ///
@@ -78,11 +80,7 @@ class WslProvider implements SandboxProvider {
   }
 
   /// 精简传给 wsl.exe 的环境，避免宿主超长 PATH 在 automount=false 时被翻译失败。
-  static const _wslHostEnv = {
-    'PATH': r'C:\Windows\System32;C:\Windows',
-    'SystemRoot': r'C:\Windows',
-    'WINDIR': r'C:\Windows',
-  };
+  static const _wslHostEnv = wslHostEnvironment;
 
   Future<({int exitCode, String stdout, String stderr})> _wsl(
     List<String> args,
@@ -173,11 +171,7 @@ class WslProvider implements SandboxProvider {
     const totalSteps = 6;
     void report(int step, String label) {
       onProgress?.call(
-        WorkspaceInitProgress(
-          step: step,
-          totalSteps: totalSteps,
-          label: label,
-        ),
+        WorkspaceInitProgress(step: step, totalSteps: totalSteps, label: label),
       );
     }
 
@@ -216,10 +210,7 @@ class WslProvider implements SandboxProvider {
     // （automount=false 时翻译 Windows PATH 会失败，交互启动常因此 RPC 报错）。
     report(3, '正在配置发行版…');
     await _configureDistro(name);
-    report(
-      4,
-      '正在安装 ${kDefaultAlpinePackages.join('、')}…',
-    );
+    report(4, '正在安装 ${kDefaultAlpinePackages.join('、')}…');
     await _installDefaultPackages(name);
     report(5, '正在初始化工作区…');
     await _installOffloadBridge(name);
@@ -644,9 +635,7 @@ EOF
       throw StateError('目录不存在：$guest');
     }
     if (!result.success) {
-      throw StateError(
-        '无法列出沙箱目录 $guest：${result.stderr}'.trim(),
-      );
+      throw StateError('无法列出沙箱目录 $guest：${result.stderr}'.trim());
     }
     return parseLsMinusOneAp(result.stdout, guest);
   }
@@ -689,180 +678,3 @@ EOF
     return out;
   }
 }
-
-class WslWorkspace implements SandboxWorkspace {
-  WslWorkspace({
-    required this.workspaceId,
-    required this.distroName,
-    int rows = 32,
-    int columns = 100,
-  }) {
-    // 显式启动 /bin/sh，并覆盖 PATH，避免把宿主超长 Windows PATH 传给 wsl.exe。
-    _pty = Pty.start(
-      'wsl.exe',
-      arguments: [
-        '-d',
-        distroName,
-        '-u',
-        'root',
-        '--cd',
-        '/root',
-        '-e',
-        '/bin/sh',
-        '-l',
-      ],
-      environment: WslProvider._wslHostEnv,
-      rows: rows,
-      columns: columns,
-    );
-  }
-
-  @override
-  final String workspaceId;
-
-  final String distroName;
-  late final Pty _pty;
-  PersistentShell? _agentShell;
-  bool _disposed = false;
-
-  @override
-  Stream<Uint8List> get output => _pty.output;
-
-  @override
-  void write(String data) {
-    writeBytes(Uint8List.fromList(utf8.encode(data)));
-  }
-
-  @override
-  void writeBytes(Uint8List data) {
-    _pty.write(data);
-  }
-
-  @override
-  void resize(int cols, int rows) {
-    _pty.resize(rows, cols);
-  }
-
-  @override
-  Future<int> get exitCode => _pty.exitCode;
-
-  Future<PersistentShell> _ensureAgentShell() async {
-    final existing = _agentShell;
-    if (existing != null && existing.running) return existing;
-    if (existing != null) await existing.stop();
-    final shell = PersistentShell(
-      executable: 'wsl.exe',
-      arguments: [
-        '-d',
-        distroName,
-        '-u',
-        'root',
-        '--cd',
-        kGuestHome,
-        '-e',
-        '/bin/sh',
-      ],
-      environment: WslProvider._wslHostEnv,
-      includeParentEnvironment: false,
-    );
-    _agentShell = shell;
-    return shell;
-  }
-
-  @override
-  Future<CommandResult> run(
-    String cmd, {
-    Map<String, String>? environment,
-    Duration? timeout,
-  }) async {
-    final shell = await _ensureAgentShell();
-    return shell.run(
-      cmd,
-      environment: environment,
-      timeout: timeout,
-    );
-  }
-
-  @override
-  Future<void> writeGuestFile(String guestAbsolutePath, List<int> bytes) async {
-    final guestPath = assertGuestPathUnderHome(guestAbsolutePath);
-    final parent = p.posix.dirname(guestPath);
-    final mkdir = await run('mkdir -p ${shellSingleQuote(parent)}');
-    if (!mkdir.success) {
-      throw StateError('无法在沙箱内创建目录 $parent：${mkdir.stderr}');
-    }
-
-    // Prefer \\wsl$\ UNC (no size limit from argv); fall back to base64 pipe.
-    final unc = _wslUncPath(guestPath);
-    try {
-      final file = File(unc);
-      await file.parent.create(recursive: true);
-      await file.writeAsBytes(bytes, flush: true);
-      return;
-    } catch (_) {
-      // Fall through.
-    }
-
-    final proc = await Process.start('wsl.exe', [
-      '-d',
-      distroName,
-      '-u',
-      'root',
-      '--cd',
-      kGuestHome,
-      '-e',
-      '/bin/sh',
-      '-c',
-      'base64 -d > ${shellSingleQuote(guestPath)}',
-    ]);
-    proc.stdin.add(utf8.encode(base64Encode(bytes)));
-    await proc.stdin.close();
-    final exit = await proc.exitCode;
-    if (exit != 0) {
-      final err = await proc.stderr.transform(utf8.decoder).join();
-      throw StateError('写入沙箱文件失败（exit $exit）：$err');
-    }
-  }
-
-  @override
-  Future<Uint8List?> readGuestFile(String guestAbsolutePath) async {
-    final guestPath = assertGuestPathUnderHome(guestAbsolutePath);
-    try {
-      final file = File(_wslUncPath(guestPath));
-      if (await file.exists()) {
-        return Uint8List.fromList(await file.readAsBytes());
-      }
-    } catch (_) {
-      // Fall through to wsl base64.
-    }
-    final result = await run(
-      'if [ -f ${shellSingleQuote(guestPath)} ]; then base64 ${shellSingleQuote(guestPath)}; else exit 2; fi',
-    );
-    if (result.exitCode == 2 || result.exitCode != 0) return null;
-    try {
-      final b64 = result.stdout.replaceAll(RegExp(r'\s+'), '');
-      if (b64.isEmpty) return null;
-      return Uint8List.fromList(base64Decode(b64));
-    } catch (_) {
-      return null;
-    }
-  }
-
-  String _wslUncPath(String guestAbsolutePath) {
-    final relative = guestAbsolutePath.startsWith('/')
-        ? guestAbsolutePath.substring(1)
-        : guestAbsolutePath;
-    return '\\\\wsl\$\\$distroName\\${relative.replaceAll('/', '\\')}';
-  }
-
-  @override
-  Future<void> dispose() async {
-    if (_disposed) return;
-    _disposed = true;
-    await _agentShell?.stop();
-    _agentShell = null;
-    _pty.kill();
-  }
-}
-
-// shellSingleQuote lives in sandbox_models.dart (shared with proot / smoke).

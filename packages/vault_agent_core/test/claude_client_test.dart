@@ -1,8 +1,10 @@
 import 'dart:convert';
 
-import 'package:vault_agent_core/vault_agent_core.dart';
 import 'package:dio/dio.dart';
 import 'package:test/test.dart';
+import 'package:vault_agent_core/src/core/llm_client.dart';
+import 'package:vault_agent_core/src/core/message.dart';
+import 'package:vault_agent_core/src/llm/claude_client.dart';
 
 void main() {
   group('ClaudeClient', () {

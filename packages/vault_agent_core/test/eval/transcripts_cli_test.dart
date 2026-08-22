@@ -1,4 +1,3 @@
-import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
@@ -89,84 +88,16 @@ Future<({String out, String err, int code})> _runViewer(
 ) async {
   final stdoutBuffer = StringBuffer();
   final stderrBuffer = StringBuffer();
-  final code = await runZonedTranscriptViewer(
+  final code = await runTranscriptViewer(
     args,
-    onStdout: (s) => stdoutBuffer.write(s),
-    onStderr: (s) => stderrBuffer.write(s),
+    stdoutSink: stdoutBuffer,
+    stderrSink: stderrBuffer,
   );
   return (
     out: stdoutBuffer.toString(),
     err: stderrBuffer.toString(),
     code: code,
   );
-}
-
-/// We don't want stdout to actually print during tests; the viewer prints
-/// to the global stdout. We capture by overriding. The viewer uses
-/// dart:io stdout/stderr directly so we use IOOverrides.
-Future<int> runZonedTranscriptViewer(
-  List<String> args, {
-  required void Function(String) onStdout,
-  required void Function(String) onStderr,
-}) async {
-  return IOOverrides.runZoned<Future<int>>(
-    () => runTranscriptViewer(args),
-    stdout: () => _CapturingStdout(onStdout),
-    stderr: () => _CapturingStdout(onStderr),
-  );
-}
-
-/// Minimal Stdout wrapper that delegates writes to a callback.
-class _CapturingStdout implements Stdout {
-  final void Function(String) sink;
-  _CapturingStdout(this.sink);
-
-  @override
-  void writeln([Object? object = '']) => sink('${object ?? ''}\n');
-
-  @override
-  void write(Object? object) => sink('${object ?? ''}');
-
-  @override
-  void writeAll(Iterable objects, [String separator = '']) {
-    sink(objects.map((e) => '$e').join(separator));
-  }
-
-  @override
-  void writeCharCode(int charCode) => sink(String.fromCharCode(charCode));
-
-  @override
-  Future close() async {}
-  @override
-  Future get done => Future.value();
-  @override
-  Future flush() async {}
-
-  @override
-  Encoding encoding = utf8;
-  @override
-  bool get hasTerminal => false;
-  @override
-  IOSink get nonBlocking => throw UnimplementedError();
-  @override
-  bool get supportsAnsiEscapes => false;
-  @override
-  int get terminalColumns => 80;
-  @override
-  int get terminalLines => 24;
-  @override
-  void add(List<int> data) => sink(utf8.decode(data));
-  @override
-  void addError(Object error, [StackTrace? stackTrace]) {}
-  @override
-  Future addStream(Stream<List<int>> stream) async {}
-  Future<dynamic> any(bool Function(int) test) => throw UnimplementedError();
-  Stream<List<int>> asBroadcastStream({
-    void Function(StreamSubscription<List<int>>)? onListen,
-    void Function(StreamSubscription<List<int>>)? onCancel,
-  }) => throw UnimplementedError();
-  @override
-  noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
 }
 
 void main() {

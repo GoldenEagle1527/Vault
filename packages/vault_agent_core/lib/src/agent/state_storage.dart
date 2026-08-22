@@ -1,4 +1,4 @@
-import 'package:vault_agent_core/src/agent/stateful_agent.dart';
+import 'agent_state.dart';
 
 abstract class StateStorage {
   Future<AgentState> loadOrCreate(

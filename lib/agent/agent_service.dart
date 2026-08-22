@@ -5,13 +5,16 @@ import 'package:dio/dio.dart';
 import 'package:uuid/uuid.dart';
 import 'package:vault/agent/agent_inbox.dart';
 import 'package:vault/agent/agent_settings.dart';
+import 'package:vault/agent/agent_stream_mapper.dart';
 import 'package:vault/agent/agent_system_prompt.dart';
+import 'package:vault/agent/agent_ui_history_mapper.dart'
+    as agent_ui_history_mapper;
+import 'package:vault/agent/agent_ui_events.dart';
 import 'package:vault/agent/hydrate_images_hook.dart';
 import 'package:vault/agent/conversation_store.dart';
 import 'package:vault/agent/project_site_launcher.dart';
 import 'package:vault/agent/project_store.dart';
 import 'package:vault/agent/site_gateway.dart';
-import 'package:vault/agent/system_notice.dart';
 import 'package:vault/agent/ask_user.dart';
 import 'package:vault/agent/conversation_state.dart';
 import 'package:vault/agent/project_checkpoint.dart';
@@ -26,144 +29,9 @@ import 'package:vault/agent/workspace_mode.dart';
 import 'package:vault/sandbox/sandbox_provider.dart';
 import 'package:vault_agent_core/vault_agent_core.dart';
 
-/// UI-facing chat / tool step for the Agent screen.
-sealed class AgentUiEvent {
-  const AgentUiEvent();
-}
-
-class AgentUiUserMessage extends AgentUiEvent {
-  const AgentUiUserMessage(
-    this.text, {
-    this.promptTokens,
-    this.at,
-    this.historyIndex,
-    this.attachments = const [],
-  });
-  final String text;
-  final int? promptTokens;
-  final DateTime? at;
-  final int? historyIndex;
-  final List<ChatAttachmentMeta> attachments;
-}
-
-class AgentUiAssistantDelta extends AgentUiEvent {
-  const AgentUiAssistantDelta(this.text);
-  final String text;
-}
-
-class AgentUiAssistantFinal extends AgentUiEvent {
-  const AgentUiAssistantFinal(
-    this.text, {
-    this.promptTokens,
-    this.completionTokens,
-    this.totalTokens,
-    this.duration,
-    this.at,
-  });
-  final String text;
-  final int? promptTokens;
-  final int? completionTokens;
-  final int? totalTokens;
-  final Duration? duration;
-  final DateTime? at;
-}
-
-/// Token / latency stats for the latest model call (live stream).
-class AgentUiModelUsage extends AgentUiEvent {
-  const AgentUiModelUsage({
-    required this.promptTokens,
-    required this.completionTokens,
-    this.totalTokens,
-    this.duration,
-    this.at,
-  });
-  final int promptTokens;
-  final int completionTokens;
-  final int? totalTokens;
-  final Duration? duration;
-  final DateTime? at;
-}
-
-/// Drop a trailing whitespace-only assistant draft (common before tool calls).
-class AgentUiDiscardDraftAssistant extends AgentUiEvent {
-  const AgentUiDiscardDraftAssistant();
-}
-
-class AgentUiToolCall extends AgentUiEvent {
-  const AgentUiToolCall({
-    required this.name,
-    required this.arguments,
-    this.callId,
-    this.historyIndex,
-  });
-  final String name;
-  final String arguments;
-  final String? callId;
-  final int? historyIndex;
-}
-
-class AgentUiToolResult extends AgentUiEvent {
-  const AgentUiToolResult({
-    required this.name,
-    required this.result,
-    this.callId,
-    this.historyIndex,
-  });
-  final String name;
-  final String result;
-  final String? callId;
-  final int? historyIndex;
-}
-
-/// Current conversation was replaced by a fork; UI should rehydrate.
-class AgentUiConversationForked extends AgentUiEvent {
-  const AgentUiConversationForked(this.conversationId);
-  final String conversationId;
-}
-
-/// Tool exceeded the background threshold and is still running.
-class AgentUiToolBackgrounded extends AgentUiEvent {
-  const AgentUiToolBackgrounded({
-    required this.name,
-    required this.jobId,
-    required this.callId,
-    required this.stubResult,
-  });
-  final String name;
-  final String jobId;
-  final String callId;
-  final String stubResult;
-}
-
-/// Previously backgrounded tool finished (UI card update; model may react next).
-class AgentUiToolBackgroundCompleted extends AgentUiEvent {
-  const AgentUiToolBackgroundCompleted({
-    required this.name,
-    required this.jobId,
-    required this.callId,
-    required this.result,
-    required this.isError,
-  });
-  final String name;
-  final String jobId;
-  final String callId;
-  final String result;
-  final bool isError;
-}
-
-/// Shell notify_regex matched; process still running.
-class AgentUiShellNotify extends AgentUiEvent {
-  const AgentUiShellNotify({
-    required this.jobId,
-    required this.callId,
-    required this.regex,
-    required this.matchText,
-  });
-  final String jobId;
-  final String callId;
-  final String regex;
-  final String matchText;
-}
+export 'package:vault/agent/agent_stream_mapper.dart';
+export 'package:vault/agent/agent_ui_events.dart';
+export 'package:vault/agent/agent_ui_history_mapper.dart';
 
 class _PendingShellNotify {
   const _PendingShellNotify({
@@ -174,23 +42,6 @@ class _PendingShellNotify {
   final BackgroundToolJob job;
   final String matchText;
   final String regex;
-}
-
-class AgentUiError extends AgentUiEvent {
-  const AgentUiError(this.message);
-  final String message;
-}
-
-/// Persistent system hint in the transcript (not a user/assistant bubble).
-class AgentUiSystemNotice extends AgentUiEvent {
-  const AgentUiSystemNotice(this.text, {this.isError = false});
-  final String text;
-  final bool isError;
-}
-
-class AgentUiStatus extends AgentUiEvent {
-  const AgentUiStatus(this.message);
-  final String message;
 }
 
 /// Thin Vault adapter over vendored [StatefulAgent] + sandbox shell tool.
@@ -290,12 +141,14 @@ class AgentService {
   String? _projectPath;
   CancelToken? _cancelToken;
   bool _running = false;
-  DateTime? _modelCallStartedAt;
   StreamSubscription<BackgroundToolJobEvent>? _backgroundSub;
   final List<BackgroundToolJob> _pendingCompletions = [];
   final List<_PendingShellNotify> _pendingNotifies = [];
   final StreamController<AgentUiEvent> _backgroundUi =
       StreamController<AgentUiEvent>.broadcast();
+  late final AgentStreamMapper _streamMapper = AgentStreamMapper(
+    runningBackgroundJobs: () => _agent?.backgroundJobs.runningJobs ?? const [],
+  );
   bool _reactivationScheduled = false;
 
   bool get _hasPendingBackgroundWakeups =>
@@ -329,7 +182,7 @@ class AgentService {
   List<AgentUiEvent> get restoredUiEvents {
     final messages =
         (_agent?.state ?? _pendingState)?.history.messages ?? const [];
-    return uiEventsFromHistory(messages);
+    return agent_ui_history_mapper.uiEventsFromHistory(messages);
   }
 
   String get conversationTitle {
@@ -439,9 +292,7 @@ class AgentService {
         hostDevice: VaultHostDevice.current(),
       ),
       controller: AgentController(),
-      hooks: [
-        HydrateConversationImagesHook(_workspace.readGuestFile),
-      ],
+      hooks: [HydrateConversationImagesHook(_workspace.readGuestFile)],
       autoSaveStateFunc: _store == null ? null : (s) => _persistIfNeeded(s),
       toolBackgroundAfter: kAgentToolBackgroundAfter,
       withGeneralPrinciples: _mode != WorkspaceMode.dev,
@@ -465,34 +316,16 @@ class AgentService {
         _pendingNotifies.add(
           _PendingShellNotify(job: job, matchText: text, regex: regex),
         );
-        if (!_backgroundUi.isClosed) {
-          _backgroundUi.add(
-            AgentUiShellNotify(
-              jobId: job.jobId,
-              callId: job.callId,
-              regex: regex,
-              matchText: text,
-            ),
-          );
-          _backgroundUi.add(const AgentUiStatus('shell 输出已匹配，准备唤醒模型…'));
-        }
       case BackgroundToolJobEventKind.completed:
         _pendingCompletions.add(job);
-        if (!_backgroundUi.isClosed) {
-          _backgroundUi.add(
-            AgentUiToolBackgroundCompleted(
-              name: job.toolName,
-              jobId: job.jobId,
-              callId: job.callId,
-              result: job.resultText(),
-              isError:
-                  job.status == BackgroundToolJobStatus.failed ||
-                  (job.result?.isError ?? false),
-            ),
-          );
-          final n = runningBackgroundJobCount;
-          _backgroundUi.add(AgentUiStatus(n == 0 ? '后台任务已完成' : '后台任务进行中：$n'));
-        }
+    }
+    if (!_backgroundUi.isClosed) {
+      for (final uiEvent in _streamMapper.mapBackgroundJobEvent(
+        event,
+        runningJobCount: runningBackgroundJobCount,
+      )) {
+        _backgroundUi.add(uiEvent);
+      }
     }
     if (!_running) {
       unawaited(_scheduleIdleReactivation());
@@ -559,14 +392,17 @@ class AgentService {
       );
     }
     final prompt = bufferMsg.toString().trim();
-    yield _systemNoticeEvent(prompt, fallback: 'shell 输出已匹配，进程仍在运行');
+    yield AgentStreamMapper.systemNoticeEvent(
+      prompt,
+      fallback: 'shell 输出已匹配，进程仍在运行',
+    );
     yield const AgentUiStatus('shell 匹配通知已送达，正在继续…');
 
     final buffer = StringBuffer();
     await for (final event in agent.runStream([
       UserMessage.text(prompt),
     ], cancelToken: _cancelToken)) {
-      yield* _mapStreamingEvent(event, buffer);
+      yield* _streamMapper.map(event, buffer);
     }
     if (buffer.isNotEmpty) {
       yield AgentUiAssistantFinal(buffer.toString());
@@ -584,14 +420,14 @@ class AgentService {
     _ensureAgent();
     final agent = _agent!;
     final prompt = buildBackgroundTaskResultMessage(jobs);
-    yield _systemNoticeEvent(prompt, fallback: '后台任务已结束');
+    yield AgentStreamMapper.systemNoticeEvent(prompt, fallback: '后台任务已结束');
     yield const AgentUiStatus('后台任务结果已送达，正在继续…');
 
     final buffer = StringBuffer();
     await for (final event in agent.runStream([
       UserMessage.text(prompt),
     ], cancelToken: _cancelToken)) {
-      yield* _mapStreamingEvent(event, buffer);
+      yield* _streamMapper.map(event, buffer);
     }
     if (buffer.isNotEmpty) {
       yield AgentUiAssistantFinal(buffer.toString());
@@ -601,141 +437,6 @@ class AgentService {
     }
     agent.backgroundJobs.syncReminders(agent.state.systemReminders);
     yield const AgentUiStatus('已完成');
-  }
-
-  Stream<AgentUiEvent> _mapStreamingEvent(
-    StreamingEvent event,
-    StringBuffer buffer,
-  ) async* {
-    switch (event.eventType) {
-      case StreamingEventType.modelChunkMessage:
-        final chunk = event.data as ModelMessage;
-        final text = chunk.textOutput;
-        if (isVisibleAssistantText(text)) {
-          buffer.write(text);
-          yield AgentUiAssistantDelta(text!);
-        }
-        if (chunk.functionCalls.isNotEmpty) {
-          for (final ui in _flushTurnBeforeTools(buffer)) {
-            yield ui;
-          }
-          for (final call in chunk.functionCalls) {
-            if (call.id.isEmpty &&
-                call.name.isEmpty &&
-                call.arguments.isEmpty) {
-              continue;
-            }
-            yield AgentUiToolCall(
-              name: call.name,
-              arguments: call.arguments,
-              callId: call.id.isEmpty ? null : call.id,
-            );
-          }
-        }
-      case StreamingEventType.fullModelMessage:
-        final full = event.data as ModelMessage;
-        final text = full.textOutput;
-        if (isVisibleAssistantText(text) && buffer.isEmpty) {
-          buffer.write(text);
-          yield AgentUiAssistantDelta(text!);
-        }
-        final usage = full.usage;
-        final at = DateTime.fromMicrosecondsSinceEpoch(full.timestamp);
-        final started = _modelCallStartedAt;
-        final prompt = usage?.promptTokens ?? 0;
-        final completion = usage?.completionTokens ?? 0;
-        yield AgentUiModelUsage(
-          promptTokens: prompt,
-          completionTokens: completion,
-          totalTokens: usage == null
-              ? null
-              : (usage.totalTokens > 0
-                    ? usage.totalTokens
-                    : prompt + completion),
-          duration: started == null ? null : at.difference(started),
-          at: at,
-        );
-      case StreamingEventType.functionCallRequest:
-        for (final ui in _flushTurnBeforeTools(buffer)) {
-          yield ui;
-        }
-        final calls = event.data;
-        final list = calls is List<FunctionCall>
-            ? calls
-            : calls is List
-            ? calls.whereType<FunctionCall>().toList()
-            : const <FunctionCall>[];
-        for (final call in list) {
-          yield AgentUiToolCall(
-            name: call.name,
-            arguments: call.arguments,
-            callId: call.id,
-          );
-          yield AgentUiStatus('正在执行工具：${call.name}');
-        }
-      case StreamingEventType.toolBackgrounded:
-        final job = event.data;
-        if (job is BackgroundToolJob) {
-          yield AgentUiToolBackgrounded(
-            name: job.toolName,
-            jobId: job.jobId,
-            callId: job.callId,
-            stubResult: buildBackgroundToolStubText(
-              toolName: job.toolName,
-              jobId: job.jobId,
-              callId: job.callId,
-              threshold: kAgentToolBackgroundAfter,
-              runningJobs: _agent?.backgroundJobs.runningJobs ?? [job],
-            ),
-          );
-          final n = runningBackgroundJobCount;
-          yield AgentUiStatus('工具已转后台：$n 个进行中');
-        }
-      case StreamingEventType.functionCallResult:
-        final data = event.data;
-        if (data is FunctionExecutionResultMessage) {
-          for (final r in data.results) {
-            final text = r.content
-                .whereType<TextPart>()
-                .map((p) => p.text)
-                .join('\n');
-            final meta = r.metadata;
-            final isBackground =
-                meta?['background'] == true ||
-                text.contains('"monitoring":true') ||
-                text.contains('"background":true');
-            if (isBackground) {
-              final jobId =
-                  meta?['jobId']?.toString() ??
-                  _jobIdFromToolJson(text) ??
-                  r.id;
-              yield AgentUiToolBackgrounded(
-                name: r.name,
-                jobId: jobId,
-                callId: r.id,
-                stubResult: text,
-              );
-              final n = runningBackgroundJobCount;
-              if (n > 0) {
-                yield AgentUiStatus('工具已转后台：$n 个进行中');
-              }
-              continue;
-            }
-            yield AgentUiToolResult(name: r.name, result: text, callId: r.id);
-          }
-        }
-      case StreamingEventType.toolBackgroundCompleted:
-        // Delivered via [backgroundJobs.events] → [_onBackgroundJobEvent].
-        break;
-      case StreamingEventType.modelRetrying:
-        buffer.clear();
-        _modelCallStartedAt = DateTime.now();
-        yield const AgentUiDiscardDraftAssistant();
-        yield const AgentUiStatus('正在调用模型…');
-      case StreamingEventType.beforeCallModel:
-        _modelCallStartedAt = DateTime.now();
-        yield const AgentUiStatus('正在调用模型…');
-    }
   }
 
   /// Bind to [projectPath] and load its active conversation.
@@ -1057,7 +758,7 @@ class AgentService {
         const [],
         cancelToken: _cancelToken,
       )) {
-        yield* _mapStreamingEvent(event, buffer);
+        yield* _streamMapper.map(event, buffer);
       }
       if (buffer.isNotEmpty) {
         yield AgentUiAssistantFinal(buffer.toString());
@@ -1173,7 +874,7 @@ class AgentService {
           },
         ),
       ], cancelToken: _cancelToken)) {
-        yield* _mapStreamingEvent(event, buffer);
+        yield* _streamMapper.map(event, buffer);
       }
 
       if (buffer.isNotEmpty) {
@@ -1214,30 +915,9 @@ class AgentService {
     }
   }
 
-  static String? _jobIdFromToolJson(String text) {
-    try {
-      final decoded = jsonDecode(text);
-      if (decoded is Map && decoded['jobId'] != null) {
-        return decoded['jobId'].toString();
-      }
-    } catch (_) {}
-    return null;
-  }
-
-  static AgentUiSystemNotice _systemNoticeEvent(
-    String raw, {
-    required String fallback,
-  }) {
-    final notice = systemNoticeForUserText(raw);
-    return AgentUiSystemNotice(
-      notice?.text ?? fallback,
-      isError: notice?.isError ?? false,
-    );
-  }
-
   /// True when streamed model text should become a visible assistant bubble.
   static bool isVisibleAssistantText(String? text) =>
-      text != null && text.trim().isNotEmpty;
+      AgentStreamMapper.isVisibleAssistantText(text);
 
   /// Chat-bubble text for a user turn (never includes hidden Vault context).
   static String userTurnDisplayText(String trimmed, {int attachmentCount = 0}) {
@@ -1253,176 +933,9 @@ class AgentService {
     return site == null ? const [] : [site];
   }
 
-  /// Close the current UI turn buffer when the model switches to tools.
-  ///
-  /// Model text is never rewritten. Whitespace-only drafts are discarded as a
-  /// UI bubble (they are not the final answer); non-empty drafts are shown as-is.
-  static Iterable<AgentUiEvent> _flushTurnBeforeTools(
-    StringBuffer buffer,
-  ) sync* {
-    final draft = buffer.toString();
-    buffer.clear();
-    if (draft.trim().isEmpty) {
-      yield const AgentUiDiscardDraftAssistant();
-      return;
-    }
-    yield AgentUiAssistantFinal(draft);
-  }
-
   /// Map persisted [LLMMessage] history into UI events for rehydrate.
-  static List<AgentUiEvent> uiEventsFromHistory(List<LLMMessage> messages) {
-    final out = <AgentUiEvent>[];
-    LLMMessage? prev;
-    for (var i = 0; i < messages.length; i++) {
-      final m = messages[i];
-      if (m is UserMessage) {
-        final raw = m.contents
-            .whereType<TextPart>()
-            .map((p) => p.text)
-            .join('\n')
-            .trim();
-        final attachments = ChatAttachmentMeta.listFromJson(
-          m.metadata?['attachments'],
-        );
-        if (raw.isNotEmpty) {
-          final notice = systemNoticeForUserText(raw);
-          if (notice != null) {
-            out.add(AgentUiSystemNotice(notice.text, isError: notice.isError));
-          } else {
-            var display = displayTextFromStoredUserPrompt(raw);
-            if (display.isEmpty && attachments.isNotEmpty) {
-              display = '（仅附件）';
-            }
-            out.add(
-              AgentUiUserMessage(
-                display,
-                at: DateTime.fromMicrosecondsSinceEpoch(m.timestamp),
-                historyIndex: i,
-                attachments: attachments,
-              ),
-            );
-          }
-        } else if (attachments.isNotEmpty) {
-          out.add(
-            AgentUiUserMessage(
-              '（仅附件）',
-              at: DateTime.fromMicrosecondsSinceEpoch(m.timestamp),
-              historyIndex: i,
-              attachments: attachments,
-            ),
-          );
-        }
-      } else if (m is ModelMessage) {
-        final usage = m.usage;
-        final at = DateTime.fromMicrosecondsSinceEpoch(m.timestamp);
-        final duration = _durationBetween(prev, m);
-        final text = m.textOutput?.trim();
-        if (text != null && text.isNotEmpty) {
-          out.add(
-            AgentUiAssistantFinal(
-              text,
-              promptTokens: usage?.promptTokens,
-              completionTokens: usage?.completionTokens,
-              totalTokens: usage == null
-                  ? null
-                  : (usage.totalTokens > 0
-                        ? usage.totalTokens
-                        : usage.promptTokens + usage.completionTokens),
-              duration: duration,
-              at: at,
-            ),
-          );
-        } else if (usage != null &&
-            (usage.promptTokens > 0 || usage.completionTokens > 0)) {
-          out.add(
-            AgentUiModelUsage(
-              promptTokens: usage.promptTokens,
-              completionTokens: usage.completionTokens,
-              totalTokens: usage.totalTokens > 0
-                  ? usage.totalTokens
-                  : usage.promptTokens + usage.completionTokens,
-              duration: duration,
-              at: at,
-            ),
-          );
-        }
-        if (usage != null && usage.promptTokens > 0) {
-          _attachPromptTokensToLastUserEvent(out, usage.promptTokens);
-        }
-        for (final call in m.functionCalls) {
-          out.add(
-            AgentUiToolCall(
-              name: call.name,
-              arguments: call.arguments,
-              callId: call.id,
-              historyIndex: i,
-            ),
-          );
-        }
-      } else if (m is FunctionExecutionResultMessage) {
-        for (final r in m.results) {
-          final text = r.content
-              .whereType<TextPart>()
-              .map((p) => p.text)
-              .join('\n');
-          final isBackground = r.metadata?['background'] == true;
-          if (isBackground) {
-            final jobId = r.metadata?['jobId']?.toString() ?? r.id;
-            out.add(
-              AgentUiToolBackgrounded(
-                name: r.name,
-                jobId: jobId,
-                callId: r.id,
-                stubResult: text,
-              ),
-            );
-          } else {
-            out.add(
-              AgentUiToolResult(
-                name: r.name,
-                result: text,
-                callId: r.id,
-                historyIndex: i,
-              ),
-            );
-          }
-        }
-      }
-      prev = m;
-    }
-    return out;
-  }
-
-  static Duration? _durationBetween(LLMMessage? prev, ModelMessage next) {
-    if (prev == null) return null;
-    final prevTs = switch (prev) {
-      UserMessage(:final timestamp) => timestamp,
-      ModelMessage(:final timestamp) => timestamp,
-      FunctionExecutionResultMessage(:final timestamp) => timestamp,
-      _ => null,
-    };
-    if (prevTs == null || next.timestamp <= prevTs) return null;
-    return Duration(microseconds: next.timestamp - prevTs);
-  }
-
-  static void _attachPromptTokensToLastUserEvent(
-    List<AgentUiEvent> events,
-    int promptTokens,
-  ) {
-    for (var i = events.length - 1; i >= 0; i--) {
-      final e = events[i];
-      if (e is AgentUiUserMessage) {
-        if (e.promptTokens != null) return;
-        events[i] = AgentUiUserMessage(
-          e.text,
-          promptTokens: promptTokens,
-          at: e.at,
-          historyIndex: e.historyIndex,
-        );
-        return;
-      }
-    }
-  }
+  static List<AgentUiEvent> uiEventsFromHistory(List<LLMMessage> messages) =>
+      agent_ui_history_mapper.uiEventsFromHistory(messages);
 
   void cancel() {
     askUser.cancelAll();

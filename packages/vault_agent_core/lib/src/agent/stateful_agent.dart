@@ -16,431 +16,27 @@ import 'package:logging/logging.dart';
 import '../core/llm_client.dart';
 import '../core/message.dart';
 import '../core/tool.dart';
+import 'agent_hook.dart';
+import 'agent_model_call_logger.dart';
+import 'agent_model_call_runner.dart';
+import 'agent_run_phase_models.dart';
+import 'agent_state.dart';
+import 'agent_system_composer.dart';
+import 'agent_tool_executor.dart';
+import 'agent_tool_result.dart';
 import 'background_tool_job.dart';
+import 'background_tool_racer.dart';
 import 'context_compressor.dart';
 import 'planner.dart';
-import 'memory.dart';
 
-part 'agent_hook.dart';
+export 'agent_state.dart';
+export 'agent_system_prompt.dart';
+export 'agent_tool_result.dart';
+export 'agent_hook.dart';
 
-class SystemPromptPart {
-  final String name;
-  final String content;
-
-  SystemPromptPart({required this.name, required this.content});
-}
-
-class SystemPromptHistoryItem {
-  final String content;
-  final int validFromMessageIndex;
-
-  SystemPromptHistoryItem({
-    required this.content,
-    required this.validFromMessageIndex,
-  });
-
-  Map<String, dynamic> toJson() => {
-    'content': content,
-    'validFromMessageIndex': validFromMessageIndex,
-  };
-
-  factory SystemPromptHistoryItem.fromJson(Map<String, dynamic> json) {
-    return SystemPromptHistoryItem(
-      content: json['content'],
-      validFromMessageIndex: json['validFromMessageIndex'],
-    );
-  }
-}
-
-class _PreparedModelCallPhase {
-  final ModelCallRequest request;
-  final CallLLMParams params;
-  final ModelMessage? syntheticResponse;
-  final int systemPromptHash;
-  final int toolsHash;
-
-  const _PreparedModelCallPhase({
-    required this.request,
-    required this.params,
-    required this.syntheticResponse,
-    required this.systemPromptHash,
-    required this.toolsHash,
-  });
-}
-
-class _PromptToolHistoryHashes {
-  final int systemPromptHash;
-  final int toolsHash;
-
-  const _PromptToolHistoryHashes({
-    required this.systemPromptHash,
-    required this.toolsHash,
-  });
-}
-
-class _AfterModelCallPhase {
-  final ModelMessage? response;
-  final String? retryReason;
-
-  const _AfterModelCallPhase.proceed(ModelMessage this.response)
-    : retryReason = null;
-
-  const _AfterModelCallPhase.retry(String this.retryReason) : response = null;
-
-  bool get shouldRetry => retryReason != null;
-}
-
-class _TurnCompletionPhase {
-  final List<LLMMessage> messages;
-
-  const _TurnCompletionPhase.accept() : messages = const [];
-
-  const _TurnCompletionPhase.continueWith(this.messages);
-
-  bool get shouldContinue => messages.isNotEmpty;
-}
-
-class _ToolCallPhase {
-  final FunctionExecutionResultMessage message;
-  final List<LLMMessage> injectedMessages;
-  final bool shouldStop;
-  final List<BackgroundToolJob> backgroundedJobs;
-
-  const _ToolCallPhase({
-    required this.message,
-    required this.injectedMessages,
-    required this.shouldStop,
-    this.backgroundedJobs = const [],
-  });
-}
-
-class _ExecuteToolsOutcome {
-  final List<ExecutionToolResult> results;
-  final List<BackgroundToolJob> backgroundedJobs;
-
-  const _ExecuteToolsOutcome({
-    this.results = const [],
-    this.backgroundedJobs = const [],
-  });
-}
-
-class _ToolRaceOutcome {
-  final ExecutionToolResult result;
-  final BackgroundToolJob? backgroundedJob;
-
-  const _ToolRaceOutcome({required this.result, this.backgroundedJob});
-}
-
-class _ModelMessageAccumulator {
-  final StringBuffer _text = StringBuffer();
-  final StringBuffer _thought = StringBuffer();
-  final List<Map<String, dynamic>> _contentBlocks = [];
-  final List<FunctionCall> _functionCalls = [];
-  final List<ModelImagePart> _imageOutputs = [];
-  final List<ModelVideoPart> _videoOutputs = [];
-  final List<ModelAudioPart> _audioOutputs = [];
-  String? stopReason;
-  ModelUsage? usage;
-  String? thoughtSignature;
-  String? responseId;
-  Map<String, dynamic>? metadata;
-
-  bool get isEmptyResponse =>
-      _functionCalls.isEmpty && _text.isEmpty && responseId == null;
-
-  void add(ModelMessage chunk) {
-    if (chunk.textOutput != null) {
-      _text.write(chunk.textOutput);
-    }
-    if (chunk.functionCalls.isNotEmpty) {
-      for (final call in chunk.functionCalls) {
-        _mergeFunctionCall(call);
-      }
-    }
-    if (chunk.contentBlocks.isNotEmpty) {
-      _contentBlocks.addAll(chunk.contentBlocks);
-    }
-    if (chunk.imageOutputs.isNotEmpty) {
-      _imageOutputs.addAll(chunk.imageOutputs);
-    }
-    if (chunk.videoOutputs.isNotEmpty) {
-      _videoOutputs.addAll(chunk.videoOutputs);
-    }
-    if (chunk.audioOutputs.isNotEmpty) {
-      _audioOutputs.addAll(chunk.audioOutputs);
-    }
-    if (chunk.stopReason != null) {
-      stopReason = chunk.stopReason;
-    }
-    if (chunk.usage != null) {
-      usage = chunk.usage;
-    }
-    if (chunk.metadata != null) {
-      metadata = chunk.metadata;
-    }
-    if (chunk.thought != null) {
-      _thought.write(chunk.thought!);
-    }
-    if (chunk.thoughtSignature != null) {
-      thoughtSignature = chunk.thoughtSignature;
-    }
-    if (chunk.responseId != null) {
-      responseId = chunk.responseId;
-    }
-  }
-
-  void _mergeFunctionCall(FunctionCall incoming) {
-    final i = incoming.id.isEmpty
-        ? -1
-        : _functionCalls.indexWhere((c) => c.id == incoming.id);
-    if (i < 0) {
-      _functionCalls.add(incoming);
-      return;
-    }
-    final prev = _functionCalls[i];
-    _functionCalls[i] = FunctionCall(
-      id: incoming.id.isNotEmpty ? incoming.id : prev.id,
-      name: incoming.name.isNotEmpty ? incoming.name : prev.name,
-      arguments: incoming.arguments.length >= prev.arguments.length
-          ? incoming.arguments
-          : prev.arguments,
-    );
-  }
-
-  void reset() {
-    _text.clear();
-    _thought.clear();
-    _contentBlocks.clear();
-    _functionCalls.clear();
-    _imageOutputs.clear();
-    _videoOutputs.clear();
-    _audioOutputs.clear();
-    stopReason = null;
-    usage = null;
-    thoughtSignature = null;
-    responseId = null;
-    metadata = null;
-  }
-
-  ModelMessage toModelMessage(String model) {
-    return ModelMessage(
-      textOutput: _text.isNotEmpty ? _text.toString() : null,
-      functionCalls: _functionCalls,
-      contentBlocks: _contentBlocks,
-      imageOutputs: _imageOutputs,
-      videoOutputs: _videoOutputs,
-      audioOutputs: _audioOutputs,
-      stopReason: stopReason,
-      usage: usage,
-      metadata: metadata,
-      model: model,
-      thought: _thought.isNotEmpty ? _thought.toString() : null,
-      thoughtSignature: thoughtSignature,
-      responseId: responseId,
-    );
-  }
-}
-
-class ToolsHistoryItem {
-  final List<Map<String, dynamic>> tools;
-  final int validFromMessageIndex;
-
-  ToolsHistoryItem({required this.tools, required this.validFromMessageIndex});
-
-  Map<String, dynamic> toJson() => {
-    'tools': tools,
-    'validFromMessageIndex': validFromMessageIndex,
-  };
-
-  factory ToolsHistoryItem.fromJson(Map<String, dynamic> json) {
-    return ToolsHistoryItem(
-      tools: (json['tools'] as List).cast<Map<String, dynamic>>(),
-      validFromMessageIndex: json['validFromMessageIndex'],
-    );
-  }
-}
-
-/// Represents the state of an AI agent, including its history, token usage,
-/// active skills, and planning metadata.
-class AgentState {
-  /// Unique session identifier.
-  String sessionId;
-  bool isRunning;
-  Map<String, String> systemReminders;
-  AgentMessageHistory history;
-  List<ModelUsage> usages;
-  Map<String, dynamic> metadata;
-  PlanState? plan;
-  List<String>? activeSkills;
-  int totalLoopCount;
-  int currentLoopCount;
-  List<ModelUsage> currentLoopUsages;
-  String? lastError;
-  List<SystemPromptHistoryItem> systemPromptHistory;
-  List<ToolsHistoryItem> toolsHistory;
-
-  AgentState({
-    required this.sessionId,
-    AgentMessageHistory? history,
-    Map<String, String>? systemReminders,
-    List<ModelUsage>? usages,
-    List<ModelUsage>? currentLoopUsages,
-    Map<String, dynamic>? metadata,
-    this.plan,
-    this.activeSkills,
-    this.isRunning = false,
-    this.totalLoopCount = 0,
-    this.currentLoopCount = 0,
-    this.lastError,
-    List<SystemPromptHistoryItem>? systemPromptHistory,
-    List<ToolsHistoryItem>? toolsHistory,
-  }) : history = history ?? AgentMessageHistory(),
-       systemReminders = systemReminders ?? {},
-       usages = usages ?? [],
-       metadata = metadata ?? {},
-       currentLoopUsages = currentLoopUsages ?? [],
-       systemPromptHistory = systemPromptHistory ?? [],
-       toolsHistory = toolsHistory ?? [];
-
-  Map<String, dynamic> toJson() => {
-    'history': history.toJson(),
-    'usages': usages.map((e) => e.toJson()).toList(),
-    'metadata': metadata,
-    'sessionId': sessionId,
-    'systemReminders': systemReminders,
-    'plan': plan?.toJson(),
-    'activeSkills': activeSkills,
-    'isRunning': isRunning,
-    'totalLoopCount': totalLoopCount,
-    'currentLoopCount': currentLoopCount,
-    'currentLoopUsages': currentLoopUsages.map((e) => e.toJson()).toList(),
-    'lastError': lastError,
-    'systemPromptHistory': systemPromptHistory.map((e) => e.toJson()).toList(),
-    'toolsHistory': toolsHistory.map((e) => e.toJson()).toList(),
-  };
-
-  factory AgentState.empty() {
-    return AgentState(sessionId: uuid.v4());
-  }
-
-  factory AgentState.fromJson(Map<String, dynamic> json) {
-    return AgentState(
-      sessionId: json['sessionId'],
-      history: AgentMessageHistory.fromJson(json['history']),
-      usages:
-          (json['usages'] as List?)
-              ?.map((e) => ModelUsage.fromJson(e as Map<String, dynamic>))
-              .toList() ??
-          [],
-      currentLoopUsages:
-          (json['currentLoopUsages'] as List?)
-              ?.map((e) => ModelUsage.fromJson(e as Map<String, dynamic>))
-              .toList() ??
-          [],
-      metadata: json['metadata'] as Map<String, dynamic>? ?? {},
-      systemReminders: (json['systemReminders'] as Map? ?? {})
-          .cast<String, String>(),
-      plan: json['plan'] != null ? PlanState.fromJson(json['plan']) : null,
-      activeSkills: (json['activeSkills'] as List? ?? [])
-          .cast<String>()
-          .toList(),
-      isRunning: json['isRunning'] as bool? ?? false,
-      totalLoopCount: json['totalLoopCount'] as int? ?? 0,
-      currentLoopCount: json['currentLoopCount'] as int? ?? 0,
-      lastError: json['lastError'] as String?,
-      systemPromptHistory:
-          (json['systemPromptHistory'] as List?)
-              ?.map(
-                (e) =>
-                    SystemPromptHistoryItem.fromJson(e as Map<String, dynamic>),
-              )
-              .toList() ??
-          [],
-      toolsHistory:
-          (json['toolsHistory'] as List?)
-              ?.map((e) => ToolsHistoryItem.fromJson(e as Map<String, dynamic>))
-              .toList() ??
-          [],
-    );
-  }
-}
-
-class AgentCallToolContext {
-  static final zoneKey = #AgentCallToolContext;
-
-  static AgentCallToolContext? get current {
-    return Zone.current[zoneKey] as AgentCallToolContext?;
-  }
-
-  final AgentState state;
-  final StatefulAgent agent;
-  final String batchCallId;
-  final String callId;
-  final String toolName;
-  final CancelToken? cancelToken;
-
-  AgentCallToolContext({
-    required this.state,
-    required this.agent,
-    required this.batchCallId,
-    required this.callId,
-    required this.toolName,
-    this.cancelToken,
-  });
-}
-
-class AgentToolResult {
-  final UserContentPart? content;
-  final List<UserContentPart>? contents;
-  final bool stopFlag;
-  final Map<String, dynamic>? metadata;
-
-  AgentToolResult({
-    this.content,
-    this.contents,
-    this.stopFlag = false,
-    this.metadata,
-  });
-}
-
-class ExecutionToolResult {
-  final String id;
-  final String name;
-  final String arguments;
-  final List<UserContentPart> content;
-  final Map<String, dynamic>? metadata;
-  final bool stopFlag;
-  final bool isError;
-
-  ExecutionToolResult({
-    required this.id,
-    required this.name,
-    required this.arguments,
-    required this.content,
-    this.stopFlag = false,
-    this.isError = false,
-    this.metadata,
-  });
-}
-
-class CallLLMParams {
-  final List<LLMMessage> messages;
-  final List<Tool>? tools;
-  final ToolChoice? toolChoice;
-  final ModelConfig modelConfig;
-  final bool stream;
-
-  CallLLMParams({
-    required this.messages,
-    this.tools,
-    this.toolChoice,
-    required this.modelConfig,
-    required this.stream,
-  });
-}
-
-class StatefulAgent {
+class StatefulAgent implements AgentHookHost {
   final Logger _logger = Logger('StatefulAgent');
+  static const AgentSystemComposer _systemComposer = AgentSystemComposer();
 
   /// The human-readable name of the agent.
   final String name;
@@ -464,6 +60,7 @@ class StatefulAgent {
   final ToolChoice? toolChoice;
 
   /// The current state of the agent.
+  @override
   final AgentState state;
 
   /// Optional compressor for managing long contexts.
@@ -528,6 +125,9 @@ class StatefulAgent {
 
   /// Jobs detached via [toolBackgroundAfter].
   final BackgroundToolJobRegistry backgroundJobs = BackgroundToolJobRegistry();
+  late final AgentToolExecutor _toolExecutor;
+  late final BackgroundToolRacer _backgroundToolRacer;
+  late final AgentModelCallRunner _modelCallRunner;
 
   StatefulAgent({
     required this.name,
@@ -566,6 +166,9 @@ class StatefulAgent {
     _planner = Planner(this, controller);
     _jsBridgeRegistry = javaScriptBridgeRegistry ?? JavaScriptBridgeRegistry();
     _hookPipeline = AgentHookPipeline(this.hooks);
+    _toolExecutor = AgentToolExecutor();
+    _backgroundToolRacer = BackgroundToolRacer(registry: backgroundJobs);
+    _modelCallRunner = AgentModelCallRunner(client: client);
     this.loopDetector =
         loopDetector ??
         DefaultLoopDetector(
@@ -576,145 +179,33 @@ class StatefulAgent {
   }
 
   SystemMessage? composeSystemMessage() {
-    List<SystemPromptPart> parts = [];
-
-    // 1. User System Prompt
-    if (systemPrompts.isNotEmpty) {
-      parts.add(
-        SystemPromptPart(
-          name: 'system_prompt',
-          content: systemPrompts.join('\n\n'),
-        ),
-      );
-    }
-
-    //2. Sub Agents
-    if (!isSubAgentMode(state)) {
-      if (!disableSubAgents) {
-        final subAgentInstruction = buildSubAgentSystemPrompt(state, subAgents);
-        if (subAgentInstruction != null) {
-          parts.add(subAgentInstruction);
-        }
-      }
-    }
-
-    // 3. Skills
-    if (_isDirectorySkillModeEnabled) {
-      final skillInstruction = buildDirectorySkillsSystemPrompt(
-        _directorySkills,
-        javaScriptExecutionEnabled: javaScriptRuntime != null,
-      );
-      if (skillInstruction != null) {
-        parts.add(skillInstruction);
-      }
-    } else if (skills != null && skills!.isNotEmpty) {
-      final skillInstruction = buildSkillSystemPrompt(state, skills);
-      if (skillInstruction != null) {
-        parts.add(skillInstruction);
-      }
-    }
-
-    // 4. General instructions
-    if (withGeneralPrinciples) {
-      final buffer = StringBuffer("# General Principles:\n");
-      buffer.writeln("- Concise output (< 4 lines unless asked for detail)");
-      buffer.writeln("- No \"Here is.\" or \"| will..\" —just do it");
-      buffer.writeln("- Do work with tools, not text explanations");
-      buffer.writeln(
-        "- Run independent tools in parallel; execute dependent tools sequentially",
-      );
-      if (planMode != null &&
-          (planMode == PlanMode.auto || planMode == PlanMode.must)) {
-        buffer.writeln("- Track tasks with Planner");
-      }
-      parts.add(
-        SystemPromptPart(
-          name: 'general_principles',
-          content: buffer.toString(),
-        ),
-      );
-    }
-
-    if (parts.isEmpty) return null;
-
-    return SystemMessage(parts.map((p) => p.content).join('\n\n'));
+    return _systemComposer.composeSystemMessage(
+      systemPrompts: systemPrompts,
+      state: state,
+      disableSubAgents: disableSubAgents,
+      subAgents: subAgents,
+      directorySkillModeEnabled: _isDirectorySkillModeEnabled,
+      directorySkills: _directorySkills,
+      javaScriptExecutionEnabled: javaScriptRuntime != null,
+      skills: skills,
+      withGeneralPrinciples: withGeneralPrinciples,
+      planMode: planMode,
+    );
   }
 
   List<Tool> composeTools() {
-    List<Tool> toolsCopy = List.from(tools ?? []);
-
-    // 1. Inject planner tools
-    if (planMode != null &&
-        (planMode == PlanMode.auto || planMode == PlanMode.must)) {
-      toolsCopy.addAll(_planner.tools);
-    }
-
-    // 2. Inject skill tools (legacy in-memory skills only)
-    if (!_isDirectorySkillModeEnabled && skills != null && skills!.isNotEmpty) {
-      // Only inject skill operation tools if not all skills are force activate
-      if (!skills!.every((s) => s.forceActivate)) {
-        toolsCopy.addAll(skillOperationTools);
-      }
-
-      final forceActiveSkillNames = skills!
-          .where((s) => s.forceActivate)
-          .map((s) => s.name)
-          .toList();
-      final activeSkillNames = ({
-        ...?(state.activeSkills),
-        ...forceActiveSkillNames,
-      }).toList();
-      for (var skillName in activeSkillNames) {
-        final skill = skills!.firstWhere((s) => s.name == skillName);
-        toolsCopy.addAll(skill.tools ?? []);
-      }
-    }
-
-    if (_isDirectorySkillModeEnabled && javaScriptRuntime != null) {
-      toolsCopy.add(
-        Tool(
-          name: 'RunJavaScript',
-          description:
-              'Execute a JavaScript (.js) script from the directory skill workspace.',
-          executable: (String scriptPath, String? args, int? timeoutMs) =>
-              _runJavaScriptScript(scriptPath, args, timeoutMs),
-          parameters: {
-            'type': 'object',
-            'properties': {
-              'script_path': {
-                'type': 'string',
-                'description': 'Absolute path to a JavaScript file.',
-              },
-              'args': {
-                'type': 'string',
-                'description':
-                    'Optional JSON object string (for example: {"xx":"yy"}). The framework deserializes it, and JavaScript reads fields from `ctx.args` directly (for example: `ctx.args.xx`).',
-              },
-              'timeout_ms': {
-                'type': 'integer',
-                'description':
-                    'Optional timeout in milliseconds. Default 30000.',
-              },
-            },
-            'required': ['script_path'],
-          },
-        ),
-      );
-    }
-
-    // 3. Inject sub agent tools
-    if (!isSubAgentMode(state)) {
-      if (!disableSubAgents) {
-        toolsCopy.addAll(subAgentTools);
-      }
-    }
-
-    // 4. Inject memory tools
-    if (state.history.episodicMemories.isNotEmpty) {
-      toolsCopy.addAll(memoryTools);
-    }
-
-    return toolsCopy;
+    return _systemComposer.composeTools(
+      tools: tools,
+      plannerTools: _planner.tools,
+      planMode: planMode,
+      state: state,
+      skills: skills,
+      directorySkillModeEnabled: _isDirectorySkillModeEnabled,
+      javaScriptExecutor: javaScriptRuntime == null
+          ? null
+          : _runJavaScriptScript,
+      disableSubAgents: disableSubAgents,
+    );
   }
 
   bool get _isDirectorySkillModeEnabled =>
@@ -980,94 +471,40 @@ class StatefulAgent {
         state.currentLoopCount++;
         state.totalLoopCount++;
 
-        final aggregation = _ModelMessageAccumulator();
-
-        if (syntheticModelResponse != null) {
-          final chunk = await _applyModelChunkPhase(
-            params,
-            syntheticModelResponse,
-            detectLoop: false,
-          );
-          if (chunk != null) {
-            aggregation.add(chunk);
-            controller?.publish(LLMChunkEvent(this, params, chunk));
-            yield StreamingEvent(
-              eventType: StreamingEventType.modelChunkMessage,
-              data: chunk,
-            );
-          }
-        } else if (params.stream) {
-          final stream = await client.stream(
-            params.messages,
-            tools: params.tools,
-            toolChoice: params.toolChoice,
-            modelConfig: params.modelConfig,
-            cancelToken: cancelToken,
-          );
-
-          await for (final streamingMessage in stream) {
-            if (streamingMessage.modelMessage != null) {
-              final chunk = await _applyModelChunkPhase(
-                params,
-                streamingMessage.modelMessage!,
-                detectLoop: true,
-              );
-              if (chunk == null) {
-                continue;
-              }
-              aggregation.add(chunk);
-
+        AgentModelCallCompleted? completedCall;
+        await for (final callEvent in _modelCallRunner.run(
+          params: params,
+          model: modelConfig.model,
+          syntheticResponse: syntheticModelResponse,
+          cancelToken: cancelToken,
+          processChunk: (chunk, {required detectLoop}) =>
+              _applyModelChunkPhase(params, chunk, detectLoop: detectLoop),
+        )) {
+          switch (callEvent) {
+            case AgentModelCallChunk():
+              final chunk = callEvent.message;
               controller?.publish(LLMChunkEvent(this, params, chunk));
-
               yield StreamingEvent(
                 eventType: StreamingEventType.modelChunkMessage,
                 data: chunk,
               );
-            } else if (streamingMessage.controlMessage != null) {
-              final controlMessage = streamingMessage.controlMessage!;
-              if (controlMessage.controlFlag == StreamingControlFlag.retry) {
-                final retryReason = controlMessage.data?["retryReason"];
-                _logger.warning(
-                  '[$name] 🔄 Model requested retry!, reason:$retryReason',
-                );
-                yield StreamingEvent(
-                  eventType: StreamingEventType.modelRetrying,
-                  data: controlMessage.data,
-                );
-                aggregation.reset();
-                controller?.publish(LLMRetryingEvent(this, retryReason));
-              }
-            }
+            case AgentModelCallRetry():
+              final retryReason = callEvent.reason;
+              _logger.warning(
+                '[$name] 🔄 Model requested retry!, reason:$retryReason',
+              );
+              yield StreamingEvent(
+                eventType: StreamingEventType.modelRetrying,
+                data: callEvent.data,
+              );
+              controller?.publish(LLMRetryingEvent(this, retryReason));
+            case AgentModelCallCompleted():
+              completedCall = callEvent;
           }
-        } else {
-          var fullMessage = await client.generate(
-            params.messages,
-            tools: params.tools,
-            toolChoice: params.toolChoice,
-            modelConfig: params.modelConfig,
-            cancelToken: cancelToken,
-          );
-          final chunk = await _applyModelChunkPhase(
-            params,
-            fullMessage,
-            detectLoop: true,
-          );
-          if (chunk == null) {
-            fullMessage = ModelMessage(model: modelConfig.model);
-          } else {
-            fullMessage = chunk;
-          }
-          aggregation.add(fullMessage);
-
-          controller?.publish(LLMChunkEvent(this, params, fullMessage));
-
-          yield StreamingEvent(
-            eventType: StreamingEventType.modelChunkMessage,
-            data: fullMessage,
-          );
         }
+        final modelCallResult = completedCall!;
 
-        if (aggregation.stopReason == null) {
+        if (modelCallResult.message.stopReason == null) {
           _logger.warning(
             '[$name] ⚠️ Model returned empty stop reason, retry again',
           );
@@ -1088,7 +525,7 @@ class StatefulAgent {
           continue;
         }
 
-        if (aggregation.isEmptyResponse) {
+        if (modelCallResult.isEmptyResponse) {
           _logger.warning(
             '[$name] ⚠️ Model returned empty response, retry again',
           );
@@ -1109,7 +546,7 @@ class StatefulAgent {
           continue;
         }
 
-        var fullMessage = aggregation.toModelMessage(modelConfig.model);
+        var fullMessage = modelCallResult.message;
 
         final afterModel = await _applyAfterModelCallPhase(params, fullMessage);
         if (afterModel.shouldRetry) {
@@ -1131,7 +568,7 @@ class StatefulAgent {
         fullMessage = afterModel.response!;
         currentRetryCount = 0;
 
-        _logModelMessage(fullMessage, false);
+        AgentModelCallLogger.log(_logger, name, fullMessage, isChunk: false);
         stopReason = fullMessage.stopReason ?? "unknown";
 
         controller?.publish(
@@ -1325,7 +762,7 @@ class StatefulAgent {
     return List<LLMMessage>.from(beforeRun.input ?? input);
   }
 
-  Future<_PreparedModelCallPhase> _prepareModelCallPhase({
+  Future<PreparedModelCallPhase> _prepareModelCallPhase({
     required bool useStream,
     required int? lastSystemPromptHash,
     required int? lastToolsHash,
@@ -1367,7 +804,7 @@ class StatefulAgent {
       lastToolsHash: lastToolsHash,
     );
 
-    return _PreparedModelCallPhase(
+    return PreparedModelCallPhase(
       request: modelCallRequest,
       params: modelCallRequest.toCallLLMParams(),
       syntheticResponse: beforeModel.action == ModelCallHookAction.respond
@@ -1378,7 +815,7 @@ class StatefulAgent {
     );
   }
 
-  _PromptToolHistoryHashes _recordModelContextHistory(
+  PromptToolHistoryHashes _recordModelContextHistory(
     ModelCallRequest request, {
     required int? lastSystemPromptHash,
     required int? lastToolsHash,
@@ -1417,7 +854,7 @@ class StatefulAgent {
       );
     }
 
-    return _PromptToolHistoryHashes(
+    return PromptToolHistoryHashes(
       systemPromptHash: currentSystemPromptHash,
       toolsHash: currentToolsHash,
     );
@@ -1462,7 +899,7 @@ class StatefulAgent {
     }
 
     final nextChunk = chunkResult.chunk ?? chunk;
-    _logModelMessage(nextChunk, true);
+    AgentModelCallLogger.log(_logger, name, nextChunk, isChunk: true);
     if (detectLoop) {
       final loopDetectResult = await loopDetector.detect(nextChunk);
       if (loopDetectResult.isLoop) {
@@ -1475,7 +912,7 @@ class StatefulAgent {
     return nextChunk;
   }
 
-  Future<_AfterModelCallPhase> _applyAfterModelCallPhase(
+  Future<AfterModelCallPhase> _applyAfterModelCallPhase(
     CallLLMParams params,
     ModelMessage response,
   ) async {
@@ -1490,15 +927,15 @@ class StatefulAgent {
           afterModel.reason,
         );
       case ModelResponseHookAction.retry:
-        return _AfterModelCallPhase.retry(
+        return AfterModelCallPhase.retry(
           afterModel.retryReason ?? 'Hook requested retry',
         );
       case ModelResponseHookAction.proceed:
-        return _AfterModelCallPhase.proceed(afterModel.response ?? response);
+        return AfterModelCallPhase.proceed(afterModel.response ?? response);
     }
   }
 
-  Future<_TurnCompletionPhase> _applyTurnCompletionPhase(
+  Future<TurnCompletionPhase> _applyTurnCompletionPhase(
     ModelMessage finalMessage, {
     required int continuationCount,
   }) async {
@@ -1509,7 +946,7 @@ class StatefulAgent {
           '($maxTurnContinuations); accepting completion.',
         );
       }
-      return const _TurnCompletionPhase.accept();
+      return const TurnCompletionPhase.accept();
     }
 
     final completion = await _hookPipeline.onTurnCompletion(
@@ -1529,12 +966,12 @@ class StatefulAgent {
     }
     if (completion.action == TurnCompletionHookAction.continueRun &&
         completion.messages.isNotEmpty) {
-      return _TurnCompletionPhase.continueWith(completion.messages);
+      return TurnCompletionPhase.continueWith(completion.messages);
     }
-    return const _TurnCompletionPhase.accept();
+    return const TurnCompletionPhase.accept();
   }
 
-  Future<_ToolCallPhase> _executeToolCallPhase(
+  Future<ToolCallPhase> _executeToolCallPhase(
     List<FunctionCall> toolCalls, {
     required ModelMessage modelMessage,
     required List<Tool> availableTools,
@@ -1575,12 +1012,25 @@ class StatefulAgent {
     }
 
     final executed = callsToExecute.isEmpty
-        ? const _ExecuteToolsOutcome()
-        : await _executeTools(
-            callsToExecute,
-            availableTools,
-            state,
+        ? const AgentToolExecutionBatch()
+        : await _toolExecutor.execute(
+            calls: callsToExecute,
+            tools: availableTools,
+            state: state,
+            createCallContext:
+                ({required batchCallId, required call, cancelToken}) =>
+                    AgentCallToolContext(
+                      state: state,
+                      agent: this,
+                      batchCallId: batchCallId,
+                      callId: call.id,
+                      toolName: call.name,
+                      cancelToken: cancelToken,
+                    ),
+            agentName: name,
             cancelToken: cancelToken,
+            backgroundAfter: toolBackgroundAfter,
+            backgroundRacer: _backgroundToolRacer,
           );
     final executedById = {for (final r in executed.results) r.id: r};
     final toolExecutionResults = toolCalls
@@ -1628,7 +1078,7 @@ class StatefulAgent {
       '[$name] 🔧 Executed tools\n: ${finalFunctionExecutionResults.map((e) => '${e.name}: Success:${e.isError ? '❌ No' : '✅ Yes'}').join("\n  ")}',
     );
 
-    return _ToolCallPhase(
+    return ToolCallPhase(
       message: FunctionExecutionResultMessage(
         results: finalFunctionExecutionResults,
       ),
@@ -1681,343 +1131,6 @@ class StatefulAgent {
       'Agent hook aborted at $phase$suffix',
       error: error,
     );
-  }
-
-  void _logModelMessage(ModelMessage message, bool isChunk) {
-    StringBuffer buffer = StringBuffer();
-    if (!isChunk) {
-      buffer.writeln('======= Full Agent Message ($name) =========');
-    }
-    buffer.writeln('🤖 Agent:');
-    if (message.thought != null && message.thought!.isNotEmpty) {
-      buffer.writeln('  🤔 [Thought]: ${message.thought!.trim()}');
-    }
-
-    if (message.textOutput != null && message.textOutput!.isNotEmpty) {
-      if (isChunk) {
-        buffer.writeln('  📖 [Chunk]:  ${message.textOutput!.trim()}');
-      } else {
-        buffer.writeln('  📖 [Text Output]: ${message.textOutput!.trim()}');
-      }
-    }
-
-    if (message.functionCalls.isNotEmpty) {
-      buffer.writeln('  🔧 [Function Calls]');
-      for (var call in message.functionCalls) {
-        buffer.writeln('    > ${call.name}: ${call.arguments}');
-      }
-    }
-
-    if (message.imageOutputs.isNotEmpty) {
-      buffer.writeln('  🖼️ Images: ${message.imageOutputs.length}');
-    }
-    if (message.videoOutputs.isNotEmpty) {
-      buffer.writeln('  📹 Video: ${message.videoOutputs.length}');
-    }
-    if (message.audioOutputs.isNotEmpty) {
-      buffer.writeln('  🔊 Audio: ${message.audioOutputs.length}');
-    }
-
-    if (message.usage != null) {
-      buffer.writeln(
-        '  📊 [Usage]: Input: ${message.usage!.promptTokens}(cached: ${message.usage!.cachedToken}) | Output: ${message.usage!.completionTokens}(thought: ${message.usage!.thoughtToken}) | Total: ${message.usage!.totalTokens}',
-      );
-    }
-
-    if (message.stopReason != null) {
-      buffer.writeln('  [Stop Reason]: ${message.stopReason}');
-    }
-
-    _logger.info(buffer.toString());
-  }
-
-  Future<_ExecuteToolsOutcome> _executeTools(
-    List<FunctionCall> calls,
-    List<Tool>? tools,
-    AgentState state, {
-    CancelToken? cancelToken,
-  }) async {
-    // TODO(skill-scripts): Directory-skill script execution (especially JS sandbox)
-    // should be integrated here, because this is the central tool-call execution path.
-    // We intentionally do not execute scripts for mobile runtime in this iteration.
-    final batchCallId = uuid.v4();
-    final threshold = toolBackgroundAfter;
-    final backgroundEnabled = threshold != null && threshold > Duration.zero;
-
-    final futures = calls.map((call) async {
-      final work = _executeSingleTool(
-        call,
-        tools,
-        state,
-        batchCallId: batchCallId,
-        cancelToken: cancelToken,
-      );
-      final matched = tools?.where((t) => t.name == call.name);
-      final tool = (matched == null || matched.isEmpty) ? null : matched.first;
-      if (!backgroundEnabled || tool?.allowBackground == false) {
-        return _ToolRaceOutcome(result: await work);
-      }
-      return _raceToolAgainstBackground(call, work, threshold);
-    });
-
-    final raced = await Future.wait(futures);
-    final results = <ExecutionToolResult>[];
-    final backgrounded = <BackgroundToolJob>[];
-    for (final item in raced) {
-      results.add(item.result);
-      final job = item.backgroundedJob;
-      if (job != null) backgrounded.add(job);
-    }
-    return _ExecuteToolsOutcome(
-      results: results,
-      backgroundedJobs: backgrounded,
-    );
-  }
-
-  Future<_ToolRaceOutcome> _raceToolAgainstBackground(
-    FunctionCall call,
-    Future<ExecutionToolResult> work,
-    Duration threshold,
-  ) async {
-    final gate = Completer<ExecutionToolResult>();
-    var backgrounded = false;
-    late final String jobId;
-
-    work.then(
-      (result) {
-        if (backgrounded) {
-          _finishBackgroundJob(jobId, result);
-        } else if (!gate.isCompleted) {
-          gate.complete(result);
-        }
-      },
-      onError: (Object error, StackTrace stack) {
-        final failed = ExecutionToolResult(
-          id: call.id,
-          name: call.name,
-          arguments: call.arguments,
-          content: [TextPart('Error executing ${call.name}: $error')],
-          isError: true,
-        );
-        if (backgrounded) {
-          backgroundJobs.fail(jobId, error, result: _toFunctionResult(failed));
-          backgroundJobs.syncReminders(state.systemReminders);
-        } else if (!gate.isCompleted) {
-          gate.complete(failed);
-        }
-      },
-    );
-
-    final raced = await Future.any<ExecutionToolResult?>([
-      gate.future,
-      Future<ExecutionToolResult?>.delayed(threshold, () => null),
-    ]);
-
-    if (raced != null) {
-      return _ToolRaceOutcome(result: raced);
-    }
-    if (gate.isCompleted) {
-      return _ToolRaceOutcome(result: await gate.future);
-    }
-
-    backgrounded = true;
-    jobId = uuid.v4();
-    final job = backgroundJobs.register(
-      jobId: jobId,
-      callId: call.id,
-      toolName: call.name,
-      arguments: call.arguments,
-    );
-    backgroundJobs.syncReminders(state.systemReminders);
-
-    final stub = ExecutionToolResult(
-      id: call.id,
-      name: call.name,
-      arguments: call.arguments,
-      content: [
-        TextPart(
-          buildBackgroundToolStubText(
-            toolName: call.name,
-            jobId: jobId,
-            callId: call.id,
-            threshold: threshold,
-            runningJobs: backgroundJobs.runningJobs,
-          ),
-        ),
-      ],
-      metadata: {'background': true, 'jobId': jobId, 'callId': call.id},
-    );
-    return _ToolRaceOutcome(result: stub, backgroundedJob: job);
-  }
-
-  void _finishBackgroundJob(String jobId, ExecutionToolResult result) {
-    backgroundJobs.complete(jobId, _toFunctionResult(result));
-    backgroundJobs.syncReminders(state.systemReminders);
-  }
-
-  FunctionExecutionResult _toFunctionResult(ExecutionToolResult result) {
-    return FunctionExecutionResult(
-      id: result.id,
-      name: result.name,
-      isError: result.isError,
-      arguments: result.arguments,
-      content: result.content,
-      metadata: result.metadata,
-    );
-  }
-
-  Future<ExecutionToolResult> _executeSingleTool(
-    FunctionCall call,
-    List<Tool>? tools,
-    AgentState state, {
-    required String batchCallId,
-    CancelToken? cancelToken,
-  }) async {
-    final tool = tools?.firstWhere(
-      (t) => t.name == call.name,
-      orElse: () => Tool(name: 'unknown', description: '', parameters: {}),
-    );
-    if (tool == null || tool.executable == null) {
-      return ExecutionToolResult(
-        id: call.id,
-        name: call.name,
-        arguments: call.arguments,
-        content: [TextPart('Function ${call.name} failed or not found.')],
-        isError: true,
-      );
-    }
-
-    try {
-      final positionalArgs = <dynamic>[];
-      final namedArgs = <Symbol, dynamic>{};
-
-      Map<String, dynamic> decodedArgs;
-      try {
-        if (call.arguments.trim().isEmpty) {
-          decodedArgs = {};
-        } else {
-          decodedArgs = (jsonDecode(call.arguments) as Map)
-              .cast<String, dynamic>();
-        }
-      } catch (e) {
-        return ExecutionToolResult(
-          id: call.id,
-          name: call.name,
-          arguments: call.arguments,
-          content: [TextPart('Error decoding arguments: $e')],
-          isError: true,
-        );
-      }
-
-      final properties = (tool.parameters['properties'] as Map? ?? {})
-          .cast<String, dynamic>();
-
-      void addArgument(String key, dynamic value) {
-        dynamic castedValue = value;
-        final prop = (properties[key] as Map?)?.cast<String, dynamic>();
-
-        if (prop != null) {
-          final type = prop['type'];
-
-          if (value is List && type == 'array') {
-            final items = (prop['items'] as Map?)?.cast<String, dynamic>();
-            if (items != null) {
-              final itemType = items['type'];
-              if (itemType == 'string') {
-                castedValue = value.cast<String>();
-              } else if (itemType == 'integer') {
-                castedValue = value.cast<int>();
-              } else if (itemType == 'number') {
-                castedValue = value.map((e) => (e as num).toDouble()).toList();
-              } else if (itemType == 'boolean') {
-                castedValue = value.cast<bool>();
-              }
-            }
-          } else if (type == 'integer' && value is num) {
-            castedValue = value.toInt();
-          } else if (type == 'number' && value is num) {
-            castedValue = value.toDouble();
-          }
-        }
-
-        if (tool.namedParameters.contains(key)) {
-          namedArgs[Symbol(key)] = castedValue;
-        } else {
-          positionalArgs.add(castedValue);
-        }
-      }
-
-      for (var key in properties.keys) {
-        if (decodedArgs.containsKey(key)) {
-          addArgument(key, decodedArgs[key]);
-        } else {
-          if (!tool.namedParameters.contains(key)) {
-            positionalArgs.add(null);
-          }
-        }
-      }
-
-      final result = runZoned(
-        () {
-          if (tool.parameterMode == ToolParameterMode.object) {
-            return tool.executable!(decodedArgs);
-          }
-          return Function.apply(tool.executable!, positionalArgs, namedArgs);
-        },
-        zoneValues: {
-          AgentCallToolContext.zoneKey: AgentCallToolContext(
-            state: state,
-            agent: this,
-            batchCallId: batchCallId,
-            callId: call.id,
-            toolName: call.name,
-            cancelToken: cancelToken,
-          ),
-        },
-      );
-
-      dynamic resultValue;
-      if (result is Future) {
-        resultValue = await result;
-      } else {
-        resultValue = result;
-      }
-      var stopFlag = false;
-      final resultContent = <UserContentPart>[];
-      Map<String, dynamic>? metadata;
-      if (resultValue is AgentToolResult) {
-        if (resultValue.content != null) {
-          resultContent.add(resultValue.content!);
-        }
-        if (resultValue.contents != null) {
-          resultContent.addAll(resultValue.contents!);
-        }
-        stopFlag = resultValue.stopFlag;
-        metadata = resultValue.metadata;
-      } else {
-        resultContent.add(TextPart(resultValue.toString()));
-      }
-      return ExecutionToolResult(
-        id: call.id,
-        name: call.name,
-        arguments: call.arguments,
-        content: resultContent,
-        stopFlag: stopFlag,
-        isError: false,
-        metadata: metadata,
-      );
-    } catch (e) {
-      _logger.severe(
-        '[$name] ❌ Error executing ${call.name} with args ${call.arguments}: $e',
-      );
-      return ExecutionToolResult(
-        id: call.id,
-        name: call.name,
-        arguments: call.arguments,
-        content: [TextPart('Error executing ${call.name}: $e')],
-        isError: true,
-      );
-    }
   }
 
   bool isSuspend(DioException error) {
