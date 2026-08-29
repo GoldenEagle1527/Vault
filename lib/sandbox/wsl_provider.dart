@@ -626,6 +626,121 @@ EOF
     await _streamCopyHostFileViaWslCat(workspaceId, guest, hostPath);
   }
 
+  /// Stream a guest file onto the host. UNC first; `cat` stdout if UNC fails.
+  Future<void> copyGuestFileToHost(
+    String workspaceId,
+    String guestAbsolutePath,
+    String hostPath,
+  ) async {
+    if (!await _distroRegistered(workspaceId)) {
+      throw StateError('工作区 $workspaceId 的 WSL 发行版不存在');
+    }
+    final guest = assertGuestPathUnderHome(guestAbsolutePath);
+    try {
+      await streamCopyHostFile(
+        sourcePath: _wslUncFor(workspaceId, guest),
+        destPath: hostPath,
+      );
+      return;
+    } catch (_) {
+      // Fall through to raw stdout (not base64 — that doubles memory).
+    }
+    await _streamCopyGuestFileViaWslCat(workspaceId, guest, hostPath);
+  }
+
+  Future<void> _streamCopyGuestFileViaWslCat(
+    String workspaceId,
+    String guest,
+    String hostPath,
+  ) async {
+    final proc = await Process.start(
+      'wsl.exe',
+      [
+        '-d',
+        distroName(workspaceId),
+        '-u',
+        'root',
+        '--cd',
+        kGuestHome,
+        '-e',
+        '/bin/sh',
+        '-c',
+        'cat -- ${shellSingleQuote(guest)}',
+      ],
+      environment: _wslHostEnv,
+      includeParentEnvironment: false,
+    );
+    try {
+      await streamCopyToHostFile(stream: proc.stdout, destPath: hostPath);
+    } catch (e) {
+      proc.kill();
+      rethrow;
+    }
+    final exit = await proc.exitCode;
+    if (exit != 0) {
+      final err = await proc.stderr.transform(utf8.decoder).join();
+      throw StateError('读取沙箱文件失败（exit $exit）：$err');
+    }
+  }
+
+  /// Copy a guest directory tree onto [hostDir] (created). UNC first; else find+cat.
+  Future<void> copyGuestDirectoryToHost(
+    String workspaceId,
+    String guestAbsolutePath,
+    String hostDir,
+  ) async {
+    if (!await _distroRegistered(workspaceId)) {
+      throw StateError('工作区 $workspaceId 的 WSL 发行版不存在');
+    }
+    final guest = assertGuestPathUnderHome(guestAbsolutePath);
+    try {
+      final fromHost = _wslUncFor(workspaceId, guest);
+      await copyHostDirectoryTree(Directory(fromHost), Directory(hostDir));
+      return;
+    } catch (_) {
+      // Fall through.
+    }
+    final listed = await _runInDistro(
+      workspaceId,
+      'if [ -d ${shellSingleQuote(guest)} ]; then '
+      'find ${shellSingleQuote(guest)} -print; else exit 2; fi',
+    );
+    if (listed.exitCode == 2) {
+      throw StateError('目录不存在：$guest');
+    }
+    if (!listed.success) {
+      throw StateError('无法列出沙箱目录 $guest：${listed.stderr}'.trim());
+    }
+    final lines = listed.stdout
+        .split(RegExp(r'\r?\n'))
+        .map((e) => e.trim())
+        .where((e) => e.isNotEmpty)
+        .toList();
+    if (lines.isEmpty) {
+      await Directory(hostDir).create(recursive: true);
+      return;
+    }
+    for (final abs in lines) {
+      final guestChild = assertGuestPathUnderHome(abs);
+      final rel = guestChild == guest
+          ? ''
+          : guestChild.substring(guest.length + 1);
+      final dest = rel.isEmpty ? hostDir : p.join(hostDir, rel);
+      final kind = await _runInDistro(
+        workspaceId,
+        'if [ -d ${shellSingleQuote(guestChild)} ]; then echo dir; '
+        'elif [ -f ${shellSingleQuote(guestChild)} ]; then echo file; '
+        'else echo skip; fi',
+      );
+      final kindText = kind.stdout.trim();
+      if (kindText == 'dir') {
+        await Directory(dest).create(recursive: true);
+      } else if (kindText == 'file') {
+        await copyGuestFileToHost(workspaceId, guestChild, dest);
+      }
+    }
+  }
+
   Future<void> _streamCopyHostFileViaWslCat(
     String workspaceId,
     String guest,

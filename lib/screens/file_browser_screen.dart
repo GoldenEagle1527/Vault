@@ -13,6 +13,7 @@ import 'package:vault/screens/file_browser/file_browser_controller.dart';
 import 'package:vault/screens/file_browser/file_browser_operation_menu.dart';
 import 'package:vault/screens/file_browser/file_browser_path_navigation.dart';
 import 'package:vault/screens/file_browser/file_preview_screen.dart';
+import 'package:vault/util/guest_export.dart';
 import 'package:vault/util/host_file_picker.dart';
 
 export 'package:vault/screens/file_browser/file_browser_controller.dart';
@@ -525,6 +526,12 @@ class _FileBrowserScreenState extends State<FileBrowserScreen> {
         await _pasteClipboard();
       case FileBrowserOperation.delete:
         await _deleteSelected();
+      case FileBrowserOperation.export:
+        await _exportSelected(GuestExportMode.saveAs);
+      case FileBrowserOperation.share:
+        await _exportSelected(GuestExportMode.share);
+      case FileBrowserOperation.pack:
+        await _exportSelected(GuestExportMode.pack);
       case FileBrowserOperation.selectAll:
         _selectAll();
       case FileBrowserOperation.clear:
@@ -569,6 +576,102 @@ class _FileBrowserScreenState extends State<FileBrowserScreen> {
     } catch (e) {
       _snack('重命名失败：$e', error: true);
     } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  Future<void> _exportSelected(GuestExportMode mode) async {
+    if (_selected.isEmpty) return;
+    final paths = _selected.toList(growable: false);
+    setState(() => _busy = true);
+    final progress = ValueNotifier<GuestExportProgress?>(null);
+    var dialogOpen = false;
+    void ensureDialog() {
+      if (dialogOpen || !mounted) return;
+      dialogOpen = true;
+      unawaited(
+        showDialog<void>(
+          context: context,
+          barrierDismissible: false,
+          useRootNavigator: true,
+          builder: (ctx) {
+            return PopScope(
+              canPop: false,
+              child: AlertDialog(
+                title: Text(switch (mode) {
+                  GuestExportMode.saveAs => '正在导出',
+                  GuestExportMode.share => '正在准备分享',
+                  GuestExportMode.pack => '正在打包',
+                }),
+                content: ValueListenableBuilder<GuestExportProgress?>(
+                  valueListenable: progress,
+                  builder: (context, value, _) {
+                    final current = value?.current ?? 0;
+                    final total = value?.total ?? 0;
+                    final name = value?.name ?? '';
+                    final label = total <= 0
+                        ? '准备中…'
+                        : '${current.clamp(0, total)} / $total';
+                    return Column(
+                      mainAxisSize: MainAxisSize.min,
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        const Center(child: CircularProgressIndicator()),
+                        const SizedBox(height: 20),
+                        Text(
+                          label,
+                          textAlign: TextAlign.center,
+                          style: Theme.of(context).textTheme.titleMedium,
+                        ),
+                        const SizedBox(height: 8),
+                        Text(
+                          name.isEmpty ? '请稍候…' : name,
+                          maxLines: 2,
+                          overflow: TextOverflow.ellipsis,
+                          textAlign: TextAlign.center,
+                          style: Theme.of(context).textTheme.bodyMedium
+                              ?.copyWith(
+                                color: Theme.of(
+                                  context,
+                                ).colorScheme.onSurfaceVariant,
+                              ),
+                        ),
+                      ],
+                    );
+                  },
+                ),
+              ),
+            );
+          },
+        ).whenComplete(() => dialogOpen = false),
+      );
+    }
+
+    try {
+      final result = await GuestExport(
+        provider: widget.provider,
+        workspaceId: widget.workspaceId,
+      ).run(
+        mode: mode,
+        guestPaths: paths,
+        onProgress: (value) {
+          progress.value = value;
+          ensureDialog();
+        },
+      );
+      if (result.cancelled) return;
+      if (result.failed == 0) {
+        _snack(result.message ?? '已导出');
+      } else {
+        _snack(result.message ?? '导出失败', error: true);
+      }
+    } catch (e) {
+      _snack('导出失败：$e', error: true);
+    } finally {
+      if (mounted && dialogOpen) {
+        Navigator.of(context, rootNavigator: true).pop();
+      }
+      progress.dispose();
       if (mounted) setState(() => _busy = false);
     }
   }
@@ -748,6 +851,13 @@ class _FileBrowserScreenState extends State<FileBrowserScreen> {
               tooltip: '删除',
               onPressed: _actionsEnabled ? _deleteSelected : null,
               icon: const Icon(Icons.delete_outline),
+            ),
+            IconButton(
+              tooltip: '导出',
+              onPressed: _actionsEnabled
+                  ? () => unawaited(_exportSelected(GuestExportMode.saveAs))
+                  : null,
+              icon: const Icon(Icons.download_outlined),
             ),
           ],
           if (_clipboard != null)

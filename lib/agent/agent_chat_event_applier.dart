@@ -88,12 +88,14 @@ class AgentChatEventApplier {
         :final result,
         :final callId,
         :final historyIndex,
+        :final attachments,
       ):
         _attachToolResult(
           name,
           result,
           callId: callId,
           historyIndex: historyIndex,
+          attachments: attachments,
         );
       case AgentUiToolBackgrounded(
         :final name,
@@ -251,12 +253,14 @@ class AgentChatEventApplier {
         :final result,
         :final callId,
         :final historyIndex,
+        :final attachments,
       ):
         _attachToolResult(
           name,
           result,
           callId: callId,
           historyIndex: historyIndex,
+          attachments: attachments,
         );
       case AgentUiConversationForked():
         break;
@@ -493,6 +497,7 @@ class AgentChatEventApplier {
     String? jobId,
     bool clearBackgrounded = false,
     int? historyIndex,
+    List<ChatAttachmentMeta> attachments = const [],
   }) {
     for (var i = items.length - 1; i >= 0; i--) {
       final item = items[i];
@@ -512,6 +517,7 @@ class AgentChatEventApplier {
       item.toolCallId ??= callId;
       item.toolJobId ??= jobId;
       if (historyIndex != null) item.historyIndex = historyIndex;
+      if (attachments.isNotEmpty) item.attachments = attachments;
       if (name == 'register_project_url') onProjectUrlRegistered?.call();
       return;
     }
@@ -523,6 +529,7 @@ class AgentChatEventApplier {
         callId: callId,
         jobId: jobId,
         historyIndex: historyIndex,
+        attachments: attachments,
       ),
     );
   }

@@ -1,6 +1,7 @@
 import 'dart:convert';
 
 import 'package:vault/agent/agent_ui_events.dart';
+import 'package:vault/agent/present_file.dart';
 import 'package:vault/agent/system_notice.dart';
 import 'package:vault/agent/tools/shell_tool.dart';
 import 'package:vault_agent_core/vault_agent_core.dart';
@@ -133,10 +134,17 @@ class AgentStreamMapper {
               }
               continue;
             }
+            final presented = result.name == kPresentFileToolName
+                ? presentFileAttachmentFromResult(
+                    metadata: metadata,
+                    resultText: text,
+                  )
+                : null;
             yield AgentUiToolResult(
               name: result.name,
               result: text,
               callId: result.id,
+              attachments: presented == null ? const [] : [presented],
             );
           }
         }

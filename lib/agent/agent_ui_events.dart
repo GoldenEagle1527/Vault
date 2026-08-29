@@ -87,12 +87,14 @@ class AgentUiToolResult extends AgentUiEvent {
     required this.result,
     this.callId,
     this.historyIndex,
+    this.attachments = const [],
   });
 
   final String name;
   final String result;
   final String? callId;
   final int? historyIndex;
+  final List<ChatAttachmentMeta> attachments;
 }
 
 /// Current conversation was replaced by a fork; UI should rehydrate.

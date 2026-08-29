@@ -30,6 +30,7 @@ class AgentChatItem {
     String? jobId,
     bool backgrounded = false,
     int? historyIndex,
+    List<ChatAttachmentMeta> attachments = const [],
   }) {
     return AgentChatItem(
       kind: AgentChatKind.tool,
@@ -41,6 +42,7 @@ class AgentChatItem {
       toolJobId: jobId,
       toolBackgrounded: backgrounded,
       historyIndex: historyIndex,
+      attachments: attachments,
     );
   }
 

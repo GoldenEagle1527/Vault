@@ -2,6 +2,9 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:vault/agent/agent_chat_event_applier.dart';
 import 'package:vault/agent/agent_chat_model.dart';
 import 'package:vault/agent/agent_service.dart';
+import 'package:vault/agent/chat_attachment.dart';
+import 'package:vault/agent/present_file.dart';
+import 'package:vault/sandbox/guest_media_kind.dart';
 
 void main() {
   test('live deltas replace thinking placeholder and accumulate text', () {
@@ -47,6 +50,33 @@ void main() {
       expect(refreshCount, 1);
     },
   );
+
+  test('present_file tool result fills chat item attachments', () {
+    final applier = AgentChatEventApplier();
+    const attachment = ChatAttachmentMeta(
+      guestPath: '/root/out.csv',
+      displayName: 'out.csv',
+      kind: GuestMediaKind.text,
+    );
+    applier.applyLive(
+      const AgentUiToolCall(
+        name: kPresentFileToolName,
+        arguments: '{"path":"/root/out.csv"}',
+        callId: 'pf',
+      ),
+    );
+    applier.applyLive(
+      const AgentUiToolResult(
+        name: kPresentFileToolName,
+        result: 'ok',
+        callId: 'pf',
+        attachments: [attachment],
+      ),
+    );
+    expect(applier.items, hasLength(1));
+    expect(applier.items.single.attachments, hasLength(1));
+    expect(applier.items.single.attachments.single.guestPath, '/root/out.csv');
+  });
 
   test('restored user system notice is projected as status', () {
     final applier = AgentChatEventApplier();

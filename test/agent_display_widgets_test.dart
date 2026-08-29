@@ -1,6 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:vault/agent/agent_chat_model.dart';
+import 'package:vault/agent/chat_attachment.dart';
+import 'package:vault/agent/present_file.dart';
+import 'package:vault/sandbox/guest_media_kind.dart';
 import 'package:vault/agent/agent_navigation_coordinator.dart';
 import 'package:vault/agent/project_store.dart';
 import 'package:vault/screens/agent/widgets/agent_chat_widgets.dart';
@@ -34,6 +37,33 @@ void main() {
     await tester.tap(find.text('Ran echo ok'));
     await tester.pump();
     expect(find.textContaining('ok'), findsWidgets);
+  });
+
+  testWidgets('present_file bubble shows preview and download actions', (
+    tester,
+  ) async {
+    final item = AgentChatItem.tool(
+      name: kPresentFileToolName,
+      arguments: '{"path":"/root/out.csv"}',
+      result: '已展示',
+      attachments: const [
+        ChatAttachmentMeta(
+          guestPath: '/root/out.csv',
+          displayName: 'out.csv',
+          kind: GuestMediaKind.text,
+        ),
+      ],
+    );
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(body: AgentChatBubble(item: item)),
+      ),
+    );
+    expect(find.text('out.csv'), findsOneWidget);
+    expect(find.text('预览'), findsOneWidget);
+    expect(find.text('下载'), findsOneWidget);
+    expect(find.text('分享'), findsOneWidget);
+    expect(find.text('Ran present_file'), findsNothing);
   });
 
   testWidgets('navigation panel emits project action ids', (tester) async {

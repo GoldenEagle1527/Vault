@@ -7,6 +7,9 @@ enum FileBrowserOperation {
   cut,
   paste,
   delete,
+  export,
+  share,
+  pack,
   selectAll,
   clear,
 }
@@ -35,6 +38,18 @@ List<PopupMenuEntry<FileBrowserOperation>> buildFileBrowserOperationItems({
       const PopupMenuItem(
         value: FileBrowserOperation.delete,
         child: Text('删除'),
+      ),
+    if (hasSelection)
+      const PopupMenuItem(
+        value: FileBrowserOperation.export,
+        child: Text('另存为'),
+      ),
+    if (hasSelection)
+      const PopupMenuItem(value: FileBrowserOperation.share, child: Text('分享')),
+    if (hasSelection)
+      const PopupMenuItem(
+        value: FileBrowserOperation.pack,
+        child: Text('打包'),
       ),
     if (hasEntries)
       const PopupMenuItem(

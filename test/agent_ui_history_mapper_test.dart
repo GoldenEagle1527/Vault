@@ -3,6 +3,7 @@ import 'package:vault/agent/agent_service.dart';
 import 'package:vault/agent/agent_system_prompt.dart';
 import 'package:vault/agent/ask_user.dart';
 import 'package:vault/agent/chat_attachment.dart';
+import 'package:vault/agent/present_file.dart';
 import 'package:vault/sandbox/guest_media_kind.dart';
 import 'package:vault_agent_core/vault_agent_core.dart';
 
@@ -200,5 +201,69 @@ void main() {
       '/root/projects/p1/inbox/shot.png',
     );
     expect(user.attachments.single.kind, GuestMediaKind.image);
+  });
+
+  test('uiEventsFromHistory restores present_file attachments', () {
+    final payload = presentFilePayload(
+      guestPath: '/root/projects/p1/out.csv',
+      displayName: '表格.csv',
+      kind: GuestMediaKind.text,
+      size: 12,
+    );
+    final events = AgentService.uiEventsFromHistory([
+      ModelMessage(
+        model: 'm',
+        functionCalls: [
+          FunctionCall(
+            id: 'pf1',
+            name: kPresentFileToolName,
+            arguments: '{"path":"/root/projects/p1/out.csv"}',
+          ),
+        ],
+      ),
+      FunctionExecutionResultMessage(
+        results: [
+          FunctionExecutionResult(
+            id: 'pf1',
+            name: kPresentFileToolName,
+            isError: false,
+            arguments: '{"path":"/root/projects/p1/out.csv"}',
+            content: [TextPart('已展示文件\n${payload.toString()}')],
+            metadata: payload,
+          ),
+        ],
+      ),
+    ]);
+
+    expect(events, hasLength(2));
+    final result = events[1] as AgentUiToolResult;
+    expect(result.name, kPresentFileToolName);
+    expect(result.attachments, hasLength(1));
+    expect(result.attachments.single.guestPath, '/root/projects/p1/out.csv');
+    expect(result.attachments.single.displayName, '表格.csv');
+    expect(result.attachments.single.kind, GuestMediaKind.text);
+  });
+
+  test('uiEventsFromHistory parses present_file from result JSON only', () {
+    const json =
+        '{"present_file":true,"ok":true,"guestPath":"/root/shot.png",'
+        '"displayName":"shot.png","kind":"image"}';
+    final events = AgentService.uiEventsFromHistory([
+      FunctionExecutionResultMessage(
+        results: [
+          FunctionExecutionResult(
+            id: 'pf2',
+            name: kPresentFileToolName,
+            isError: false,
+            arguments: '{}',
+            content: [TextPart('已展示文件 /root/shot.png\n$json')],
+          ),
+        ],
+      ),
+    ]);
+    final result = events.single as AgentUiToolResult;
+    expect(result.attachments, hasLength(1));
+    expect(result.attachments.single.guestPath, '/root/shot.png');
+    expect(result.attachments.single.kind, GuestMediaKind.image);
   });
 }

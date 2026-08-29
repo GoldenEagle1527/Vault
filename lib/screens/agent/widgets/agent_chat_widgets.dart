@@ -1,11 +1,18 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
 import 'package:vault/agent/agent_chat_model.dart';
 import 'package:vault/agent/ask_user.dart';
+import 'package:vault/agent/chat_attachment.dart';
+import 'package:vault/agent/present_file.dart';
 import 'package:vault/agent/workspace_mode.dart';
+import 'package:vault/sandbox/guest_fs_ops.dart';
+import 'package:vault/sandbox/guest_media_kind.dart';
 import 'package:vault/sandbox/sandbox_provider.dart';
+import 'package:vault/screens/file_browser/file_preview_screen.dart';
+import 'package:vault/util/guest_export.dart';
 import 'package:vault/widgets/ask_user_transcript.dart';
 import 'package:vault/widgets/chat_attachment_preview.dart';
 import 'package:vault/widgets/glass.dart';
@@ -216,6 +223,19 @@ class AgentChatBubble extends StatelessWidget {
         onReselect: running ? null : onReselectAskUser,
         branchSwitcher: branchSwitcher,
       );
+    }
+    if (item.kind == AgentChatKind.tool &&
+        item.toolName == kPresentFileToolName) {
+      final presented = item.attachments.isNotEmpty
+          ? item.attachments.first
+          : presentFileAttachmentFromResult(resultText: item.toolResult);
+      if (presented != null) {
+        return PresentedFileCard(
+          attachment: presented,
+          provider: provider,
+          workspaceId: workspaceId,
+        );
+      }
     }
     if (item.kind == AgentChatKind.tool) {
       return Padding(
@@ -881,4 +901,175 @@ String _formatToolResult(String raw) {
     }
   } catch (_) {}
   return raw;
+}
+
+/// Card for a successful [present_file] tool result (preview / download).
+class PresentedFileCard extends StatelessWidget {
+  const PresentedFileCard({
+    super.key,
+    required this.attachment,
+    this.provider,
+    this.workspaceId,
+  });
+
+  final ChatAttachmentMeta attachment;
+  final SandboxProvider? provider;
+  final String? workspaceId;
+
+  bool get _isMedia =>
+      attachment.kind == GuestMediaKind.image ||
+      attachment.kind == GuestMediaKind.video ||
+      attachment.kind == GuestMediaKind.audio;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 6),
+      child: Align(
+        alignment: Alignment.centerLeft,
+        child: ConstrainedBox(
+          constraints: BoxConstraints(
+            maxWidth: MediaQuery.sizeOf(context).width * 0.92,
+          ),
+          child: GlassPanel(
+            borderRadius: 16,
+            tone: GlassTone.regular,
+            tint: scheme.surface,
+            padding: const EdgeInsets.all(14),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Row(
+                  children: [
+                    Icon(
+                      _iconForKind(attachment.kind),
+                      size: 22,
+                      color: scheme.primary,
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        attachment.displayName,
+                        style: Theme.of(context).textTheme.titleSmall,
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ),
+                  ],
+                ),
+                if (_isMedia && provider != null && workspaceId != null) ...[
+                  const SizedBox(height: 10),
+                  ChatAttachmentTile(
+                    displayName: attachment.displayName,
+                    kind: attachment.kind,
+                    guestPath: attachment.guestPath,
+                    provider: provider,
+                    workspaceId: workspaceId,
+                    size: 88,
+                  ),
+                ],
+                const SizedBox(height: 10),
+                Wrap(
+                  spacing: 8,
+                  runSpacing: 4,
+                  children: [
+                    FilledButton.tonalIcon(
+                      onPressed: () => unawaited(_preview(context)),
+                      icon: const Icon(Icons.visibility_outlined, size: 18),
+                      label: const Text('预览'),
+                    ),
+                    FilledButton.tonalIcon(
+                      onPressed: () =>
+                          unawaited(_export(context, GuestExportMode.saveAs)),
+                      icon: const Icon(Icons.download_outlined, size: 18),
+                      label: const Text('下载'),
+                    ),
+                    TextButton.icon(
+                      onPressed: () =>
+                          unawaited(_export(context, GuestExportMode.share)),
+                      icon: const Icon(Icons.share_outlined, size: 18),
+                      label: const Text('分享'),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Future<bool> _ensureGuestFile(BuildContext context) async {
+    final sandbox = provider;
+    final id = workspaceId;
+    if (sandbox == null || id == null) {
+      _snack(context, '无法访问沙箱');
+      return false;
+    }
+    try {
+      final exists = await guestPathExists(sandbox, id, attachment.guestPath);
+      if (!exists) {
+        if (context.mounted) _snack(context, '文件已不在沙箱');
+        return false;
+      }
+      return true;
+    } catch (_) {
+      if (context.mounted) _snack(context, '文件已不在沙箱');
+      return false;
+    }
+  }
+
+  Future<void> _preview(BuildContext context) async {
+    if (!await _ensureGuestFile(context) || !context.mounted) return;
+    await Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => FilePreviewScreen(
+          provider: provider!,
+          workspaceId: workspaceId!,
+          guestPath: attachment.guestPath,
+        ),
+      ),
+    );
+  }
+
+  Future<void> _export(BuildContext context, GuestExportMode mode) async {
+    if (!await _ensureGuestFile(context) || !context.mounted) return;
+    try {
+      final result = await GuestExport(
+        provider: provider!,
+        workspaceId: workspaceId!,
+      ).run(mode: mode, guestPaths: [attachment.guestPath]);
+      if (!context.mounted || result.cancelled) return;
+      _snack(
+        context,
+        result.message ?? (mode == GuestExportMode.share ? '已分享' : '已导出'),
+        error: result.failed > 0,
+      );
+    } catch (error) {
+      if (!context.mounted) return;
+      _snack(context, '导出失败：$error', error: true);
+    }
+  }
+
+  void _snack(BuildContext context, String message, {bool error = false}) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(message),
+        backgroundColor: error ? Theme.of(context).colorScheme.error : null,
+      ),
+    );
+  }
+}
+
+IconData _iconForKind(GuestMediaKind kind) {
+  return switch (kind) {
+    GuestMediaKind.image => Icons.image_outlined,
+    GuestMediaKind.video => Icons.videocam_outlined,
+    GuestMediaKind.audio => Icons.audiotrack_outlined,
+    GuestMediaKind.text => Icons.description_outlined,
+    GuestMediaKind.binary => Icons.insert_drive_file_outlined,
+  };
 }

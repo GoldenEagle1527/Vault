@@ -243,4 +243,42 @@ void main() {
     );
     expect(unique, '/root/new-2.txt');
   });
+
+  test('exportGuestFileToHost streams bytes to host', () async {
+    final guest = File(p.join(tmp.path, 'ws', 'root', 'out.bin'));
+    await guest.parent.create(recursive: true);
+    final payload = Uint8List.fromList(
+      List<int>.generate(4096, (i) => i & 0xff),
+    );
+    await guest.writeAsBytes(payload, flush: true);
+
+    final dest = File(p.join(tmp.path, 'exported.bin'));
+    await exportGuestFileToHost(
+      provider: provider,
+      workspaceId: 'ws',
+      guestAbsolutePath: '/root/out.bin',
+      hostPath: dest.path,
+    );
+    expect(await dest.readAsBytes(), payload);
+  });
+
+  test('exportGuestDirectoryToHost copies tree', () async {
+    final nested = Directory(p.join(tmp.path, 'ws', 'root', 'docs', 'nested'));
+    await nested.create(recursive: true);
+    await File(p.join(nested.parent.path, 'a.txt')).writeAsString('alpha');
+    await File(p.join(nested.path, 'b.txt')).writeAsString('beta');
+
+    final dest = Directory(p.join(tmp.path, 'exported_docs'));
+    await exportGuestDirectoryToHost(
+      provider: provider,
+      workspaceId: 'ws',
+      guestAbsolutePath: '/root/docs',
+      hostDir: dest.path,
+    );
+    expect(await File(p.join(dest.path, 'a.txt')).readAsString(), 'alpha');
+    expect(
+      await File(p.join(dest.path, 'nested', 'b.txt')).readAsString(),
+      'beta',
+    );
+  });
 }

@@ -1,6 +1,7 @@
 import 'package:vault/agent/agent_ui_events.dart';
 import 'package:vault/agent/chat_attachment.dart';
 import 'package:vault/agent/conversation_state.dart';
+import 'package:vault/agent/present_file.dart';
 import 'package:vault/agent/system_notice.dart';
 import 'package:vault_agent_core/vault_agent_core.dart';
 
@@ -139,12 +140,19 @@ void _mapToolResults(
         ),
       );
     } else {
+      final presented = result.name == kPresentFileToolName
+          ? presentFileAttachmentFromResult(
+              metadata: result.metadata,
+              resultText: text,
+            )
+          : null;
       out.add(
         AgentUiToolResult(
           name: result.name,
           result: text,
           callId: result.id,
           historyIndex: historyIndex,
+          attachments: presented == null ? const [] : [presented],
         ),
       );
     }

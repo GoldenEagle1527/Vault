@@ -21,6 +21,7 @@ import 'package:vault/agent/project_checkpoint.dart';
 import 'package:vault/agent/tools/ask_user_tool.dart';
 import 'package:vault/agent/tools/inspect_site_tool.dart';
 import 'package:vault/agent/tools/project_url_tool.dart';
+import 'package:vault/agent/tools/present_file_tool.dart';
 import 'package:vault/agent/tools/read_tool.dart';
 import 'package:vault/agent/tools/shell_tool.dart';
 import 'package:vault/agent/vault_host_device.dart';
@@ -257,6 +258,7 @@ class AgentService {
     final tools = <Tool>[
       createAskUserTool(askUser, onPresent: _snapshotAskUserPresented),
       createReadTool(_workspace, projectPath: projectPath),
+      createPresentFileTool(_workspace),
       createShellTool(
         _workspace,
         timeout: _shellTimeout,

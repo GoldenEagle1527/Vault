@@ -271,7 +271,7 @@ Future<void> copyGuestPath({
     }
     await Directory(p.dirname(toHost)).create(recursive: true);
     if (type == FileSystemEntityType.directory) {
-      await _copyHostDirectory(Directory(fromHost), Directory(toHost));
+      await copyHostDirectoryTree(Directory(fromHost), Directory(toHost));
     } else {
       await File(fromHost).copy(toHost);
     }
@@ -308,15 +308,121 @@ Future<void> moveGuestPath({
   );
 }
 
-Future<void> _copyHostDirectory(Directory src, Directory dst) async {
-  await dst.create(recursive: true);
-  await for (final entity in src.list(followLinks: false)) {
-    final name = p.basename(entity.path);
-    final target = p.join(dst.path, name);
-    if (entity is Directory) {
-      await _copyHostDirectory(entity, Directory(target));
-    } else if (entity is File) {
-      await entity.copy(target);
-    }
+/// Probe whether [guestAbsolutePath] is a file, directory, or missing.
+Future<FileSystemEntityType> guestEntityType(
+  SandboxProvider provider,
+  String workspaceId,
+  String guestAbsolutePath,
+) async {
+  final guest = assertGuestPathUnderHome(guestAbsolutePath);
+  try {
+    final host = await provider.resolveGuestHostPath(workspaceId, guest);
+    final type = await FileSystemEntity.type(host, followLinks: false);
+    if (type != FileSystemEntityType.notFound) return type;
+  } catch (_) {
+    // Fall through.
   }
+  final result = await provider.runGuestCommand(
+    workspaceId,
+    'if [ -d ${shellSingleQuote(guest)} ]; then echo dir; '
+    'elif [ -f ${shellSingleQuote(guest)} ]; then echo file; '
+    'elif [ -e ${shellSingleQuote(guest)} ]; then echo other; '
+    'else echo missing; fi',
+  );
+  return switch (result.stdout.trim()) {
+    'dir' => FileSystemEntityType.directory,
+    'file' => FileSystemEntityType.file,
+    'other' => FileSystemEntityType.link,
+    _ => FileSystemEntityType.notFound,
+  };
+}
+
+/// Byte size of a guest file, or null if missing / not a file.
+Future<int?> guestFileByteSize(
+  SandboxProvider provider,
+  String workspaceId,
+  String guestAbsolutePath,
+) async {
+  final guest = assertGuestPathUnderHome(guestAbsolutePath);
+  try {
+    final host = await provider.resolveGuestHostPath(workspaceId, guest);
+    final file = File(host);
+    if (await file.exists()) return await file.length();
+  } catch (_) {
+    // Fall through.
+  }
+  final result = await provider.runGuestCommand(
+    workspaceId,
+    'if [ -f ${shellSingleQuote(guest)} ]; then wc -c < ${shellSingleQuote(guest)}; fi',
+  );
+  if (!result.success) return null;
+  return int.tryParse(result.stdout.trim());
+}
+
+/// Stream a guest file onto [hostPath] without buffering the whole file.
+Future<void> exportGuestFileToHost({
+  required SandboxProvider provider,
+  required String workspaceId,
+  required String guestAbsolutePath,
+  required String hostPath,
+}) async {
+  if (provider is WslProvider) {
+    await provider.copyGuestFileToHost(
+      workspaceId,
+      guestAbsolutePath,
+      hostPath,
+    );
+    return;
+  }
+  final guest = assertGuestPathUnderHome(guestAbsolutePath);
+  final source = await provider.resolveGuestHostPath(workspaceId, guest);
+  await streamCopyHostFile(sourcePath: source, destPath: hostPath);
+}
+
+/// Recursively copy a guest directory onto [hostDir] (created).
+Future<void> exportGuestDirectoryToHost({
+  required SandboxProvider provider,
+  required String workspaceId,
+  required String guestAbsolutePath,
+  required String hostDir,
+}) async {
+  if (provider is WslProvider) {
+    await provider.copyGuestDirectoryToHost(
+      workspaceId,
+      guestAbsolutePath,
+      hostDir,
+    );
+    return;
+  }
+  final guest = assertGuestPathUnderHome(guestAbsolutePath);
+  final source = await provider.resolveGuestHostPath(workspaceId, guest);
+  await copyHostDirectoryTree(Directory(source), Directory(hostDir));
+}
+
+/// Export a guest file or directory onto a host destination path.
+Future<void> exportGuestPathToHost({
+  required SandboxProvider provider,
+  required String workspaceId,
+  required String guestAbsolutePath,
+  required String hostPath,
+}) async {
+  final type = await guestEntityType(provider, workspaceId, guestAbsolutePath);
+  if (type == FileSystemEntityType.notFound) {
+    throw StateError('源不存在：$guestAbsolutePath');
+  }
+  if (type == FileSystemEntityType.directory) {
+    await exportGuestDirectoryToHost(
+      provider: provider,
+      workspaceId: workspaceId,
+      guestAbsolutePath: guestAbsolutePath,
+      hostDir: hostPath,
+    );
+    return;
+  }
+  await exportGuestFileToHost(
+    provider: provider,
+    workspaceId: workspaceId,
+    guestAbsolutePath: guestAbsolutePath,
+    hostPath: hostPath,
+  );
 }

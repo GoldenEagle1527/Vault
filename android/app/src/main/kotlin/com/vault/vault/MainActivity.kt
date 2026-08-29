@@ -9,5 +9,6 @@ class MainActivity : FlutterActivity() {
         super.configureFlutterEngine(flutterEngine)
         flutterEngine.plugins.add(ProotPlugin())
         flutterEngine.plugins.add(OffloadPlugin())
+        flutterEngine.plugins.add(FileExportPlugin())
     }
 }

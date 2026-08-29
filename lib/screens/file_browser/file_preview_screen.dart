@@ -6,6 +6,7 @@ import 'package:vault/sandbox/guest_code_highlight.dart';
 import 'package:vault/sandbox/guest_media_kind.dart';
 import 'package:vault/sandbox/guest_media_source.dart';
 import 'package:vault/sandbox/sandbox_provider.dart';
+import 'package:vault/util/guest_export.dart';
 import 'package:vault/widgets/guest_media_preview.dart';
 
 class FilePreviewScreen extends StatefulWidget {
@@ -128,6 +129,29 @@ class _FilePreviewScreenState extends State<FilePreviewScreen> {
     }
   }
 
+  Future<void> _export(GuestExportMode mode) async {
+    try {
+      final result = await GuestExport(
+        provider: widget.provider,
+        workspaceId: widget.workspaceId,
+      ).run(mode: mode, guestPaths: [widget.guestPath]);
+      if (!mounted || result.cancelled) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(result.message ?? '已导出'),
+          backgroundColor: result.failed > 0
+              ? Theme.of(context).colorScheme.error
+              : null,
+        ),
+      );
+    } catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('导出失败：$error')));
+    }
+  }
+
   Future<void> _save() async {
     setState(() => _saving = true);
     try {
@@ -221,6 +245,20 @@ class _FilePreviewScreenState extends State<FilePreviewScreen> {
                 icon: const Icon(Icons.edit_outlined),
               ),
           ],
+          IconButton(
+            tooltip: '导出',
+            onPressed: _loading || _saving
+                ? null
+                : () => unawaited(_export(GuestExportMode.saveAs)),
+            icon: const Icon(Icons.download_outlined),
+          ),
+          IconButton(
+            tooltip: '分享',
+            onPressed: _loading || _saving
+                ? null
+                : () => unawaited(_export(GuestExportMode.share)),
+            icon: const Icon(Icons.share_outlined),
+          ),
           IconButton(
             tooltip: '刷新',
             onPressed: _loading || _saving ? null : _load,

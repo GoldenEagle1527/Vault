@@ -101,6 +101,33 @@ void main() {
     });
   });
 
+  test('operation menu includes 另存为 / 分享 / 打包 when selected', () {
+    final items = buildFileBrowserOperationItems(
+      hasSingleSelection: true,
+      hasSelection: true,
+      canPaste: false,
+      hasEntries: true,
+    );
+    final values = items
+        .whereType<PopupMenuItem<FileBrowserOperation>>()
+        .map((item) => item.value)
+        .toSet();
+    final labels = items
+        .whereType<PopupMenuItem<FileBrowserOperation>>()
+        .map((item) => (item.child as Text).data)
+        .toSet();
+
+    expect(
+      values,
+      containsAll({
+        FileBrowserOperation.export,
+        FileBrowserOperation.share,
+        FileBrowserOperation.pack,
+      }),
+    );
+    expect(labels, containsAll({'另存为', '分享', '打包'}));
+  });
+
   testWidgets('media facade still exposes image preview', (tester) async {
     final source = GuestMediaSource.hostFile(
       File('unused.png'),

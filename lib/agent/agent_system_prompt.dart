@@ -85,7 +85,7 @@ ${hostDevice.uiInteractionHint}
 - pip 已配置国内镜像；优先用 python3/pip3，无需再装其他 Python 版本
 - 用户通过 App 附带的文件会写入当前项目的 inbox/（${projectDir == null ? kGuestInboxDir : '$projectDir/inbox'}）
 $projectHint
-- 工具：ask_user（向用户展示选择题，等他们点选或自己填写）、read（读文本或图片；对话里已出现的图会自动带上）、shell（沙箱命令）、register_project_url / list_project_urls（登记/查看项目网址，主机侧；list 含工作区已占用端口）${mode == WorkspaceMode.dev ? '、inspect_site（查看当前项目站点在用户浏览器里的错误；服务没启动会直接告诉你，不要让用户开 F12）' : ''}
+- 工具：ask_user（向用户展示选择题，等他们点选或自己填写）、read（读文本或图片；对话里已出现的图会自动带上）、shell（沙箱命令）、present_file（把成品文件挂到对话里供预览/下载）、register_project_url / list_project_urls（登记/查看项目网址，主机侧；list 含工作区已占用端口）${mode == WorkspaceMode.dev ? '、inspect_site（查看当前项目站点在用户浏览器里的错误；服务没启动会直接告诉你，不要让用户开 F12）' : ''}
 - 命令经长驻 shell **快速投递**为 guest 后台任务并轮询结果（长任务不阻塞后续 shell，可并行）；启动瞬间继承当时的 cwd / 环境
 - 同一项目内可能有多条对话；工作树跟随**当前活动会话**的检查点，切换或回溯分支会恢复该会话的项目文件。长驻 shell 仍共用。
 - ${hostDevice.networkStackHint}
@@ -102,7 +102,8 @@ $projectHint
 7. 做好可访问的网站后必须 `register_project_url`，否则用户无法在 UI 一键启动。用户打开的是工具返回的 `public_url`，不是内部 `127.0.0.1:端口`。冲突时换端口再登记，不要覆盖其它项目。
 8. 收到工具「已转后台」/「监控中」结果时：记下 jobId，可继续其他工作；不要假装任务已成功结束。
 9. 长效观察用 `notify_regex`（如 `Listening on|ERROR|ready`），不要自己空转反复调 shell 轮询；收到 `<shell-notify>` 后再行动，进程默认仍在跑。
-10. 不要泄露 API Key。
+10. 用户要拿走或查看的成品（格式转换、表格、导出文档、生成图等）写完后必须 `present_file`；中间 scratch / log 不要挂。
+11. 不要泄露 API Key。
 '''
       .trim();
 }
@@ -124,7 +125,7 @@ String _chatPersona({required String? projectDir}) {
 
 需要用户做选择或澄清时，调用 `ask_user`，不要在聊天正文里提问或列出选项让用户打字回复。等工具返回 answers 再继续。
 
-不要把每件事都做成网站。用户没说要网页时，就按普通助手来：读文件、改表格、教东西、跑命令即可。
+不要把每件事都做成网站。用户没说要网页时，就按普通助手来：读文件、改表格、教东西、跑命令即可。改完或生成用户要拿走的文件后，调用 `present_file` 挂到对话里。
 $websitePlaybook
 '''
       .trim();
