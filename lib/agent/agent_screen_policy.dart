@@ -39,7 +39,7 @@ AgentScreenEventKind classifyAgentScreenEvent(AgentUiEvent event) {
   };
 }
 
-enum AgentScreenStatusDisposition { completed, thinking, visible }
+enum AgentScreenStatusDisposition { completed, thinking, visible, hidden }
 
 AgentScreenStatusDisposition agentScreenStatusDisposition(String message) {
   if (message == '已完成') return AgentScreenStatusDisposition.completed;
@@ -50,6 +50,9 @@ AgentScreenStatusDisposition agentScreenStatusDisposition(String message) {
       message == 'shell 匹配通知已送达，正在继续…' ||
       message == 'shell 输出已匹配，准备唤醒模型…') {
     return AgentScreenStatusDisposition.thinking;
+  }
+  if (message.startsWith('正在执行工具：')) {
+    return AgentScreenStatusDisposition.hidden;
   }
   return AgentScreenStatusDisposition.visible;
 }

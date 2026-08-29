@@ -63,6 +63,10 @@ void main() {
       agentScreenStatusDisposition('正在保存…'),
       AgentScreenStatusDisposition.visible,
     );
+    expect(
+      agentScreenStatusDisposition('正在执行工具：shell'),
+      AgentScreenStatusDisposition.hidden,
+    );
   });
 
   test('stale site probe cannot overwrite a newer probe', () {

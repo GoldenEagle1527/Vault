@@ -304,6 +304,8 @@ class AgentChatEventApplier {
             ensureThinkingPlaceholder();
           case AgentScreenStatusDisposition.visible:
             status = message;
+          case AgentScreenStatusDisposition.hidden:
+            status = null;
         }
     }
   }

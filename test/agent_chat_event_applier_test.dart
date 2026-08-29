@@ -78,6 +78,12 @@ void main() {
     expect(applier.items.single.attachments.single.guestPath, '/root/out.csv');
   });
 
+  test('live tool-execution status is not shown as a banner', () {
+    final applier = AgentChatEventApplier();
+    applier.applyLive(const AgentUiStatus('正在执行工具：shell'));
+    expect(applier.status, isNull);
+  });
+
   test('restored user system notice is projected as status', () {
     final applier = AgentChatEventApplier();
 
