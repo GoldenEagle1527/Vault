@@ -7,6 +7,7 @@ import 'package:path_provider/path_provider.dart';
 import 'package:vault/offload/offload_host_server.dart';
 import 'package:vault/offload/wsl_offload_install.dart';
 import 'package:vault/sandbox/alpine_mirrors.dart';
+import 'package:vault/sandbox/guest_file_copy.dart';
 import 'package:vault/sandbox/guest_fs_list.dart';
 import 'package:vault/sandbox/sandbox_provider.dart';
 import 'package:vault/sandbox/workspace_bootstrap.dart';
@@ -588,6 +589,71 @@ EOF
     );
     proc.stdin.add(utf8.encode(base64Encode(bytes)));
     await proc.stdin.close();
+    final exit = await proc.exitCode;
+    if (exit != 0) {
+      final err = await proc.stderr.transform(utf8.decoder).join();
+      throw StateError('写入沙箱文件失败（exit $exit）：$err');
+    }
+  }
+
+  /// Stream a host file into the guest. UNC first; `cat` stdin if UNC fails.
+  Future<void> copyHostFileToGuest(
+    String workspaceId,
+    String guestAbsolutePath,
+    String hostPath,
+  ) async {
+    if (!await _distroRegistered(workspaceId)) {
+      throw StateError('工作区 $workspaceId 的 WSL 发行版不存在');
+    }
+    final guest = assertGuestPathUnderHome(guestAbsolutePath);
+    final parent = p.posix.dirname(guest);
+    final mkdir = await _runInDistro(
+      workspaceId,
+      'mkdir -p ${shellSingleQuote(parent)}',
+    );
+    if (!mkdir.success) {
+      throw StateError('无法在沙箱内创建目录 $parent：${mkdir.stderr}');
+    }
+    try {
+      await streamCopyHostFile(
+        sourcePath: hostPath,
+        destPath: _wslUncFor(workspaceId, guest),
+      );
+      return;
+    } catch (_) {
+      // Fall through to raw stdin (not base64 — that doubles memory).
+    }
+    await _streamCopyHostFileViaWslCat(workspaceId, guest, hostPath);
+  }
+
+  Future<void> _streamCopyHostFileViaWslCat(
+    String workspaceId,
+    String guest,
+    String hostPath,
+  ) async {
+    final proc = await Process.start(
+      'wsl.exe',
+      [
+        '-d',
+        distroName(workspaceId),
+        '-u',
+        'root',
+        '--cd',
+        kGuestHome,
+        '-e',
+        '/bin/sh',
+        '-c',
+        'cat > ${shellSingleQuote(guest)}',
+      ],
+      environment: _wslHostEnv,
+      includeParentEnvironment: false,
+    );
+    try {
+      await streamCopyHostFileToSink(sourcePath: hostPath, sink: proc.stdin);
+    } catch (e) {
+      proc.kill();
+      rethrow;
+    }
     final exit = await proc.exitCode;
     if (exit != 0) {
       final err = await proc.stderr.transform(utf8.decoder).join();

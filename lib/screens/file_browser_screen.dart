@@ -356,7 +356,7 @@ class _FileBrowserScreenState extends State<FileBrowserScreen> {
   }
 
   Future<void> _pickAndImport() async {
-    // file_picker 11 + FileType.image → DocumentsUI categories (raincurtain).
+    // Same unrestricted picker as the agent paperclip (FileType.any).
     final result = await pickHostFilesForUi(
       allowMultiple: true,
       withData: false,

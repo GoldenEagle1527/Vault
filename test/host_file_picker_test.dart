@@ -53,11 +53,25 @@ void main() {
       expect(s.type, FileType.any);
     });
 
-    test('unrestricted → FileType.any (Agent paperclip)', () {
-      final s = resolveHostFilePickerType(unrestricted: true);
-      expect(s.type, FileType.any);
-      expect(s.allowedExtensions, isNull);
-    });
+    test(
+      'unrestricted → FileType.any (file browser import + Agent paperclip)',
+      () {
+        final s = resolveHostFilePickerType(unrestricted: true);
+        expect(s.type, FileType.any);
+        expect(s.allowedExtensions, isNull);
+      },
+    );
+
+    test(
+      'empty MIME is still image; UI must pass unrestricted, not omit MIME',
+      () {
+        expect(resolveHostFilePickerType().type, FileType.image);
+        expect(
+          resolveHostFilePickerType(unrestricted: true).type,
+          FileType.any,
+        );
+      },
+    );
   });
 
   group('parseOpenFilePickerTypes', () {

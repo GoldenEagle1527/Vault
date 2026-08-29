@@ -1,7 +1,32 @@
 import 'dart:io';
 
 import 'package:path/path.dart' as p;
+import 'package:vault/sandbox/guest_file_copy.dart';
 import 'package:vault/sandbox/sandbox_provider.dart';
+import 'package:vault/sandbox/wsl_provider.dart';
+
+/// Stream [hostPath] into a guest file without buffering the whole file.
+///
+/// Uses the host-mapped path (proot rootfs / `\\wsl$\…`). [WslProvider] also
+/// falls back to a raw `cat` stdin pipe when UNC writes fail.
+Future<void> copyHostFileToGuest({
+  required SandboxProvider provider,
+  required String workspaceId,
+  required String guestAbsolutePath,
+  required String hostPath,
+}) async {
+  if (provider is WslProvider) {
+    await provider.copyHostFileToGuest(
+      workspaceId,
+      guestAbsolutePath,
+      hostPath,
+    );
+    return;
+  }
+  final guest = assertGuestPathUnderHome(guestAbsolutePath);
+  final dest = await provider.resolveGuestHostPath(workspaceId, guest);
+  await streamCopyHostFile(sourcePath: hostPath, destPath: dest);
+}
 
 /// Whether [guestAbsolutePath] exists in the guest (file or directory).
 Future<bool> guestPathExists(
@@ -43,16 +68,15 @@ Future<void> createGuestDirectory(
     'mkdir -p -- ${shellSingleQuote(guest)}',
   );
   if (!result.success) {
-    throw StateError(
-      '无法创建目录 $guest：${result.stderr}'.trim(),
-    );
+    throw StateError('无法创建目录 $guest：${result.stderr}'.trim());
   }
 }
 
-/// Write host file bytes into [guestDir]/basename], sanitizing the name.
+/// Stream a host file into [guestDir]/basename], sanitizing the name.
 ///
-/// Returns the guest absolute path written. When [overwrite] is false and the
-/// target exists, picks `name-2.ext`, `name-3.ext`, …
+/// Does not load the whole file into memory. Returns the guest absolute path
+/// written. When [overwrite] is false and the target exists, picks
+/// `name-2.ext`, `name-3.ext`, …
 Future<String> importHostFileToGuest({
   required SandboxProvider provider,
   required String workspaceId,
@@ -84,8 +108,12 @@ Future<String> importHostFileToGuest({
     }
   }
 
-  final bytes = await File(hostPath).readAsBytes();
-  await provider.writeGuestFile(workspaceId, guestPath, bytes);
+  await copyHostFileToGuest(
+    provider: provider,
+    workspaceId: workspaceId,
+    guestAbsolutePath: guestPath,
+    hostPath: hostPath,
+  );
   return guestPath;
 }
 

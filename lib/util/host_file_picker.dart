@@ -118,8 +118,10 @@ Future<FilePickerResult?> pickHostFiles({
   );
 }
 
-/// UI entry: no MIME → [FileType.image] (DocumentsUI categories on Android 11+
-/// `file_picker`).
+/// File browser import: any file type (docs, code, archives, images, …).
+///
+/// Forwards `unrestricted: true` into [pickHostFiles]. Empty MIME still maps
+/// to [FileType.image] (raincurtain `every()` on an empty set).
 Future<FilePickerResult?> pickHostFilesForUi({
   bool allowMultiple = true,
   bool withData = false,
@@ -127,9 +129,7 @@ Future<FilePickerResult?> pickHostFilesForUi({
   return pickHostFiles(
     allowMultiple: allowMultiple,
     withData: withData,
-    // Explicit image/* so mapping stays FileType.image even if empty-set
-    // semantics change.
-    mimeTypes: const ['image/*'],
+    unrestricted: true,
   );
 }
 

@@ -10,6 +10,7 @@ class _LocalSandboxProvider implements SandboxProvider {
   _LocalSandboxProvider(this.root);
 
   final Directory root;
+  int writeGuestFileCalls = 0;
 
   String _host(String workspaceId, String guestAbsolutePath) {
     final guest = assertGuestPathUnderHome(guestAbsolutePath);
@@ -55,6 +56,7 @@ class _LocalSandboxProvider implements SandboxProvider {
     String guestAbsolutePath,
     List<int> bytes,
   ) async {
+    writeGuestFileCalls++;
     final file = File(_host(workspaceId, guestAbsolutePath));
     await file.parent.create(recursive: true);
     await file.writeAsBytes(bytes, flush: true);
@@ -154,6 +156,31 @@ void main() {
       displayName: 'note.txt',
     );
     expect(second, '/root/note-2.txt');
+  });
+
+  test('import streams large file without writeGuestFile', () async {
+    final payload = Uint8List(256 * 1024);
+    for (var i = 0; i < payload.length; i++) {
+      payload[i] = i & 0xff;
+    }
+    final host = File(p.join(tmp.path, 'big.bin'));
+    await host.writeAsBytes(payload, flush: true);
+    provider.writeGuestFileCalls = 0;
+
+    final guest = await importHostFileToGuest(
+      provider: provider,
+      workspaceId: 'ws',
+      guestDir: '/root',
+      hostPath: host.path,
+      displayName: 'big.bin',
+    );
+
+    expect(guest, '/root/big.bin');
+    expect(provider.writeGuestFileCalls, 0);
+    expect(
+      await File(p.join(tmp.path, 'ws', 'root', 'big.bin')).readAsBytes(),
+      payload,
+    );
   });
 
   test('ensureGuestChildDirectory unique', () async {
