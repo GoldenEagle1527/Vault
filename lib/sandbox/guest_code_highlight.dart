@@ -121,6 +121,28 @@ class SelectableHighlightView extends StatelessWidget {
 
   static const _rootKey = 'root';
 
+  /// Parse [source] into highlight nodes. Never throws.
+  ///
+  /// [highlight.parse] requires a non-null language; unknown extensions
+  /// (`.txt`, no extension) must stay as plaintext instead of crashing
+  /// [build] (release [ErrorWidget] is a solid gray box).
+  static List<Node> nodesForPreview(String source, String? language) {
+    if (source.isEmpty) return const [];
+    final lang = language?.trim();
+    if (lang == null || lang.isEmpty) {
+      return [Node(value: source)];
+    }
+    try {
+      final nodes = highlight.parse(source, language: lang).nodes;
+      if (nodes == null || nodes.isEmpty) {
+        return [Node(value: source)];
+      }
+      return nodes;
+    } catch (_) {
+      return [Node(value: source)];
+    }
+  }
+
   List<TextSpan> _convert(List<Node> nodes) {
     final spans = <TextSpan>[];
     var current = spans;
@@ -164,7 +186,7 @@ class SelectableHighlightView extends StatelessWidget {
       style = style.merge(textStyle);
     }
 
-    final nodes = highlight.parse(source, language: language).nodes ?? const [];
+    final nodes = nodesForPreview(source, language);
     final bg = root?.backgroundColor ?? const Color(0xffffffff);
 
     // ColoredBox sizes to its child; without expand, short files only paint a

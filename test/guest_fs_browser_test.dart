@@ -1,5 +1,6 @@
 import 'dart:io';
 
+import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:path/path.dart' as p;
 import 'package:vault/sandbox/guest_code_highlight.dart';
@@ -131,6 +132,52 @@ void main() {
     test('returns null for unknown', () {
       expect(highlightLanguageForPath('/root/notes.txt'), isNull);
       expect(highlightLanguageForPath('/root/noext'), isNull);
+    });
+  });
+
+  group('SelectableHighlightView.nodesForPreview', () {
+    test('plain txt does not throw and keeps source', () {
+      const source = '《游戏世界——死局之城》\n第一场：网吧消失';
+      final nodes = SelectableHighlightView.nodesForPreview(source, null);
+      expect(nodes, hasLength(1));
+      expect(nodes.single.value, source);
+    });
+
+    test('empty source is empty', () {
+      expect(SelectableHighlightView.nodesForPreview('', null), isEmpty);
+    });
+
+    test('unknown language falls back to plaintext', () {
+      const source = 'hello';
+      final nodes = SelectableHighlightView.nodesForPreview(
+        source,
+        'not-a-real-language',
+      );
+      expect(nodes, isNotEmpty);
+      expect(nodes.map((n) => n.value).join(), contains('hello'));
+    });
+
+    test('known language still produces nodes', () {
+      const source = 'void main() {}';
+      final nodes = SelectableHighlightView.nodesForPreview(source, 'dart');
+      expect(nodes, isNotEmpty);
+    });
+
+    testWidgets('null language builds text instead of ErrorWidget', (
+      tester,
+    ) async {
+      await tester.pumpWidget(
+        const MaterialApp(
+          home: Scaffold(
+            body: SelectableHighlightView(
+              source: '剧本内容',
+              theme: {},
+            ),
+          ),
+        ),
+      );
+      expect(tester.takeException(), isNull);
+      expect(find.text('剧本内容'), findsOneWidget);
     });
   });
 
