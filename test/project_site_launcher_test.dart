@@ -1,16 +1,20 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:vault/agent/project_site_launcher.dart';
 import 'package:vault/agent/project_store.dart';
+import 'package:vault/agent/site_port.dart';
 import 'package:vault/sandbox/sandbox_models.dart';
 
 class _FakeWorkspace implements SandboxWorkspace {
-  _FakeWorkspace(this._handler);
+  _FakeWorkspace(this._handler, {Map<String, List<int>>? files})
+    : files = files ?? {};
 
   final Future<CommandResult> Function(String cmd) _handler;
   final List<String> commands = [];
+  final Map<String, List<int>> files;
 
   @override
   String get workspaceId => 'test';
@@ -41,13 +45,15 @@ class _FakeWorkspace implements SandboxWorkspace {
   }
 
   @override
-  Future<void> writeGuestFile(
-    String guestAbsolutePath,
-    List<int> bytes,
-  ) async {}
+  Future<void> writeGuestFile(String guestAbsolutePath, List<int> bytes) async {
+    files[guestAbsolutePath] = bytes;
+  }
 
   @override
-  Future<Uint8List?> readGuestFile(String guestAbsolutePath) async => null;
+  Future<Uint8List?> readGuestFile(String guestAbsolutePath) async {
+    final data = files[guestAbsolutePath];
+    return data == null ? null : Uint8List.fromList(data);
+  }
 
   @override
   Future<void> dispose() async {}
@@ -172,7 +178,7 @@ void main() {
     expect(ws.commands.where((c) => c.contains('nohup')), isEmpty);
   });
 
-  test('start writes pid when down without a second probe', () async {
+  test('start waits until the port is listening', () async {
     var probes = 0;
     final ws = _FakeWorkspace((cmd) async {
       if (cmd.contains('vault_site_own_pid')) {
@@ -180,7 +186,12 @@ void main() {
       }
       if (cmd.contains('/proc/net/tcp')) {
         probes += 1;
-        return const CommandResult(exitCode: 0, stdout: '0', stderr: '');
+        // First probe is the pre-start conflict check; later probes wait.
+        return CommandResult(
+          exitCode: 0,
+          stdout: probes == 1 ? '0' : '200',
+          stderr: '',
+        );
       }
       expect(cmd, contains('nohup'));
       expect(cmd, contains('.pid'));
@@ -188,11 +199,56 @@ void main() {
     });
     final result = await ProjectSiteLauncher(
       ws,
+      readyPollInterval: Duration.zero,
     ).start(projectPath: 'p1', entry: _site, openInBrowser: false);
     expect(result.startedProcess, isTrue);
     expect(result.alreadyUp, isFalse);
     expect(result.message, '已后台启动');
-    expect(probes, 1);
+    expect(probes, 2);
+  });
+
+  test('start timeout does not mark ready and returns log tail', () async {
+    final ws = _FakeWorkspace(
+      (cmd) async {
+        if (cmd.contains('vault_site_own_pid')) {
+          return const CommandResult(exitCode: 0, stdout: '0', stderr: '');
+        }
+        if (cmd.contains('/proc/net/tcp')) {
+          return const CommandResult(exitCode: 0, stdout: '0', stderr: '');
+        }
+        return const CommandResult(exitCode: 0, stdout: '4242', stderr: '');
+      },
+      files: {
+        '/root/projects/p1/vault_site_网站_8080.log': utf8.encode(
+          'Traceback (most recent call last):\nImportError: no flask\n',
+        ),
+      },
+    );
+    final result = await ProjectSiteLauncher(
+      ws,
+      readyTimeout: const Duration(milliseconds: 20),
+      readyPollInterval: const Duration(milliseconds: 5),
+    ).start(projectPath: 'p1', entry: _site, openInBrowser: false);
+    expect(result.startedProcess, isFalse);
+    expect(result.alreadyUp, isFalse);
+    expect(result.openedUrl, isFalse);
+    expect(result.message, contains('启动超时'));
+    expect(result.logTail, contains('ImportError: no flask'));
+  });
+
+  test('allocateSitePort skips taken ports from 8765', () {
+    expect(allocateSitePort(const []), 8765);
+    expect(allocateSitePort(const [8765, 8766]), 8767);
+  });
+
+  test('trimLogTail keeps the last lines', () {
+    final text = List.generate(5, (i) => 'L$i').join('\n');
+    expect(trimLogTail(text, maxLines: 2), 'L3\nL4');
+    expect(trimLogTail(text, maxLines: 10), text);
+    expect(
+      trimLogTail('line-a\nline-b\nline-c\n', maxLines: 2),
+      'line-b\nline-c',
+    );
   });
 
   test('stop re-probes and reports still running', () async {

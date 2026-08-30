@@ -54,7 +54,9 @@ void main() {
     );
     final json = await runTool(tool);
     expect(json['ok'], isTrue);
-    expect(json['hint'], contains('服务没启动'));
+    expect(json['hint'], contains('manage_site'));
+    expect(json['hint'], contains('action=start'));
+    expect(json['hint'], isNot(contains('侧栏')));
     final site = (json['sites'] as List).cast<Map<String, dynamic>>().single;
     expect(site['up'], isFalse);
     expect(site['message'], '服务没启动');
@@ -177,6 +179,6 @@ void main() {
     final site = (json['sites'] as List).cast<Map<String, dynamic>>().single;
     expect(site['up'], isTrue);
     expect(site['events'], isEmpty);
-    expect(site['hint'], contains('还没点侧栏启动'));
+    expect(site['hint'], contains('采集脚本'));
   });
 }

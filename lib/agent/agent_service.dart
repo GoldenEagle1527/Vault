@@ -16,13 +16,15 @@ import 'package:vault/agent/project_site_launcher.dart';
 import 'package:vault/agent/project_store.dart';
 import 'package:vault/agent/site_gateway.dart';
 import 'package:vault/agent/ask_user.dart';
+import 'package:vault/agent/present_file.dart';
 import 'package:vault/agent/conversation_state.dart';
 import 'package:vault/agent/project_checkpoint.dart';
 import 'package:vault/agent/tools/ask_user_tool.dart';
 import 'package:vault/agent/tools/inspect_site_tool.dart';
-import 'package:vault/agent/tools/project_url_tool.dart';
+import 'package:vault/agent/tools/manage_site_tool.dart';
 import 'package:vault/agent/tools/present_file_tool.dart';
 import 'package:vault/agent/tools/read_tool.dart';
+import 'package:vault/agent/tools/scaffold_site_tool.dart';
 import 'package:vault/agent/tools/shell_tool.dart';
 import 'package:vault/agent/vault_host_device.dart';
 import 'package:vault/agent/vault_meta_db.dart';
@@ -33,6 +35,25 @@ import 'package:vault_agent_core/vault_agent_core.dart';
 export 'package:vault/agent/agent_stream_mapper.dart';
 export 'package:vault/agent/agent_ui_events.dart';
 export 'package:vault/agent/agent_ui_history_mapper.dart';
+
+/// Tool names [AgentService] mounts for a conversation. Site tools are dev-only.
+List<String> vaultMountedToolNames({
+  required WorkspaceMode mode,
+  required bool hasProjectStore,
+  required bool hasGateway,
+}) {
+  return [
+    kAskUserToolName,
+    kReadToolName,
+    kPresentFileToolName,
+    'shell',
+    if (mode == WorkspaceMode.dev && hasProjectStore) ...[
+      kScaffoldSiteToolName,
+      kManageSiteToolName,
+    ],
+    if (mode == WorkspaceMode.dev && hasGateway) kInspectSiteToolName,
+  ];
+}
 
 class _PendingShellNotify {
   const _PendingShellNotify({
@@ -265,14 +286,23 @@ class AgentService {
         chatSessionId: conversationId,
         projectPath: projectPath,
       ),
-      if (projectStore != null)
-        ...createProjectUrlTools(
+      if (_mode == WorkspaceMode.dev && projectStore != null) ...[
+        createScaffoldSiteTool(
+          workspace: _workspace,
           projectStore: projectStore,
           workspaceId: workspaceId,
           projectPath: projectPath,
-          workspace: _workspace,
           gateway: gateway,
         ),
+        createManageSiteTool(
+          workspace: _workspace,
+          launcher: ProjectSiteLauncher(_workspace),
+          projectStore: projectStore,
+          workspaceId: workspaceId,
+          projectPath: projectPath,
+          gateway: gateway,
+        ),
+      ],
       if (_mode == WorkspaceMode.dev && gateway != null)
         createInspectSiteTool(
           gateway: gateway,

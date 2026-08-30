@@ -520,7 +520,11 @@ class AgentChatEventApplier {
       item.toolJobId ??= jobId;
       if (historyIndex != null) item.historyIndex = historyIndex;
       if (attachments.isNotEmpty) item.attachments = attachments;
-      if (name == 'register_project_url') onProjectUrlRegistered?.call();
+      if (name == 'scaffold_site' ||
+          name == 'manage_site' ||
+          name == 'register_project_url') {
+        onProjectUrlRegistered?.call();
+      }
       return;
     }
     items.add(

@@ -2,6 +2,12 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:vault/agent/site_port.dart';
 
 void main() {
+  test('allocateSitePort skips taken ports from 8765', () {
+    expect(allocateSitePort(const []), 8765);
+    expect(allocateSitePort(const [8765, 8766]), 8767);
+    expect(allocateSitePort(const [9000], start: 9000), 9001);
+  });
+
   test('allocateSiteSlug sanitizes and increments', () {
     expect(allocateSiteSlug('API', const []), 'api');
     expect(allocateSiteSlug('My Site!', const []), 'my-site');

@@ -134,7 +134,10 @@ class _AgentScreenState extends State<AgentScreen> with WidgetsBindingObserver {
       onProjectUrlRegistered: () {
         unawaited(
           _refreshProjects().then((_) {
-            if (mounted) setState(() {});
+            if (!mounted) return;
+            _siteController.invalidateProbe();
+            unawaited(_refreshSiteStatus());
+            setState(() {});
           }),
         );
       },
@@ -1069,6 +1072,7 @@ class _AgentScreenState extends State<AgentScreen> with WidgetsBindingObserver {
     return AgentNavigationPanel(
       title: widget.title,
       model: model,
+      mode: widget.mode,
       showClose: showClose,
       onCreateProject: () => unawaited(_createProject()),
       onClose: () => Navigator.of(context).maybePop(),

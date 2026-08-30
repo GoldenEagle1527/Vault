@@ -32,14 +32,14 @@ void main() {
 
       applier.applyLive(
         const AgentUiToolCall(
-          name: 'register_project_url',
-          arguments: '{"url":"http://localhost:3000"}',
+          name: 'scaffold_site',
+          arguments: '{"kind":"flask"}',
           callId: 'call-1',
         ),
       );
       applier.applyLive(
         const AgentUiToolResult(
-          name: 'register_project_url',
+          name: 'scaffold_site',
           result: 'ok',
           callId: 'call-1',
         ),
@@ -50,6 +50,28 @@ void main() {
       expect(refreshCount, 1);
     },
   );
+
+  test('manage_site tool result emits project refresh effect', () {
+    var refreshCount = 0;
+    final applier = AgentChatEventApplier(
+      onProjectUrlRegistered: () => refreshCount++,
+    );
+    applier.applyLive(
+      const AgentUiToolCall(
+        name: 'manage_site',
+        arguments: '{"action":"start"}',
+        callId: 'ms-1',
+      ),
+    );
+    applier.applyLive(
+      const AgentUiToolResult(
+        name: 'manage_site',
+        result: 'ok',
+        callId: 'ms-1',
+      ),
+    );
+    expect(refreshCount, 1);
+  });
 
   test('present_file tool result fills chat item attachments', () {
     final applier = AgentChatEventApplier();

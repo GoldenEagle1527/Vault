@@ -78,6 +78,15 @@ class SitePortConflictException implements Exception {
   String toString() => message;
 }
 
+/// First unused TCP port at or above [start] (default 8765).
+int allocateSitePort(Iterable<int> taken, {int start = 8765}) {
+  final takenSet = taken.toSet();
+  for (var port = start; port <= 65535; port++) {
+    if (!takenSet.contains(port)) return port;
+  }
+  throw StateError('没有可用端口（已从 $start 查到 65535）');
+}
+
 /// First claim of [port] that is not in [ignoreProjectPath].
 SitePortClaim? findWorkspacePortConflict({
   required Iterable<SitePortClaim> claims,

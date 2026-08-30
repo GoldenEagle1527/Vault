@@ -52,6 +52,12 @@ void main() {
     expect(joined, contains('Python 3.12'));
     expect(joined, contains('python3'));
     expect(joined, contains('read（读文本或图片'));
+    expect(joined, isNot(contains('scaffold_site')));
+    expect(joined, isNot(contains('manage_site')));
+    expect(joined, isNot(contains('inspect_site')));
+    expect(joined, contains('没有建站工具'));
+    expect(joined, isNot(contains('register_project_url')));
+    expect(joined, isNot(contains('list_project_urls')));
   });
 
   test('system prompt includes mobile host device', () {
@@ -94,12 +100,59 @@ void main() {
     ).join('\n');
     expect(dev, contains('inspect_site'));
     expect(dev, contains('不要让用户去开 F12'));
+    expect(dev, contains('scaffold_site'));
+    expect(dev, contains('manage_site'));
+    expect(dev, contains('adopt'));
+    expect(dev, contains('unregister'));
 
     final chat = vaultAgentSystemPrompts(
       workspaceId: 'abc123',
       mode: WorkspaceMode.chat,
     ).join('\n');
     expect(chat, isNot(contains('inspect_site')));
+    expect(chat, isNot(contains('scaffold_site')));
+    expect(chat, isNot(contains('manage_site')));
+    expect(chat, isNot(contains('做个网站')));
+    expect(chat, contains('开发」工作区'));
+    expect(dev, isNot(contains('register_project_url')));
+    expect(chat, isNot(contains('register_project_url')));
+    expect(dev, isNot(contains('list_project_urls')));
+    expect(chat, isNot(contains('list_project_urls')));
+  });
+
+  test('site tools mount only in dev', () {
+    expect(
+      vaultMountedToolNames(
+        mode: WorkspaceMode.chat,
+        hasProjectStore: true,
+        hasGateway: true,
+      ),
+      ['ask_user', 'read', 'present_file', 'shell'],
+    );
+    expect(
+      vaultMountedToolNames(
+        mode: WorkspaceMode.dev,
+        hasProjectStore: true,
+        hasGateway: true,
+      ),
+      [
+        'ask_user',
+        'read',
+        'present_file',
+        'shell',
+        'scaffold_site',
+        'manage_site',
+        'inspect_site',
+      ],
+    );
+    expect(
+      vaultMountedToolNames(
+        mode: WorkspaceMode.dev,
+        hasProjectStore: true,
+        hasGateway: false,
+      ),
+      isNot(contains('inspect_site')),
+    );
   });
 
   test('user turn prompt is the original text, not auto-attached errors', () {

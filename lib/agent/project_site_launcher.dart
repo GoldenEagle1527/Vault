@@ -1,9 +1,15 @@
+import 'dart:convert';
+
 import 'package:url_launcher/url_launcher.dart';
 import 'package:vault/agent/project_store.dart';
 import 'package:vault/agent/site_port.dart';
 import 'package:vault/sandbox/sandbox_models.dart';
 
 export 'package:vault/agent/site_port.dart' show portFromSiteUrl;
+
+const Duration kSiteReadyTimeout = Duration(seconds: 15);
+const Duration kSiteReadyPollInterval = Duration(milliseconds: 400);
+const int kSiteLogTailLines = 80;
 
 /// Result of starting a registered project site from the UI.
 class ProjectSiteStartResult {
@@ -12,12 +18,14 @@ class ProjectSiteStartResult {
     required this.alreadyUp,
     required this.openedUrl,
     this.message,
+    this.logTail,
   });
 
   final bool startedProcess;
   final bool alreadyUp;
   final bool openedUrl;
   final String? message;
+  final String? logTail;
 }
 
 /// Result of stopping a registered project site from the UI.
@@ -165,11 +173,34 @@ echo ok
 ''';
 }
 
+/// Guest path of the site log written by [siteStartShellCommand].
+String siteLogGuestPath({
+  required String projectPath,
+  required ProjectUrlEntry entry,
+}) {
+  final dir = guestProjectDir(projectPath);
+  final stem = siteRuntimeStem(entry.name, url: entry.url);
+  return '$dir/$stem.log';
+}
+
+/// Last [maxLines] of [text], or the whole string when shorter.
+String trimLogTail(String text, {int maxLines = kSiteLogTailLines}) {
+  final lines = const LineSplitter().convert(text);
+  if (lines.length <= maxLines) return lines.join('\n');
+  return lines.sublist(lines.length - maxLines).join('\n');
+}
+
 /// Starts a project's registered URL service inside the guest, then opens the URL.
 class ProjectSiteLauncher {
-  ProjectSiteLauncher(this.workspace);
+  ProjectSiteLauncher(
+    this.workspace, {
+    this.readyTimeout = kSiteReadyTimeout,
+    this.readyPollInterval = kSiteReadyPollInterval,
+  });
 
   final SandboxWorkspace workspace;
+  final Duration readyTimeout;
+  final Duration readyPollInterval;
 
   /// Whether each entry's URL currently answers HTTP (keyed by [ProjectUrlEntry.name]).
   Future<Map<String, bool>> probeAll(List<ProjectUrlEntry> entries) async {
@@ -227,8 +258,24 @@ class ProjectSiteLauncher {
     return result.stdout.trim() == '1';
   }
 
+  /// Tail of `{stem}.log` under the project dir, or null if missing.
+  Future<String?> readLogTail({
+    required String projectPath,
+    required ProjectUrlEntry entry,
+    int maxLines = kSiteLogTailLines,
+  }) async {
+    final bytes = await workspace.readGuestFile(
+      siteLogGuestPath(projectPath: projectPath, entry: entry),
+    );
+    if (bytes == null || bytes.isEmpty) return null;
+    return trimLogTail(
+      utf8.decode(bytes, allowMalformed: true),
+      maxLines: maxLines,
+    );
+  }
+
   /// Run [entry.startCommand] (if any) under the project dir, then open [openUrl]
-  /// (gateway public URL) or [entry.url].
+  /// (gateway public URL) or [entry.url] only after the port is listening.
   Future<ProjectSiteStartResult> start({
     required String projectPath,
     required ProjectUrlEntry entry,
@@ -253,10 +300,30 @@ class ProjectSiteLauncher {
         message: '端口已被其他进程占用，无法启动「${entry.name}」',
       );
     }
-    var alreadyUp = ownAlive;
-    var startedProcess = false;
 
-    if (!alreadyUp && startCmd != null && startCmd.isNotEmpty) {
+    var alreadyUp = ownAlive && portUp;
+    var startedProcess = false;
+    String? logTail;
+
+    if (alreadyUp) {
+      logTail = await readLogTail(projectPath: projectPath, entry: entry);
+    } else if (ownAlive) {
+      final waited = await _waitUntilListening(
+        projectPath: projectPath,
+        entry: entry,
+      );
+      logTail = waited.logTail;
+      if (!waited.ready) {
+        return ProjectSiteStartResult(
+          startedProcess: false,
+          alreadyUp: false,
+          openedUrl: false,
+          message: _timeoutMessage(entry.name, waited.logTail),
+          logTail: waited.logTail,
+        );
+      }
+      alreadyUp = true;
+    } else if (startCmd != null && startCmd.isNotEmpty) {
       final result = await workspace.run(
         siteStartShellCommand(
           projectDir: dir,
@@ -273,10 +340,22 @@ class ProjectSiteLauncher {
           message: '启动命令失败：${result.stderr}\n${result.stdout}',
         );
       }
+      final waited = await _waitUntilListening(
+        projectPath: projectPath,
+        entry: entry,
+      );
+      logTail = waited.logTail;
+      if (!waited.ready) {
+        return ProjectSiteStartResult(
+          startedProcess: false,
+          alreadyUp: false,
+          openedUrl: false,
+          message: _timeoutMessage(entry.name, waited.logTail),
+          logTail: waited.logTail,
+        );
+      }
       startedProcess = true;
-      // Brief wait so a fast stdlib server can bind before the browser opens.
-      await Future<void>.delayed(const Duration(milliseconds: 600));
-    } else if (!alreadyUp && (startCmd == null || startCmd.isEmpty)) {
+    } else {
       return ProjectSiteStartResult(
         startedProcess: false,
         alreadyUp: false,
@@ -301,7 +380,41 @@ class ProjectSiteLauncher {
       message: alreadyUp && !startedProcess
           ? '服务已在运行'
           : (startedProcess ? '已后台启动' : null),
+      logTail: logTail,
     );
+  }
+
+  Future<({bool ready, String? logTail})> _waitUntilListening({
+    required String projectPath,
+    required ProjectUrlEntry entry,
+  }) async {
+    final deadline = DateTime.now().add(readyTimeout);
+    while (true) {
+      if (await isUp(entry)) {
+        return (
+          ready: true,
+          logTail: await readLogTail(projectPath: projectPath, entry: entry),
+        );
+      }
+      if (!DateTime.now().isBefore(deadline)) {
+        return (
+          ready: false,
+          logTail: await readLogTail(projectPath: projectPath, entry: entry),
+        );
+      }
+      await Future<void>.delayed(readyPollInterval);
+    }
+  }
+
+  String _timeoutMessage(String name, String? logTail) {
+    final buf = StringBuffer('启动超时：端口尚未监听，未将「$name」标为已启动');
+    if (logTail != null && logTail.isNotEmpty) {
+      buf
+        ..writeln()
+        ..writeln('日志：')
+        ..write(logTail);
+    }
+    return buf.toString();
   }
 
   /// Stop the guest process for [entry] (pid file + port listeners), then re-probe.

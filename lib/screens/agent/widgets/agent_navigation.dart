@@ -1,11 +1,13 @@
 import 'package:flutter/material.dart';
 import 'package:vault/agent/agent_navigation_coordinator.dart';
+import 'package:vault/agent/workspace_mode.dart';
 
 class AgentNavigationPanel extends StatelessWidget {
   const AgentNavigationPanel({
     super.key,
     required this.title,
     required this.model,
+    this.mode = WorkspaceMode.chat,
     required this.showClose,
     required this.onCreateProject,
     required this.onClose,
@@ -21,6 +23,7 @@ class AgentNavigationPanel extends StatelessWidget {
 
   final String title;
   final AgentNavigationViewModel model;
+  final WorkspaceMode mode;
   final bool showClose;
   final VoidCallback onCreateProject;
   final VoidCallback onClose;
@@ -100,6 +103,7 @@ class AgentNavigationPanel extends StatelessWidget {
           for (final item in model.projects) ...[
             AgentProjectHeader(
               item: item,
+              mode: mode,
               booting: model.booting,
               onSelect: () => onSelectProject(item.project.path),
               onOpenSite: () => onOpenSite(item.project.path),
@@ -136,6 +140,7 @@ class AgentProjectHeader extends StatelessWidget {
   const AgentProjectHeader({
     super.key,
     required this.item,
+    this.mode = WorkspaceMode.chat,
     required this.booting,
     required this.onSelect,
     required this.onOpenSite,
@@ -146,6 +151,7 @@ class AgentProjectHeader extends StatelessWidget {
   });
 
   final AgentProjectNavItem item;
+  final WorkspaceMode mode;
   final bool booting;
   final VoidCallback onSelect;
   final VoidCallback onOpenSite;
@@ -228,7 +234,9 @@ class AgentProjectHeader extends StatelessWidget {
           else
             _HeaderIconButton(
               tooltip: site == null
-                  ? '尚未登记前端入口，让 Agent 调用 register_project_url'
+                  ? (mode == WorkspaceMode.dev
+                        ? '还没有站点，让 Agent 调用 scaffold_site'
+                        : '还没有站点')
                   : (item.siteUp ? '停止项目' : '启动项目'),
               icon: item.siteUp ? Icons.stop : Icons.play_arrow,
               color: site == null

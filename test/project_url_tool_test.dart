@@ -1,4 +1,3 @@
-import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
@@ -6,9 +5,9 @@ import 'package:path/path.dart' as p;
 import 'package:vault/agent/conversation_store.dart';
 import 'package:vault/agent/project_store.dart';
 import 'package:vault/agent/site_gateway.dart';
-import 'package:vault/agent/tools/project_url_tool.dart';
+import 'package:vault/agent/site_port.dart';
+import 'package:vault/agent/site_register.dart';
 import 'package:vault/agent/vault_meta_db.dart';
-import 'package:vault_agent_core/vault_agent_core.dart';
 
 void main() {
   late Directory temp;
@@ -17,7 +16,7 @@ void main() {
   late String projectPath;
 
   setUp(() async {
-    temp = await Directory.systemTemp.createTemp('vault_url_tool_');
+    temp = await Directory.systemTemp.createTemp('vault_site_register_');
     final metaPath = p.join(temp.path, 'vault_meta.db');
     projects = ProjectStore.local(
       metaDbPath: metaPath,
@@ -37,97 +36,60 @@ void main() {
     }
   });
 
-  Future<Map<String, dynamic>> runTool(
-    Tool tool,
-    Map<String, dynamic> args,
-  ) async {
-    final result = await Function.apply(tool.executable!, [args]);
-    return jsonDecode(result as String) as Map<String, dynamic>;
-  }
-
-  test('register_project_url upserts by name', () async {
-    final tools = createProjectUrlTools(
+  test('registerProjectSite upserts the single frontend entry', () async {
+    await registerProjectSite(
       projectStore: projects,
       workspaceId: 'ws1',
       projectPath: projectPath,
+      entry: const ProjectUrlEntry(
+        name: '网站',
+        url: 'http://127.0.0.1:8080/',
+        startCommand: 'python3 -m http.server 8080 --bind 127.0.0.1',
+      ),
     );
-    final register = tools.firstWhere((t) => t.name == 'register_project_url');
-    final json = await runTool(register, {
-      'name': '网站',
-      'url': 'http://127.0.0.1:8080/',
-      'start_command': 'python3 -m http.server 8080 --bind 127.0.0.1',
-    });
-    expect(json['ok'], isTrue);
-
-    final json2 = await runTool(register, {
-      'name': '网站',
-      'url': 'http://127.0.0.1:9090/',
-      'start_command': 'python3 -m http.server 9090 --bind 127.0.0.1',
-    });
-    expect(json2['ok'], isTrue);
-    final urls = (json2['urls'] as List).cast<Map<String, dynamic>>();
-    expect(urls, hasLength(1));
-    expect(urls.first['url'], 'http://127.0.0.1:9090/');
-
+    final second = await registerProjectSite(
+      projectStore: projects,
+      workspaceId: 'ws1',
+      projectPath: projectPath,
+      entry: const ProjectUrlEntry(
+        name: '网站',
+        url: 'http://127.0.0.1:9090/',
+        startCommand: 'python3 -m http.server 9090 --bind 127.0.0.1',
+      ),
+    );
+    expect(second.url, 'http://127.0.0.1:9090/');
     final project = await projects.getProject('ws1', projectPath);
-    expect(project!.urls.single.name, '网站');
+    expect(project!.urls, hasLength(1));
     expect(project.urls.single.startCommand, contains('9090'));
   });
 
   test(
-    'register_project_url replaces a different name with one entry',
+    'registerProjectSite replaces a different name with one entry',
     () async {
-      final tools = createProjectUrlTools(
+      await registerProjectSite(
         projectStore: projects,
         workspaceId: 'ws1',
         projectPath: projectPath,
+        entry: const ProjectUrlEntry(name: '网站', url: 'http://127.0.0.1:8080/'),
       );
-      final register = tools.firstWhere(
-        (t) => t.name == 'register_project_url',
+      final replaced = await registerProjectSite(
+        projectStore: projects,
+        workspaceId: 'ws1',
+        projectPath: projectPath,
+        entry: const ProjectUrlEntry(
+          name: '后台',
+          url: 'http://127.0.0.1:9090/',
+          startCommand: 'python3 -m http.server 9090 --bind 127.0.0.1',
+        ),
       );
-      await runTool(register, {'name': '网站', 'url': 'http://127.0.0.1:8080/'});
-      final json = await runTool(register, {
-        'name': '后台',
-        'url': 'http://127.0.0.1:9090/',
-        'start_command': 'python3 -m http.server 9090 --bind 127.0.0.1',
-      });
-      expect(json['ok'], isTrue);
-      final urls = (json['urls'] as List).cast<Map<String, dynamic>>();
-      expect(urls, hasLength(1));
-      expect(urls.single['name'], '后台');
-      expect(urls.single['url'], 'http://127.0.0.1:9090/');
-
+      expect(replaced.name, '后台');
       final project = await projects.getProject('ws1', projectPath);
       expect(project!.urls, hasLength(1));
       expect(project.site!.name, '后台');
     },
   );
 
-  test('list_project_urls returns registered entries', () async {
-    await projects.upsertUrl(
-      'ws1',
-      projectPath,
-      const ProjectUrlEntry(
-        name: 'API',
-        url: 'http://127.0.0.1:8000/',
-        startCommand: 'python3 app.py',
-      ),
-    );
-    final tools = createProjectUrlTools(
-      projectStore: projects,
-      workspaceId: 'ws1',
-      projectPath: projectPath,
-    );
-    final list = tools.firstWhere((t) => t.name == 'list_project_urls');
-    final json = await runTool(list, {});
-    expect(json['ok'], isTrue);
-    expect(json['urls'], hasLength(1));
-    expect((json['urls'] as List).first['name'], 'API');
-    expect(json['workspace_ports_in_use'], isA<List>());
-    expect((json['workspace_ports_in_use'] as List).first['port'], 8000);
-  });
-
-  test('register_project_url rejects port used by another project', () async {
+  test('registerProjectSite rejects a port used by another project', () async {
     final other = await projects.createProject(
       'ws1',
       conversationStore: conversations,
@@ -137,39 +99,30 @@ void main() {
       other.path,
       const ProjectUrlEntry(name: '网站', url: 'http://127.0.0.1:8080/'),
     );
-    final tools = createProjectUrlTools(
-      projectStore: projects,
-      workspaceId: 'ws1',
-      projectPath: projectPath,
+    expect(
+      () => registerProjectSite(
+        projectStore: projects,
+        workspaceId: 'ws1',
+        projectPath: projectPath,
+        entry: const ProjectUrlEntry(name: '网站', url: 'http://127.0.0.1:8080/'),
+      ),
+      throwsA(isA<SitePortConflictException>()),
     );
-    final register = tools.firstWhere((t) => t.name == 'register_project_url');
-    final json = await runTool(register, {
-      'name': '网站',
-      'url': 'http://127.0.0.1:8080/',
-    });
-    expect(json['ok'], isFalse);
-    expect(json['error'], contains('8080'));
-    expect(json['error'], contains('占用'));
   });
 
-  test('register_project_url returns public_url from gateway', () async {
+  test('projectSiteJson includes public_url from gateway', () async {
     final gateway = SiteGateway();
     addTearDown(gateway.stop);
     await gateway.start();
-    final tools = createProjectUrlTools(
+    final registered = await registerProjectSite(
       projectStore: projects,
       workspaceId: 'ws1',
       projectPath: projectPath,
+      entry: const ProjectUrlEntry(name: '网站', url: 'http://127.0.0.1:8765/'),
       gateway: gateway,
     );
-    final register = tools.firstWhere((t) => t.name == 'register_project_url');
-    final json = await runTool(register, {
-      'name': '网站',
-      'url': 'http://127.0.0.1:8765/',
-    });
-    expect(json['ok'], isTrue);
+    final json = projectSiteJson(registered, gateway: gateway);
     expect(json['public_url'], contains('.localhost:${gateway.port}/'));
-    expect(json['registered'], isA<Map<String, dynamic>>());
-    expect((json['registered'] as Map<String, dynamic>)['slug'], isNotEmpty);
+    expect(json['slug'], isNotEmpty);
   });
 }

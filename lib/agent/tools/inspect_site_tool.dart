@@ -58,14 +58,14 @@ Tool createInspectSiteTool({
           if (slug != null && slug.isNotEmpty) 'slug': slug,
           'up': true,
           'events': events,
-          if (events.isEmpty) 'hint': '用户可能还没点侧栏启动，或页面尚未加载采集脚本',
+          if (events.isEmpty) 'hint': '页面尚未加载采集脚本，或用户还没打开站点',
         });
       }
 
       return jsonEncode({
         'ok': true,
         'sites': reports,
-        if (!anyUp) 'hint': '服务没启动，请让用户在侧栏点启动后再试',
+        if (!anyUp) 'hint': '服务没启动，先 manage_site action=start',
       });
     },
   );
