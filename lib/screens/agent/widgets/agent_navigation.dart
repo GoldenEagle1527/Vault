@@ -13,6 +13,7 @@ class AgentNavigationPanel extends StatelessWidget {
     required this.onClose,
     required this.onSelectProject,
     required this.onOpenSite,
+    required this.onOpenLogs,
     required this.onOpenTerminal,
     required this.onOpenFiles,
     required this.onToggleSite,
@@ -29,6 +30,7 @@ class AgentNavigationPanel extends StatelessWidget {
   final VoidCallback onClose;
   final ValueChanged<String> onSelectProject;
   final ValueChanged<String> onOpenSite;
+  final ValueChanged<String> onOpenLogs;
   final ValueChanged<String> onOpenTerminal;
   final ValueChanged<String> onOpenFiles;
   final ValueChanged<String> onToggleSite;
@@ -107,6 +109,7 @@ class AgentNavigationPanel extends StatelessWidget {
               booting: model.booting,
               onSelect: () => onSelectProject(item.project.path),
               onOpenSite: () => onOpenSite(item.project.path),
+              onOpenLogs: () => onOpenLogs(item.project.path),
               onOpenTerminal: () => onOpenTerminal(item.project.path),
               onOpenFiles: () => onOpenFiles(item.project.path),
               onToggleSite: () => onToggleSite(item.project.path),
@@ -144,6 +147,7 @@ class AgentProjectHeader extends StatelessWidget {
     required this.booting,
     required this.onSelect,
     required this.onOpenSite,
+    required this.onOpenLogs,
     required this.onOpenTerminal,
     required this.onOpenFiles,
     required this.onToggleSite,
@@ -155,6 +159,7 @@ class AgentProjectHeader extends StatelessWidget {
   final bool booting;
   final VoidCallback onSelect;
   final VoidCallback onOpenSite;
+  final VoidCallback onOpenLogs;
   final VoidCallback onOpenTerminal;
   final VoidCallback onOpenFiles;
   final VoidCallback onToggleSite;
@@ -204,10 +209,18 @@ class AgentProjectHeader extends StatelessWidget {
           _HeaderIconButton(
             tooltip: site == null
                 ? '尚未登记前端入口'
-                : (item.siteUp ? '打开站点' : '站点未启动'),
+                : (item.siteUp ? '打开站点（仅 HTTP）' : '站点未启动'),
             icon: Icons.link,
             color: item.siteUp ? scheme.primary : scheme.onSurfaceVariant,
             onPressed: item.siteUp ? onOpenSite : null,
+          ),
+          _HeaderIconButton(
+            tooltip: site == null ? '尚未登记前端入口' : '站点日志',
+            icon: Icons.article_outlined,
+            color: site == null
+                ? scheme.onSurfaceVariant
+                : scheme.onSurface,
+            onPressed: booting || site == null ? null : onOpenLogs,
           ),
           _HeaderIconButton(
             tooltip: '终端',

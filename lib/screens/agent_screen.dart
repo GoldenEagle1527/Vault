@@ -17,6 +17,7 @@ import 'package:vault/agent/ask_user.dart';
 import 'package:vault/agent/chat_input_keys.dart';
 import 'package:vault/agent/conversation_state.dart';
 import 'package:vault/agent/conversation_store.dart';
+import 'package:vault/agent/project_site_launcher.dart';
 import 'package:vault/agent/project_store.dart';
 import 'package:vault/agent/site_gateway.dart';
 import 'package:vault/agent/site_port.dart';
@@ -24,9 +25,11 @@ import 'package:vault/agent/workspace_mode.dart';
 import 'package:vault/agent/workspace_store.dart';
 import 'package:vault/permissions/active_workspace_holder.dart';
 import 'package:vault/sandbox/android_keep_alive.dart';
+import 'package:vault/sandbox/desktop_keep_alive.dart';
 import 'package:vault/sandbox/keep_alive.dart';
 import 'package:vault/sandbox/sandbox_provider.dart';
 import 'package:vault/screens/agent/agent_dialogs.dart';
+import 'package:vault/screens/agent/site_logs_screen.dart';
 import 'package:vault/screens/agent/widgets/agent_chat_pane.dart';
 import 'package:vault/screens/agent/widgets/agent_chat_widgets.dart';
 import 'package:vault/screens/agent/widgets/agent_composer.dart';
@@ -180,6 +183,9 @@ class _AgentScreenState extends State<AgentScreen> with WidgetsBindingObserver {
     ActiveWorkspaceHolder.current = widget.workspace;
     AndroidKeepAlive.bindNotificationActions();
     AndroidKeepAlive.onStopSiteRequested = _onNotificationStopSite;
+    DesktopKeepAlive.instance.onForeground = () {
+      unawaited(_onForegroundReturn());
+    };
     _boot();
   }
 
@@ -494,11 +500,11 @@ class _AgentScreenState extends State<AgentScreen> with WidgetsBindingObserver {
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
-      unawaited(_onAppResumed());
+      unawaited(_onForegroundReturn());
     }
   }
 
-  Future<void> _onAppResumed() async {
+  Future<void> _onForegroundReturn() async {
     if (!mounted || _booting) return;
     // A probe started before backgrounding can finish after resume with a
     // stale `down` result. Invalidate it before starting the foreground probe.
@@ -559,6 +565,29 @@ class _AgentScreenState extends State<AgentScreen> with WidgetsBindingObserver {
           workspace: widget.workspace,
           disposeWorkspace: false,
           initialGuestCwd: guestProjectDir(projectPath),
+        ),
+      ),
+    );
+  }
+
+  Future<void> _openSiteLogsFor(String projectPath) async {
+    final site = _siteFor(projectPath);
+    if (site == null) return;
+    _closeDrawerIfOpen();
+    await Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => SiteLogsScreen(
+          title: site.name,
+          loadProcessLog: () => _siteController.launcher.readLogTail(
+            projectPath: projectPath,
+            entry: site,
+            maxLines: kSiteLogPageTailLines,
+          ),
+          loadEvents: () async {
+            final slug = site.slug?.trim();
+            if (slug == null || slug.isEmpty) return const [];
+            return _siteGateway.recentEvents(slug: slug);
+          },
         ),
       ),
     );
@@ -1035,6 +1064,7 @@ class _AgentScreenState extends State<AgentScreen> with WidgetsBindingObserver {
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
+    DesktopKeepAlive.instance.onForeground = null;
     AndroidKeepAlive.onStopSiteRequested = null;
     if (identical(ActiveWorkspaceHolder.current, widget.workspace)) {
       ActiveWorkspaceHolder.current = null;
@@ -1078,6 +1108,7 @@ class _AgentScreenState extends State<AgentScreen> with WidgetsBindingObserver {
       onClose: () => Navigator.of(context).maybePop(),
       onSelectProject: (path) => unawaited(_switchProject(path)),
       onOpenSite: (path) => unawaited(_openSiteUrl(path)),
+      onOpenLogs: (path) => unawaited(_openSiteLogsFor(path)),
       onOpenTerminal: (path) => unawaited(_openTerminalFor(path)),
       onOpenFiles: (path) => unawaited(_openFileBrowserFor(path)),
       onToggleSite: (path) => unawaited(_toggleSiteFor(path)),

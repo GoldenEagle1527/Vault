@@ -33,6 +33,7 @@
 | F7 | Docker 后端 / 桌面 Linux / iOS | 不做（当前） | 计划外 |
 | F8 | Native Offload + API 权限组 | P1 | Wave0–4 已落地（Wave4=Android a11y/shizuku 骨架，默认 NOT_ALLOWED） |
 | F9 | Agent 工具自动后台（Cursor 模式） | P1 | ✅ 2026-08-11：超 1 分钟转后台，空闲注入结果并重开一轮 |
+| F10 | 站点监控（日志页 / WS 声明 / 回前台） | P2 | ✅ 2026-08-31 |
 
 ---
 
@@ -222,6 +223,21 @@ lib/screens/
 7. **不新增** Android FGS
 
 **关键文件：** `packages/vault_agent_core/.../background_tool_job.dart`、`stateful_agent.dart`；`lib/agent/agent_service.dart`、`shell_tool.dart`、`shell_job.dart`、`agent_screen.dart`
+
+---
+
+## F10 — 站点监控（日志页 / WS 声明 / 回前台）（P2）
+
+**状态：** ✅ 2026-08-31 已落地。
+
+**行为：**
+
+1. 侧栏已登记站点即可打开 `SiteLogsScreen`：进程 `stem.log` 尾部 + `probe.js` / 网关事件，2 秒刷新  
+2. 网关对 `Upgrade: websocket` 回 501，并记 gateway 事件；UI 写明只反代 HTTP，**不实现** WebSocket 反代  
+3. Android 回前台与桌面托盘「显示窗口」走同一条刷新链；设置页桌面保活读真实 `siteName`  
+4. **不新增** Android FGS
+
+**关键文件：** `lib/screens/agent/site_logs_screen.dart`、`agent_navigation.dart`、`site_gateway.dart`、`desktop_keep_alive.dart`、`agent_screen.dart`
 
 ---
 

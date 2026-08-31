@@ -100,6 +100,7 @@ void main() {
             onClose: () {},
             onSelectProject: (id) => selectedProject = id,
             onOpenSite: (_) {},
+            onOpenLogs: (_) {},
             onOpenTerminal: (id) => openedTerminal = id,
             onOpenFiles: (_) {},
             onToggleSite: (_) {},
@@ -115,5 +116,62 @@ void main() {
     await tester.tap(find.byTooltip('终端'));
     expect(selectedProject, 'project-id');
     expect(openedTerminal, 'project-id');
+  });
+
+  testWidgets('navigation panel opens site logs when registered', (tester) async {
+    final now = DateTime.utc(2026);
+    final project = ProjectInfo(
+      path: 'project-id',
+      name: '项目 A',
+      createdAt: now,
+      updatedAt: now,
+      urls: const [
+        ProjectUrlEntry(
+          name: '网站',
+          url: 'http://127.0.0.1:5000/',
+          slug: 'site',
+        ),
+      ],
+    );
+    String? openedLogs;
+    final model = AgentNavigationViewModel(
+      booting: false,
+      projects: [
+        AgentProjectNavItem(
+          project: project,
+          active: true,
+          siteUp: true,
+          siteBusy: false,
+          conversations: const [],
+        ),
+      ],
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: AgentNavigationPanel(
+            title: 'Vault',
+            model: model,
+            showClose: false,
+            onCreateProject: () {},
+            onClose: () {},
+            onSelectProject: (_) {},
+            onOpenSite: (_) {},
+            onOpenLogs: (id) => openedLogs = id,
+            onOpenTerminal: (_) {},
+            onOpenFiles: (_) {},
+            onToggleSite: (_) {},
+            onNewConversation: (_) {},
+            onSelectConversation: (_) {},
+            onDeleteConversation: (_) {},
+          ),
+        ),
+      ),
+    );
+
+    expect(find.byTooltip('打开站点（仅 HTTP）'), findsOneWidget);
+    await tester.tap(find.byTooltip('站点日志'));
+    expect(openedLogs, 'project-id');
   });
 }

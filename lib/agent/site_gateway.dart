@@ -7,6 +7,13 @@ import 'package:vault/agent/project_store.dart';
 import 'package:vault/agent/site_browser_log.dart';
 import 'package:vault/agent/site_port.dart';
 
+/// Caption shown in the 501 page, site logs footer, and sidebar tooltip.
+const kSiteGatewayHttpOnlyCaption = '网关只反代普通 HTTP，不支持 WebSocket。';
+
+const kSiteGatewayWebSocketUnsupportedBody =
+    '工作区站点网关目前只反代普通 HTTP。'
+    '实时通道、HMR、Socket.IO 请改走普通 HTTP，或不要经过此网关。';
+
 /// One Host-routed backend behind [SiteGateway].
 class SiteRoute {
   const SiteRoute({
@@ -114,11 +121,19 @@ class SiteGateway {
     try {
       final upgrade = req.headers.value(HttpHeaders.upgradeHeader);
       if (upgrade != null && upgrade.toLowerCase().contains('websocket')) {
+        final host = req.headers.value(HttpHeaders.hostHeader) ?? '';
+        final slug = siteSlugFromHost(host) ?? 'unknown';
+        _recordGateway(
+          slug: slug,
+          path: req.uri.path,
+          status: HttpStatus.notImplemented,
+          message: '不支持 WebSocket',
+        );
         await _writeHtml(
           req,
           HttpStatus.notImplemented,
           '不支持 WebSocket',
-          '工作区站点网关目前只反代普通 HTTP。',
+          '$kSiteGatewayHttpOnlyCaption<p>$kSiteGatewayWebSocketUnsupportedBody</p>',
         );
         return;
       }

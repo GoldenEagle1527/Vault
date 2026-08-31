@@ -273,4 +273,35 @@ void main() {
     final dead = gateway.recentEvents(slug: 'down');
     expect(dead.any((e) => e.type == 'gateway' && e.status == 502), isTrue);
   });
+
+  test('rejects WebSocket upgrade with 501 and records a gateway event', () async {
+    final gateway = SiteGateway()..captureEnabled = true;
+    addTearDown(gateway.stop);
+    final port = await gateway.start();
+    gateway.updateRoutes([
+      SiteRoute(
+        slug: 'demo',
+        name: 'Demo',
+        projectName: 'P',
+        backend: Uri.parse('http://127.0.0.1:9/'),
+      ),
+    ]);
+
+    final client = HttpClient();
+    addTearDown(client.close);
+    final req = await client.getUrl(Uri.parse('http://127.0.0.1:$port/socket'));
+    req.headers.set(HttpHeaders.hostHeader, 'demo.localhost:$port');
+    req.headers.set(HttpHeaders.upgradeHeader, 'websocket');
+    final res = await req.close();
+    final body = await utf8.decoder.bind(res).join();
+    expect(res.statusCode, HttpStatus.notImplemented);
+    expect(body, contains('不支持 WebSocket'));
+    expect(body, contains(kSiteGatewayHttpOnlyCaption));
+
+    final events = gateway.recentEvents(slug: 'demo');
+    expect(events, isNotEmpty);
+    expect(events.single.type, 'gateway');
+    expect(events.single.status, HttpStatus.notImplemented);
+    expect(events.single.message, contains('WebSocket'));
+  });
 }

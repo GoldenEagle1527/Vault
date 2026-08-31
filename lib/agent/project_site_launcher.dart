@@ -10,6 +10,7 @@ export 'package:vault/agent/site_port.dart' show portFromSiteUrl;
 const Duration kSiteReadyTimeout = Duration(seconds: 15);
 const Duration kSiteReadyPollInterval = Duration(milliseconds: 400);
 const int kSiteLogTailLines = 80;
+const int kSiteLogPageTailLines = 200;
 
 /// Result of starting a registered project site from the UI.
 class ProjectSiteStartResult {

@@ -56,6 +56,8 @@ class AgentSiteController {
   final Future<void> Function(ProjectUrlEntry? entry) syncKeepAlive;
   final void Function(AgentSiteMessage message) onMessage;
   final ProjectSiteLauncher _launcher;
+
+  ProjectSiteLauncher get launcher => _launcher;
   final SiteProbeGenerationGuard probeGuard = SiteProbeGenerationGuard();
   final Map<String, bool> siteUp = {};
   final Set<String> siteBusy = {};

@@ -32,11 +32,17 @@ class DesktopKeepAlive with WindowListener, TrayListener {
 
   GlobalKey<NavigatorState>? navigatorKey;
 
+  /// Called after the window is shown from the tray (and by tests).
+  VoidCallback? onForeground;
+
   String? _siteName;
   bool _attached = false;
   bool _quitting = false;
 
   bool get attached => _attached;
+
+  /// Last site name synced into the tray tooltip; null when no site is running.
+  String? get siteName => _siteName;
 
   /// Call after [windowManager.ensureInitialized] and a [navigatorKey] is set.
   Future<void> attach() async {
@@ -53,20 +59,25 @@ class DesktopKeepAlive with WindowListener, TrayListener {
   }
 
   Future<void> updateStatus({String? siteName}) async {
-    if (!shouldAttach || !_attached) return;
     final trimmed = siteName?.trim();
     _siteName = (trimmed == null || trimmed.isEmpty) ? null : trimmed;
+    if (!shouldAttach || !_attached) return;
     try {
       await _refreshTray();
     } catch (_) {}
   }
 
   Future<void> showFromTray() async {
-    if (!shouldAttach) return;
-    await windowManager.setSkipTaskbar(false);
-    await windowManager.show();
-    await windowManager.focus();
+    if (shouldAttach) {
+      await windowManager.setSkipTaskbar(false);
+      await windowManager.show();
+      await windowManager.focus();
+    }
+    notifyShownFromTray();
   }
+
+  /// Invoke [onForeground] without touching the real window (tests / tray path).
+  void notifyShownFromTray() => onForeground?.call();
 
   Future<void> hideToTray() async {
     if (!shouldAttach || _quitting) return;

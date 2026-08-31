@@ -280,7 +280,9 @@ class KeepAliveSettingsSection extends StatelessWidget {
             '关闭窗口会最小化到系统托盘，工作区、开发站点与 Agent 任务继续运行。'
             '右键托盘图标可显示窗口、停止站点或退出。',
         children: [
-          for (final line in desktopKeepAliveStatusLines(siteRunning: false))
+          for (final line in desktopKeepAliveStatusLines(
+            siteRunning: DesktopKeepAlive.instance.siteName != null,
+          ))
             Text('• $line'),
         ],
       );
@@ -288,7 +290,7 @@ class KeepAliveSettingsSection extends StatelessWidget {
     if (!Platform.isAndroid) return const SizedBox.shrink();
     return _Section(
       title: 'Android 后台保活',
-      description: '工作区、开发站点与 Agent 任务切到浏览器或锁屏时，依赖前台服务与电池优化豁免。',
+      description: '切到浏览器后靠通知保活并可停站。工作区与 Agent 任务同样依赖前台服务与电池优化豁免。',
       children: [
         if (status == null)
           const LinearProgressIndicator(minHeight: 2)
