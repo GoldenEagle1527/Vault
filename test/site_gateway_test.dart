@@ -274,6 +274,30 @@ void main() {
     expect(dead.any((e) => e.type == 'gateway' && e.status == 502), isTrue);
   });
 
+  test('notifies onBackendUnreachable when proxy cannot connect', () async {
+    final gateway = SiteGateway();
+    addTearDown(gateway.stop);
+    final slugs = <String>[];
+    gateway.onBackendUnreachable = slugs.add;
+    final port = await gateway.start();
+    gateway.updateRoutes([
+      SiteRoute(
+        slug: 'down',
+        name: '挂了',
+        projectName: 'P',
+        backend: Uri.parse('http://127.0.0.1:1/'),
+      ),
+    ]);
+    final client = HttpClient();
+    addTearDown(client.close);
+    final req = await client.getUrl(Uri.parse('http://127.0.0.1:$port/'));
+    req.headers.set(HttpHeaders.hostHeader, 'down.localhost:$port');
+    final res = await req.close();
+    await res.drain<void>();
+    expect(res.statusCode, 502);
+    expect(slugs, ['down']);
+  });
+
   test('rejects WebSocket upgrade with 501 and records a gateway event', () async {
     final gateway = SiteGateway()..captureEnabled = true;
     addTearDown(gateway.stop);

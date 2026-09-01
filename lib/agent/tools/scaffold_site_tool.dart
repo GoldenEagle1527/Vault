@@ -10,6 +10,18 @@ import 'package:vault_agent_core/vault_agent_core.dart';
 
 const String kScaffoldSiteToolName = 'scaffold_site';
 
+/// Install Flask in the guest if missing. Must succeed before files are written.
+const String kEnsureFlaskGuestCommand = r'''
+if python3 -c "import flask" >/dev/null 2>&1; then
+  printf '%s\n' flask_ok
+  exit 0
+fi
+apk add --no-cache py3-flask
+python3 -c "import flask"
+''';
+
+const Duration kEnsureFlaskTimeout = Duration(minutes: 3);
+
 /// Write a known-good Flask or static skeleton and register it on the host.
 ///
 /// Allocates a free port. Does not start the site.
@@ -71,6 +83,23 @@ Tool createScaffoldSiteTool({
         port = allocateSitePort(taken);
       } catch (e) {
         return jsonEncode({'ok': false, 'error': e.toString()});
+      }
+
+      if (kind == SiteScaffoldKind.flask) {
+        try {
+          final ready = await workspace.run(
+            kEnsureFlaskGuestCommand,
+            timeout: kEnsureFlaskTimeout,
+          );
+          if (!ready.success) {
+            return jsonEncode({
+              'ok': false,
+              'error': '无法安装 Flask：${ready.stderr}\n${ready.stdout}',
+            });
+          }
+        } catch (e) {
+          return jsonEncode({'ok': false, 'error': '无法安装 Flask：$e'});
+        }
       }
 
       final plan = buildSiteScaffold(kind: kind, name: displayName, port: port);

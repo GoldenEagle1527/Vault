@@ -137,6 +137,48 @@ class ProotWorkspace implements SandboxWorkspace {
     return Uint8List.fromList(await file.readAsBytes());
   }
 
+  /// Dedicated guest command (does not occupy PersistentShell).
+  Future<GuestStreamSession> spawnDetached(String cmd) async {
+    final proc = await Process.start(
+      prootPath,
+      [
+        '--link2symlink',
+        '--change-id=0:0',
+        '--rootfs=$rootfsPath',
+        '--cwd=$kGuestHome',
+        '--bind=/dev',
+        '--bind=/proc',
+        '--bind=/sys',
+        '--bind=$rootfsPath/tmp:/dev/shm',
+        '/bin/sh',
+        '-c',
+        cmd,
+      ],
+      environment: {
+        ..._hostEnvironment,
+        'PROOT_LOADER': loaderPath,
+        'PROOT_NO_SECCOMP': '1',
+        'PROOT_TMP_DIR': p.join(rootfsPath, 'tmp'),
+        'TMPDIR': p.join(rootfsPath, 'tmp'),
+        'PATH':
+            '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin',
+        'HOME': kGuestHome,
+      },
+      workingDirectory: rootfsPath,
+      includeParentEnvironment: false,
+    );
+    final lines = proc.stdout
+        .transform(utf8.decoder)
+        .transform(const LineSplitter());
+    return GuestStreamSession(
+      lines: lines,
+      kill: () async {
+        proc.kill();
+        await proc.exitCode;
+      },
+    );
+  }
+
   @override
   Future<void> dispose() async {
     if (_disposed) return;

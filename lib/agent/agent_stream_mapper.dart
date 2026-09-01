@@ -20,6 +20,11 @@ class AgentStreamMapper {
   final Duration _backgroundThreshold;
   DateTime? _modelCallStartedAt;
 
+  /// True after this model call already showed assistant prose (chunks or flush).
+  /// Prevents [StreamingEventType.fullModelMessage] from painting the same
+  /// paragraph again once tools have cleared [buffer].
+  bool _visibleTextEmitted = false;
+
   Stream<AgentUiEvent> map(StreamingEvent event, StringBuffer buffer) async* {
     switch (event.eventType) {
       case StreamingEventType.modelChunkMessage:
@@ -27,10 +32,11 @@ class AgentStreamMapper {
         final text = chunk.textOutput;
         if (isVisibleAssistantText(text)) {
           buffer.write(text);
+          _visibleTextEmitted = true;
           yield AgentUiAssistantDelta(text!);
         }
         if (chunk.functionCalls.isNotEmpty) {
-          for (final uiEvent in flushTurnBeforeTools(buffer)) {
+          for (final uiEvent in _flushTurnBeforeTools(buffer)) {
             yield uiEvent;
           }
           for (final call in chunk.functionCalls) {
@@ -49,8 +55,11 @@ class AgentStreamMapper {
       case StreamingEventType.fullModelMessage:
         final full = event.data as ModelMessage;
         final text = full.textOutput;
-        if (isVisibleAssistantText(text) && buffer.isEmpty) {
+        if (isVisibleAssistantText(text) &&
+            buffer.isEmpty &&
+            !_visibleTextEmitted) {
           buffer.write(text);
+          _visibleTextEmitted = true;
           yield AgentUiAssistantDelta(text!);
         }
         final usage = full.usage;
@@ -70,7 +79,7 @@ class AgentStreamMapper {
           at: at,
         );
       case StreamingEventType.functionCallRequest:
-        for (final uiEvent in flushTurnBeforeTools(buffer)) {
+        for (final uiEvent in _flushTurnBeforeTools(buffer)) {
           yield uiEvent;
         }
         final calls = event.data;
@@ -152,10 +161,12 @@ class AgentStreamMapper {
         break;
       case StreamingEventType.modelRetrying:
         buffer.clear();
+        _visibleTextEmitted = false;
         _modelCallStartedAt = DateTime.now();
         yield const AgentUiDiscardDraftAssistant();
         yield const AgentUiStatus('正在调用模型…');
       case StreamingEventType.beforeCallModel:
+        _visibleTextEmitted = false;
         _modelCallStartedAt = DateTime.now();
         yield const AgentUiStatus('正在调用模型…');
     }
@@ -212,6 +223,15 @@ class AgentStreamMapper {
       return;
     }
     yield AgentUiAssistantFinal(draft);
+  }
+
+  Iterable<AgentUiEvent> _flushTurnBeforeTools(StringBuffer buffer) sync* {
+    for (final uiEvent in flushTurnBeforeTools(buffer)) {
+      if (uiEvent is AgentUiAssistantFinal) {
+        _visibleTextEmitted = true;
+      }
+      yield uiEvent;
+    }
   }
 
   static AgentUiSystemNotice systemNoticeEvent(

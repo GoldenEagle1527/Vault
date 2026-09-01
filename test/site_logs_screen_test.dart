@@ -40,6 +40,28 @@ void main() {
     expect(find.text(kSiteLogEmptyEventsHint), findsOneWidget);
   });
 
+  testWidgets('shows serving chip and capture-off hint', (tester) async {
+    var serving = true;
+    await tester.pumpWidget(
+      MaterialApp(
+        home: SiteLogsScreen(
+          title: '网站',
+          pollInterval: Duration.zero,
+          isServing: () => serving,
+          captureEnabled: false,
+          loadProcessLog: () async => 'ok',
+          loadEvents: () async => const [],
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(find.textContaining(kSiteLogServing), findsOneWidget);
+
+    await tester.tap(find.text('浏览器 / 网关'));
+    await tester.pumpAndSettle();
+    expect(find.text(kSiteLogCaptureOffHint), findsOneWidget);
+  });
+
   testWidgets('shows process log tail', (tester) async {
     await tester.pumpWidget(
       MaterialApp(

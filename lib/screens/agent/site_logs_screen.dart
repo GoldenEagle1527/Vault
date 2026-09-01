@@ -8,6 +8,9 @@ const Duration kSiteLogPagePollInterval = Duration(seconds: 2);
 
 const kSiteLogEmptyProcessHint = '还没有日志，站点可能尚未启动过';
 const kSiteLogEmptyEventsHint = '页面尚未加载采集脚本，或用户还没打开站点';
+const kSiteLogCaptureOffHint = '对话模式不采集浏览器错误。开发模式打开站点后才会出现网关 / 页面事件。';
+const kSiteLogServing = '运行中';
+const kSiteLogStopped = '已停';
 
 String formatSiteLogEvent(SiteBrowserEvent event) {
   final local = event.at.toLocal();
@@ -24,12 +27,16 @@ class SiteLogsScreen extends StatefulWidget {
     required this.title,
     required this.loadProcessLog,
     required this.loadEvents,
+    this.isServing,
+    this.captureEnabled = true,
     this.pollInterval = kSiteLogPagePollInterval,
   });
 
   final String title;
   final Future<String?> Function() loadProcessLog;
   final Future<List<SiteBrowserEvent>> Function() loadEvents;
+  final bool Function()? isServing;
+  final bool captureEnabled;
   final Duration pollInterval;
 
   @override
@@ -42,6 +49,7 @@ class _SiteLogsScreenState extends State<SiteLogsScreen> {
   String? _error;
   String? _processLog;
   List<SiteBrowserEvent> _events = const [];
+  bool _serving = false;
 
   @override
   void initState() {
@@ -70,6 +78,7 @@ class _SiteLogsScreenState extends State<SiteLogsScreen> {
         _error = null;
         _processLog = log;
         _events = events;
+        _serving = widget.isServing?.call() ?? false;
       });
     } catch (e) {
       if (!mounted) return;
@@ -96,7 +105,9 @@ class _SiteLogsScreenState extends State<SiteLogsScreen> {
                 overflow: TextOverflow.ellipsis,
               ),
               Text(
-                widget.title,
+                widget.isServing == null
+                    ? widget.title
+                    : '${widget.title} · ${_serving ? kSiteLogServing : kSiteLogStopped}',
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
                 style: Theme.of(context).textTheme.labelSmall?.copyWith(
@@ -158,7 +169,11 @@ class _SiteLogsScreenState extends State<SiteLogsScreen> {
 
   String _eventsBody() {
     if (_error != null) return _error!;
-    if (_events.isEmpty) return kSiteLogEmptyEventsHint;
+    if (_events.isEmpty) {
+      return widget.captureEnabled
+          ? kSiteLogEmptyEventsHint
+          : kSiteLogCaptureOffHint;
+    }
     return _events.map(formatSiteLogEvent).join('\n');
   }
 }

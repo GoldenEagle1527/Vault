@@ -2,9 +2,11 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:typed_data';
 
+import 'package:dio/dio.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:vault/agent/tools/shell_job.dart';
 import 'package:vault/agent/tools/shell_tool.dart';
+import 'package:vault/agent/tools/site_start_guard.dart';
 import 'package:vault/sandbox/sandbox_models.dart';
 
 class _FakeWorkspace implements SandboxWorkspace {
@@ -62,6 +64,7 @@ class _DetachedJobWorkspace implements SandboxWorkspace {
 
   final Duration delay;
   final Map<String, DateTime> _started = {};
+  final Set<String> _killed = {};
   final List<String> commands = [];
   int inFlight = 0;
   int maxInFlight = 0;
@@ -106,6 +109,14 @@ class _DetachedJobWorkspace implements SandboxWorkspace {
         final match = RegExp(r'vault-shell-jobs/([A-Za-z0-9]+)').firstMatch(cmd);
         final jobId = match?.group(1) ?? '';
         final started = _started[jobId];
+        if (_killed.contains(jobId)) {
+          return CommandResult(
+            exitCode: 0,
+            stdout: '$kShellJobDoneMarker\n130\n$kShellJobOutMarker\n'
+                'cancelled\n$kShellJobEndMarker\n',
+            stderr: '',
+          );
+        }
         if (started != null &&
             DateTime.now().difference(started) >= delay) {
           return CommandResult(
@@ -122,7 +133,8 @@ class _DetachedJobWorkspace implements SandboxWorkspace {
           stderr: '',
         );
       }
-      if (cmd.contains('kill')) {
+      if (cmd.contains('_kill_tree') || cmd.contains('kill -')) {
+        _started.keys.forEach(_killed.add);
         return const CommandResult(exitCode: 0, stdout: '', stderr: '');
       }
       return CommandResult(
@@ -287,5 +299,49 @@ void main() {
         .where((c) => c.contains('_pid') && c.contains('&'))
         .length;
     expect(starts, 2);
+  });
+
+  test('shell tool rejects starting a site', () async {
+    final workspace = _FakeWorkspace((_, {environment, timeout}) async {
+      fail('should not start a site via shell');
+    });
+    final tool = createShellTool(
+      workspace,
+      registeredStartCommand: () async => 'python3 app.py',
+    );
+    final raw = await tool.executable!(<String, dynamic>{
+      'command': 'cd /root/projects/p && python3 app.py',
+      'notify_regex': 'Running on',
+    });
+    final map = jsonDecode(raw as String) as Map<String, dynamic>;
+    expect(map['ok'], isFalse);
+    expect(map['error'], kSiteStartBypassError);
+  });
+
+  test('cancel kills a detached job and returns 130', () async {
+    final workspace = _DetachedJobWorkspace(
+      delay: const Duration(seconds: 5),
+    );
+    final tracker = GuestShellJobTracker();
+    final token = CancelToken();
+    final running = runDetachedShellJob(
+      workspace,
+      command: 'sleep 30',
+      timeout: const Duration(seconds: 10),
+      pollInterval: const Duration(milliseconds: 20),
+      jobs: tracker,
+      cancelToken: token,
+    );
+    await Future<void>.delayed(const Duration(milliseconds: 40));
+    expect(tracker.liveIds, isNotEmpty);
+    token.cancel('用户取消');
+    await tracker.killAll(workspace);
+    final result = await running;
+    expect(result.exitCode, kShellJobCancelledExitCode);
+    expect(tracker.liveIds, isEmpty);
+    expect(
+      workspace.commands.any((c) => c.contains('_kill_tree')),
+      isTrue,
+    );
   });
 }

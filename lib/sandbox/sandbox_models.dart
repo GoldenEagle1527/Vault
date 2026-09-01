@@ -217,6 +217,14 @@ abstract class SandboxWorkspace {
   Future<void> dispose();
 }
 
+/// Stdout line stream from a guest command that is not PersistentShell.
+class GuestStreamSession {
+  GuestStreamSession({required this.lines, required this.kill});
+
+  final Stream<String> lines;
+  final Future<void> Function() kill;
+}
+
 /// Sanitize a user-facing file name for guest paths (basename only).
 ///
 /// Keeps Unicode letters (including CJK). Strips path separators, control

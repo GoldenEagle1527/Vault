@@ -209,7 +209,7 @@ class AgentProjectHeader extends StatelessWidget {
           _HeaderIconButton(
             tooltip: site == null
                 ? '尚未登记前端入口'
-                : (item.siteUp ? '打开站点（仅 HTTP）' : '站点未启动'),
+                : (item.siteUp ? '打开站点（仅 HTTP）' : '站点未启动（进程或端口未通）'),
             icon: Icons.link,
             color: item.siteUp ? scheme.primary : scheme.onSurfaceVariant,
             onPressed: item.siteUp ? onOpenSite : null,

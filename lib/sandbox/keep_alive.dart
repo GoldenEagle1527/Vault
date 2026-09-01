@@ -5,8 +5,17 @@ import 'package:vault/sandbox/desktop_keep_alive.dart';
 class VaultKeepAlive {
   VaultKeepAlive._();
 
-  static Future<void> sync({String? siteName}) async {
-    await AndroidKeepAlive.ensureRunning(siteName: siteName);
-    await DesktopKeepAlive.instance.updateStatus(siteName: siteName);
+  static Future<void> sync({
+    String? siteName,
+    Iterable<String> siteNames = const [],
+  }) async {
+    final names = [
+      ...siteNames.map((n) => n.trim()).where((n) => n.isNotEmpty),
+      if (siteName != null && siteName.trim().isNotEmpty) siteName.trim(),
+    ];
+    final label = names.toSet().join('、');
+    final value = label.isEmpty ? null : label;
+    await AndroidKeepAlive.ensureRunning(siteName: value);
+    await DesktopKeepAlive.instance.updateStatus(siteName: value);
   }
 }

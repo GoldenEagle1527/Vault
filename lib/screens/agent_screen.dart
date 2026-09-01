@@ -167,9 +167,9 @@ class _AgentScreenState extends State<AgentScreen> with WidgetsBindingObserver {
           context,
           forceBatteryPrompt: true,
         );
-        await VaultKeepAlive.sync(siteName: entry.name);
+        await VaultKeepAlive.sync(siteNames: [entry.name]);
       },
-      syncKeepAlive: (entry) => VaultKeepAlive.sync(siteName: entry?.name),
+      syncKeepAlive: (names) => VaultKeepAlive.sync(siteNames: names),
       onMessage: (message) {
         _items.add(
           _ChatItem(
@@ -186,6 +186,7 @@ class _AgentScreenState extends State<AgentScreen> with WidgetsBindingObserver {
     DesktopKeepAlive.instance.onForeground = () {
       unawaited(_onForegroundReturn());
     };
+    _siteGateway.onBackendUnreachable = _siteController.noteUnreachable;
     _boot();
   }
 
@@ -207,6 +208,7 @@ class _AgentScreenState extends State<AgentScreen> with WidgetsBindingObserver {
           projectStore: _projectStore,
           mode: widget.mode,
           siteGateway: _siteGateway,
+          siteController: _siteController,
         );
         _bindBackgroundUi(_service);
         _conversations = const [];
@@ -235,6 +237,7 @@ class _AgentScreenState extends State<AgentScreen> with WidgetsBindingObserver {
           projectPath: active,
           mode: widget.mode,
           siteGateway: _siteGateway,
+          siteController: _siteController,
         );
         _service = service;
         _bindBackgroundUi(service);
@@ -395,6 +398,7 @@ class _AgentScreenState extends State<AgentScreen> with WidgetsBindingObserver {
           projectStore: _projectStore,
           mode: widget.mode,
           siteGateway: _siteGateway,
+          siteController: _siteController,
         );
         _bindBackgroundUi(_service);
       } else {
@@ -406,6 +410,7 @@ class _AgentScreenState extends State<AgentScreen> with WidgetsBindingObserver {
           projectPath: projectPath,
           mode: widget.mode,
           siteGateway: _siteGateway,
+          siteController: _siteController,
         );
         _bindBackgroundUi(_service);
         _hydrateFromService();
@@ -443,6 +448,7 @@ class _AgentScreenState extends State<AgentScreen> with WidgetsBindingObserver {
         projectPath: created.path,
         mode: widget.mode,
         siteGateway: _siteGateway,
+        siteController: _siteController,
       );
       _bindBackgroundUi(_service);
       await _refreshProjects();
@@ -571,20 +577,25 @@ class _AgentScreenState extends State<AgentScreen> with WidgetsBindingObserver {
   }
 
   Future<void> _openSiteLogsFor(String projectPath) async {
-    final site = _siteFor(projectPath);
-    if (site == null) return;
+    if (_siteFor(projectPath) == null) return;
     _closeDrawerIfOpen();
     await Navigator.of(context).push(
       MaterialPageRoute(
         builder: (_) => SiteLogsScreen(
-          title: site.name,
-          loadProcessLog: () => _siteController.launcher.readLogTail(
-            projectPath: projectPath,
-            entry: site,
-            maxLines: kSiteLogPageTailLines,
-          ),
+          title: _siteFor(projectPath)?.name ?? projectPath,
+          isServing: () => _siteUp[projectPath] == true,
+          captureEnabled: widget.mode == WorkspaceMode.dev,
+          loadProcessLog: () {
+            final entry = _siteFor(projectPath);
+            if (entry == null) return Future<String?>.value(null);
+            return _siteController.launcher.readLogTail(
+              projectPath: projectPath,
+              entry: entry,
+              maxLines: kSiteLogPageTailLines,
+            );
+          },
           loadEvents: () async {
-            final slug = site.slug?.trim();
+            final slug = _siteFor(projectPath)?.slug?.trim();
             if (slug == null || slug.isEmpty) return const [];
             return _siteGateway.recentEvents(slug: slug);
           },
@@ -708,9 +719,7 @@ class _AgentScreenState extends State<AgentScreen> with WidgetsBindingObserver {
 
   Future<void> _syncKeepAliveNotification() async {
     final pairs = _runningSitePairs;
-    await VaultKeepAlive.sync(
-      siteName: pairs.isEmpty ? null : pairs.first.$2.name,
-    );
+    await VaultKeepAlive.sync(siteNames: _runningSiteNames);
   }
 
   void _onNotificationStopSite() {
@@ -1069,6 +1078,7 @@ class _AgentScreenState extends State<AgentScreen> with WidgetsBindingObserver {
     if (identical(ActiveWorkspaceHolder.current, widget.workspace)) {
       ActiveWorkspaceHolder.current = null;
     }
+    _siteGateway.onBackendUnreachable = null;
     _siteController.dispose();
     unawaited(_siteGateway.stop());
     _askUserHost?.pending.removeListener(_onAskUserChanged);

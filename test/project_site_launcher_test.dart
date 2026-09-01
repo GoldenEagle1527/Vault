@@ -6,6 +6,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:vault/agent/project_site_launcher.dart';
 import 'package:vault/agent/project_store.dart';
 import 'package:vault/agent/site_port.dart';
+import 'package:vault/agent/site_supervisor.dart';
 import 'package:vault/sandbox/sandbox_models.dart';
 
 class _FakeWorkspace implements SandboxWorkspace {
@@ -144,79 +145,56 @@ void main() {
     expect(map['API'], isFalse);
   });
 
-  test('start skips launch when own pid is alive', () async {
+  test('start skips launch when supervisor already listening', () async {
     final ws = _FakeWorkspace((cmd) async {
-      if (cmd.contains('vault_site_own_pid')) {
-        return const CommandResult(exitCode: 0, stdout: '1', stderr: '');
-      }
-      return const CommandResult(exitCode: 0, stdout: '200', stderr: '');
+      return const CommandResult(exitCode: 0, stdout: 'ok', stderr: '');
     });
+    final supervisor = MemorySiteSupervisorClient();
+    await supervisor.startSite(
+      id: 'p1',
+      cwd: '/root/projects/p1',
+      cmd: 'python3 app.py',
+    );
     final result = await ProjectSiteLauncher(
       ws,
+      supervisor: supervisor,
     ).start(projectPath: 'p1', entry: _site, openInBrowser: false);
     expect(result.alreadyUp, isTrue);
     expect(result.startedProcess, isFalse);
-    expect(ws.commands.where((c) => c.contains('nohup')), isEmpty);
+    expect(ws.commands.where((c) => c.contains('kill_port')), isEmpty);
   });
 
-  test('start fails when port is up but pid is not ours', () async {
+  test('start fails when supervisor reports occupied port', () async {
     final ws = _FakeWorkspace((cmd) async {
-      if (cmd.contains('vault_site_own_pid')) {
-        return const CommandResult(exitCode: 0, stdout: '0', stderr: '');
-      }
-      if (cmd.contains('/proc/net/tcp')) {
-        return const CommandResult(exitCode: 0, stdout: '200', stderr: '');
-      }
-      return const CommandResult(exitCode: 0, stdout: '', stderr: '');
+      return const CommandResult(exitCode: 0, stdout: 'ok', stderr: '');
     });
+    final supervisor = MemorySiteSupervisorClient()..occupied = true;
     final result = await ProjectSiteLauncher(
       ws,
+      supervisor: supervisor,
     ).start(projectPath: 'p1', entry: _site, openInBrowser: false);
     expect(result.startedProcess, isFalse);
     expect(result.alreadyUp, isFalse);
     expect(result.message, contains('占用'));
-    expect(ws.commands.where((c) => c.contains('nohup')), isEmpty);
   });
 
-  test('start waits until the port is listening', () async {
-    var probes = 0;
+  test('start waits until supervisor reports listening', () async {
     final ws = _FakeWorkspace((cmd) async {
-      if (cmd.contains('vault_site_own_pid')) {
-        return const CommandResult(exitCode: 0, stdout: '0', stderr: '');
-      }
-      if (cmd.contains('/proc/net/tcp')) {
-        probes += 1;
-        // First probe is the pre-start conflict check; later probes wait.
-        return CommandResult(
-          exitCode: 0,
-          stdout: probes == 1 ? '0' : '200',
-          stderr: '',
-        );
-      }
-      expect(cmd, contains('nohup'));
-      expect(cmd, contains('.pid'));
-      return const CommandResult(exitCode: 0, stdout: '4242', stderr: '');
+      return const CommandResult(exitCode: 0, stdout: 'ok', stderr: '');
     });
     final result = await ProjectSiteLauncher(
       ws,
-      readyPollInterval: Duration.zero,
+      supervisor: MemorySiteSupervisorClient(),
     ).start(projectPath: 'p1', entry: _site, openInBrowser: false);
     expect(result.startedProcess, isTrue);
     expect(result.alreadyUp, isFalse);
     expect(result.message, '已后台启动');
-    expect(probes, 2);
   });
 
   test('start timeout does not mark ready and returns log tail', () async {
     final ws = _FakeWorkspace(
       (cmd) async {
-        if (cmd.contains('vault_site_own_pid')) {
-          return const CommandResult(exitCode: 0, stdout: '0', stderr: '');
-        }
-        if (cmd.contains('/proc/net/tcp')) {
-          return const CommandResult(exitCode: 0, stdout: '0', stderr: '');
-        }
-        return const CommandResult(exitCode: 0, stdout: '4242', stderr: '');
+        return const CommandResult(exitCode: 0, stdout: 'ok', stderr: '');
       },
       files: {
         '/root/projects/p1/vault_site_网站_8080.log': utf8.encode(
@@ -224,16 +202,30 @@ void main() {
         ),
       },
     );
+    final supervisor = MemorySiteSupervisorClient()..startFails = true;
     final result = await ProjectSiteLauncher(
       ws,
-      readyTimeout: const Duration(milliseconds: 20),
-      readyPollInterval: const Duration(milliseconds: 5),
+      supervisor: supervisor,
     ).start(projectPath: 'p1', entry: _site, openInBrowser: false);
     expect(result.startedProcess, isFalse);
     expect(result.alreadyUp, isFalse);
     expect(result.openedUrl, isFalse);
     expect(result.message, contains('启动超时'));
     expect(result.logTail, contains('ImportError: no flask'));
+  });
+
+  test('start maps supervisor throw to a message', () async {
+    final ws = _FakeWorkspace((cmd) async {
+      return const CommandResult(exitCode: 0, stdout: 'ok', stderr: '');
+    });
+    final supervisor = MemorySiteSupervisorClient()
+      ..throwOnStart = StateError('无法启动站点看守');
+    final result = await ProjectSiteLauncher(
+      ws,
+      supervisor: supervisor,
+    ).start(projectPath: 'p1', entry: _site, openInBrowser: false);
+    expect(result.startedProcess, isFalse);
+    expect(result.message, contains('无法启动站点看守'));
   });
 
   test('allocateSitePort skips taken ports from 8765', () {
@@ -251,36 +243,19 @@ void main() {
     );
   });
 
-  test('stop re-probes and reports still running', () async {
+  test('stop reports terminated when supervisor exits the child', () async {
     final ws = _FakeWorkspace((cmd) async {
-      if (cmd.contains('/proc/net/tcp')) {
-        return const CommandResult(exitCode: 0, stdout: '200', stderr: '');
-      }
-      expect(cmd, contains('kill_port'));
       return const CommandResult(exitCode: 0, stdout: 'ok', stderr: '');
     });
     final result = await ProjectSiteLauncher(
       ws,
-    ).stop(projectPath: 'p1', entry: _site);
-    expect(result.stopped, isFalse);
-    expect(result.message, contains('仍在响应'));
-  });
-
-  test('stop reports terminated when probe goes down', () async {
-    final ws = _FakeWorkspace((cmd) async {
-      if (cmd.contains('/proc/net/tcp')) {
-        return const CommandResult(exitCode: 0, stdout: '0', stderr: '');
-      }
-      return const CommandResult(exitCode: 0, stdout: 'ok', stderr: '');
-    });
-    final result = await ProjectSiteLauncher(
-      ws,
+      supervisor: MemorySiteSupervisorClient(),
     ).stop(projectPath: 'p1', entry: _site);
     expect(result.stopped, isTrue);
     expect(result.message, '已终止');
   });
 
-  test('isProjectSiteUp prefers own pid over port probe', () async {
+  test('isProjectSiteUp requires supervisor listening, not pid alone', () async {
     final ws = _FakeWorkspace((cmd) async {
       if (cmd.contains('vault_site_own_pid')) {
         return const CommandResult(exitCode: 0, stdout: '1', stderr: '');
@@ -290,10 +265,22 @@ void main() {
       }
       return const CommandResult(exitCode: 0, stdout: '', stderr: '');
     });
+    final supervisor = MemorySiteSupervisorClient();
+    final down = await ProjectSiteLauncher(
+      ws,
+      supervisor: supervisor,
+    ).isProjectSiteUp(projectPath: 'p1', entry: _site);
+    expect(down, isFalse);
+
+    await supervisor.startSite(
+      id: 'p1',
+      cwd: '/x',
+      cmd: 'python3 app.py',
+    );
     final up = await ProjectSiteLauncher(
       ws,
+      supervisor: supervisor,
     ).isProjectSiteUp(projectPath: 'p1', entry: _site);
     expect(up, isTrue);
-    expect(ws.commands.where((c) => c.contains('/proc/net/tcp')), isEmpty);
   });
 }

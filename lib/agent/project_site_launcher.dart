@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:vault/agent/project_store.dart';
 import 'package:vault/agent/site_port.dart';
+import 'package:vault/agent/site_supervisor.dart';
 import 'package:vault/sandbox/sandbox_models.dart';
 
 export 'package:vault/agent/site_port.dart' show portFromSiteUrl;
@@ -197,11 +198,13 @@ class ProjectSiteLauncher {
     this.workspace, {
     this.readyTimeout = kSiteReadyTimeout,
     this.readyPollInterval = kSiteReadyPollInterval,
-  });
+    SiteSupervisorClient? supervisor,
+  }) : supervisor = supervisor ?? GuestSiteSupervisorClient(workspace);
 
   final SandboxWorkspace workspace;
   final Duration readyTimeout;
   final Duration readyPollInterval;
+  final SiteSupervisorClient supervisor;
 
   /// Whether each entry's URL currently answers HTTP (keyed by [ProjectUrlEntry.name]).
   Future<Map<String, bool>> probeAll(List<ProjectUrlEntry> entries) async {
@@ -231,15 +234,21 @@ class ProjectSiteLauncher {
 
   /// Whether this project's site should show as running in the UI.
   ///
-  /// Prefer the pid file we wrote at start — port probes can briefly read `0`
-  /// on mobile when the app resumes from an external browser.
+  /// Serving means the supervisor reports [listening] (pid **and** our port).
+  /// Falls back to pid-file **and** LISTEN when the supervisor does not know.
   Future<bool> isProjectSiteUp({
     required String projectPath,
     required ProjectUrlEntry entry,
   }) async {
-    if (await isOwnProcessAlive(projectPath: projectPath, entry: entry)) {
-      return true;
-    }
+    try {
+      final reply = await supervisor.status(projectPath);
+      if (reply.known) return reply.listening;
+    } catch (_) {}
+    final pidAlive = await isOwnProcessAlive(
+      projectPath: projectPath,
+      entry: entry,
+    );
+    if (!pidAlive) return false;
     final url = entry.url.trim();
     if (url.isEmpty) return false;
     return isUp(entry);
@@ -288,75 +297,7 @@ class ProjectSiteLauncher {
     final startCmd = entry.startCommand?.trim();
     final stem = siteRuntimeStem(entry.name, url: url);
 
-    final ownAlive = await isOwnProcessAlive(
-      projectPath: projectPath,
-      entry: entry,
-    );
-    final portUp = url.isNotEmpty && await isUp(entry);
-    if (!ownAlive && portUp) {
-      return ProjectSiteStartResult(
-        startedProcess: false,
-        alreadyUp: false,
-        openedUrl: false,
-        message: '端口已被其他进程占用，无法启动「${entry.name}」',
-      );
-    }
-
-    var alreadyUp = ownAlive && portUp;
-    var startedProcess = false;
-    String? logTail;
-
-    if (alreadyUp) {
-      logTail = await readLogTail(projectPath: projectPath, entry: entry);
-    } else if (ownAlive) {
-      final waited = await _waitUntilListening(
-        projectPath: projectPath,
-        entry: entry,
-      );
-      logTail = waited.logTail;
-      if (!waited.ready) {
-        return ProjectSiteStartResult(
-          startedProcess: false,
-          alreadyUp: false,
-          openedUrl: false,
-          message: _timeoutMessage(entry.name, waited.logTail),
-          logTail: waited.logTail,
-        );
-      }
-      alreadyUp = true;
-    } else if (startCmd != null && startCmd.isNotEmpty) {
-      final result = await workspace.run(
-        siteStartShellCommand(
-          projectDir: dir,
-          startCmd: startCmd,
-          logFileName: '$stem.log',
-          pidFileName: '$stem.pid',
-        ),
-      );
-      if (result.exitCode != 0) {
-        return ProjectSiteStartResult(
-          startedProcess: false,
-          alreadyUp: false,
-          openedUrl: false,
-          message: '启动命令失败：${result.stderr}\n${result.stdout}',
-        );
-      }
-      final waited = await _waitUntilListening(
-        projectPath: projectPath,
-        entry: entry,
-      );
-      logTail = waited.logTail;
-      if (!waited.ready) {
-        return ProjectSiteStartResult(
-          startedProcess: false,
-          alreadyUp: false,
-          openedUrl: false,
-          message: _timeoutMessage(entry.name, waited.logTail),
-          logTail: waited.logTail,
-        );
-      }
-      startedProcess = true;
-    } else {
+    if (startCmd == null || startCmd.isEmpty) {
       return ProjectSiteStartResult(
         startedProcess: false,
         alreadyUp: false,
@@ -365,6 +306,89 @@ class ProjectSiteLauncher {
       );
     }
 
+    try {
+      final current = await supervisor.status(projectPath);
+      if (current.known && current.listening) {
+        final logTail = await readLogTail(
+          projectPath: projectPath,
+          entry: entry,
+        );
+        return _openAfterStart(
+          entry: entry,
+          openInBrowser: openInBrowser,
+          openUrl: openUrl,
+          url: url,
+          startedProcess: false,
+          alreadyUp: true,
+          logTail: logTail,
+        );
+      }
+    } catch (_) {}
+
+    await workspace.run(
+      siteStopShellCommand(
+        projectDir: dir,
+        pidFileName: '$stem.pid',
+        port: null,
+      ),
+      timeout: const Duration(seconds: 8),
+    );
+
+    late final SiteSupervisorReply reply;
+    try {
+      reply = await supervisor.startSite(
+        id: projectPath,
+        cwd: dir,
+        cmd: startCmd,
+        port: portFromSiteUrl(url),
+        log: siteLogGuestPath(projectPath: projectPath, entry: entry),
+        pidFile: '$dir/$stem.pid',
+        timeout: readyTimeout,
+      );
+    } catch (e) {
+      final logTail = await readLogTail(projectPath: projectPath, entry: entry);
+      return ProjectSiteStartResult(
+        startedProcess: false,
+        alreadyUp: false,
+        openedUrl: false,
+        message: '启动失败：$e',
+        logTail: logTail,
+      );
+    }
+    final logTail = await readLogTail(projectPath: projectPath, entry: entry);
+    if (!reply.ok || !reply.listening) {
+      final err = reply.error ?? '启动失败';
+      final occupied = reply.state == 'occupied' || err.contains('占用');
+      return ProjectSiteStartResult(
+        startedProcess: false,
+        alreadyUp: false,
+        openedUrl: false,
+        message: occupied
+            ? '端口已被其他进程占用，无法启动「${entry.name}」'
+            : (err.contains('超时') ? _timeoutMessage(entry.name, logTail) : err),
+        logTail: logTail,
+      );
+    }
+    return _openAfterStart(
+      entry: entry,
+      openInBrowser: openInBrowser,
+      openUrl: openUrl,
+      url: url,
+      startedProcess: !reply.already,
+      alreadyUp: reply.already,
+      logTail: logTail,
+    );
+  }
+
+  Future<ProjectSiteStartResult> _openAfterStart({
+    required ProjectUrlEntry entry,
+    required bool openInBrowser,
+    required String? openUrl,
+    required String url,
+    required bool startedProcess,
+    required bool alreadyUp,
+    String? logTail,
+  }) async {
     final browserUrl = (openUrl ?? url).trim();
     var openedUrl = false;
     if (openInBrowser && browserUrl.isNotEmpty) {
@@ -373,7 +397,6 @@ class ProjectSiteLauncher {
         openedUrl = await launchUrl(uri, mode: LaunchMode.externalApplication);
       }
     }
-
     return ProjectSiteStartResult(
       startedProcess: startedProcess,
       alreadyUp: alreadyUp && !startedProcess,
@@ -383,28 +406,6 @@ class ProjectSiteLauncher {
           : (startedProcess ? '已后台启动' : null),
       logTail: logTail,
     );
-  }
-
-  Future<({bool ready, String? logTail})> _waitUntilListening({
-    required String projectPath,
-    required ProjectUrlEntry entry,
-  }) async {
-    final deadline = DateTime.now().add(readyTimeout);
-    while (true) {
-      if (await isUp(entry)) {
-        return (
-          ready: true,
-          logTail: await readLogTail(projectPath: projectPath, entry: entry),
-        );
-      }
-      if (!DateTime.now().isBefore(deadline)) {
-        return (
-          ready: false,
-          logTail: await readLogTail(projectPath: projectPath, entry: entry),
-        );
-      }
-      await Future<void>.delayed(readyPollInterval);
-    }
   }
 
   String _timeoutMessage(String name, String? logTail) {
@@ -418,11 +419,20 @@ class ProjectSiteLauncher {
     return buf.toString();
   }
 
-  /// Stop the guest process for [entry] (pid file + port listeners), then re-probe.
+  /// Stop the guest process for [entry] via the supervisor, then pid/port fallback.
   Future<ProjectSiteStopResult> stop({
     required String projectPath,
     required ProjectUrlEntry entry,
   }) async {
+    var supervised = false;
+    try {
+      final reply = await supervisor.stopSite(projectPath);
+      supervised = reply.ok;
+      if (reply.ok && reply.state == 'exited') {
+        return const ProjectSiteStopResult(stopped: true, message: '已终止');
+      }
+    } catch (_) {}
+
     final dir = guestProjectDir(projectPath);
     final url = entry.url.trim();
     final stem = siteRuntimeStem(entry.name, url: url);
@@ -439,6 +449,9 @@ class ProjectSiteLauncher {
         stopped: false,
         message: '终止命令失败：${result.stderr}\n${result.stdout}',
       );
+    }
+    if (supervised) {
+      return const ProjectSiteStopResult(stopped: true, message: '已终止');
     }
     await Future<void>.delayed(const Duration(milliseconds: 300));
     final stillUp = url.isNotEmpty && await isUp(entry);

@@ -13,9 +13,11 @@ import 'package:vault/sandbox/sandbox_models.dart';
 import 'package:vault_agent_core/vault_agent_core.dart';
 
 class _FakeWorkspace implements SandboxWorkspace {
-  _FakeWorkspace();
+  _FakeWorkspace({this.runHandler});
 
   final Map<String, List<int>> files = {};
+  final List<String> commands = [];
+  final Future<CommandResult> Function(String cmd)? runHandler;
 
   @override
   String get workspaceId => 'ws1';
@@ -40,7 +42,11 @@ class _FakeWorkspace implements SandboxWorkspace {
     String cmd, {
     Map<String, String>? environment,
     Duration? timeout,
-  }) async => const CommandResult(exitCode: 0, stdout: '', stderr: '');
+  }) async {
+    commands.add(cmd);
+    if (runHandler != null) return runHandler!(cmd);
+    return const CommandResult(exitCode: 0, stdout: 'flask_ok', stderr: '');
+  }
 
   @override
   Future<void> writeGuestFile(String guestAbsolutePath, List<int> bytes) async {
@@ -120,6 +126,24 @@ void main() {
     expect(project!.urls, hasLength(1));
     expect(project.site!.url, 'http://127.0.0.1:8765/');
     expect(project.site!.startCommand, 'python3 app.py');
+    expect(
+      workspace.commands.any((c) => c.contains('py3-flask') || c.contains('import flask')),
+      isTrue,
+    );
+  });
+
+  test('flask scaffold fails before writing when flask cannot be installed', () async {
+    workspace = _FakeWorkspace(
+      runHandler: (_) async =>
+          const CommandResult(exitCode: 1, stdout: '', stderr: 'apk failed'),
+    );
+    final json = await runTool(tool(), {'kind': 'flask'});
+    expect(json['ok'], isFalse);
+    expect(json['error'], contains('无法安装 Flask'));
+    expect(
+      workspace.files.containsKey('/root/projects/$projectPath/app.py'),
+      isFalse,
+    );
   });
 
   test('static scaffold writes index.html and http.server command', () async {
@@ -131,6 +155,10 @@ void main() {
     expect(
       workspace.files.containsKey('/root/projects/$projectPath/index.html'),
       isTrue,
+    );
+    expect(
+      workspace.commands.any((c) => c.contains('py3-flask')),
+      isFalse,
     );
   });
 

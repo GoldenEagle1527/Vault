@@ -4,9 +4,11 @@ import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:path/path.dart' as p;
+import 'package:vault/agent/agent_site_controller.dart';
 import 'package:vault/agent/conversation_store.dart';
 import 'package:vault/agent/project_site_launcher.dart';
 import 'package:vault/agent/project_store.dart';
+import 'package:vault/agent/site_supervisor.dart';
 import 'package:vault/agent/tools/manage_site_tool.dart';
 import 'package:vault/agent/vault_meta_db.dart';
 import 'package:vault/sandbox/sandbox_models.dart';
@@ -107,13 +109,18 @@ void main() {
     );
   }
 
-  Tool makeTool(_FakeWorkspace ws, {void Function()? onChanged}) {
+  Tool makeTool(
+    _FakeWorkspace ws, {
+    void Function()? onChanged,
+    MemorySiteSupervisorClient? supervisor,
+  }) {
     return createManageSiteTool(
       workspace: ws,
       launcher: ProjectSiteLauncher(
         ws,
         readyTimeout: const Duration(milliseconds: 40),
         readyPollInterval: Duration.zero,
+        supervisor: supervisor ?? MemorySiteSupervisorClient(),
       ),
       projectStore: projects,
       workspaceId: 'ws1',
@@ -131,23 +138,11 @@ void main() {
     expect(json['error'], contains('还没有站点'));
   });
 
-  test('start waits until probe succeeds', () async {
+  test('start waits until supervisor reports listening', () async {
     await registerSite();
-    var probes = 0;
     var changed = 0;
     final ws = _FakeWorkspace((cmd) async {
-      if (cmd.contains('vault_site_own_pid')) {
-        return const CommandResult(exitCode: 0, stdout: '0', stderr: '');
-      }
-      if (cmd.contains('/proc/net/tcp')) {
-        probes += 1;
-        return CommandResult(
-          exitCode: 0,
-          stdout: probes == 1 ? '0' : '200',
-          stderr: '',
-        );
-      }
-      return const CommandResult(exitCode: 0, stdout: '9', stderr: '');
+      return const CommandResult(exitCode: 0, stdout: 'ok', stderr: '');
     });
     final json = await runTool(makeTool(ws, onChanged: () => changed++), {
       'action': 'start',
@@ -162,24 +157,57 @@ void main() {
     await registerSite();
     var changed = 0;
     final ws = _FakeWorkspace((cmd) async {
-      if (cmd.contains('vault_site_own_pid')) {
-        return const CommandResult(exitCode: 0, stdout: '0', stderr: '');
-      }
-      if (cmd.contains('/proc/net/tcp')) {
-        return const CommandResult(exitCode: 0, stdout: '0', stderr: '');
-      }
-      return const CommandResult(exitCode: 0, stdout: '9', stderr: '');
+      return const CommandResult(exitCode: 0, stdout: 'ok', stderr: '');
     });
     ws.files['/root/projects/$projectPath/vault_site_网站_8080.log'] = utf8
         .encode('Address already in use\n');
-    final json = await runTool(makeTool(ws, onChanged: () => changed++), {
-      'action': 'start',
-    });
+    final json = await runTool(
+      makeTool(
+        ws,
+        onChanged: () => changed++,
+        supervisor: MemorySiteSupervisorClient()..startFails = true,
+      ),
+      {'action': 'start'},
+    );
     expect(json['ok'], isFalse);
     expect(json['startedProcess'], isFalse);
     expect(json['message'], contains('启动超时'));
+    expect(json['error'], contains('启动超时'));
     expect(json['logTail'], contains('Address already in use'));
     expect(changed, 0);
+  });
+
+  test('start through controller surfaces swallowed supervisor errors', () async {
+    await registerSite();
+    final ws = _FakeWorkspace((cmd) async {
+      return const CommandResult(exitCode: 0, stdout: 'ok', stderr: '');
+    });
+    final supervisor = MemorySiteSupervisorClient()
+      ..throwOnStart = StateError('无法启动站点看守');
+    final controller = AgentSiteController(
+      workspace: ws,
+      projects: () => const [],
+      isMounted: () => true,
+      onChanged: () {},
+      publicUrl: (entry) => entry.url,
+      beforeStart: (_) async {},
+      syncKeepAlive: (_) async {},
+      onMessage: (_) {},
+      supervisor: supervisor,
+    );
+    addTearDown(controller.dispose);
+    final tool = createManageSiteTool(
+      workspace: ws,
+      launcher: controller.launcher,
+      projectStore: projects,
+      workspaceId: 'ws1',
+      projectPath: projectPath,
+      siteController: controller,
+    );
+    final json = await runTool(tool, {'action': 'start'});
+    expect(json['ok'], isFalse);
+    expect(json['error'], contains('无法启动站点看守'));
+    expect(json['startedProcess'], isFalse);
   });
 
   test('logs returns tail of the site log', () async {
@@ -194,15 +222,20 @@ void main() {
     expect(json['logTail'], 'line-b\nline-c');
   });
 
-  test('status reports up from own pid', () async {
+  test('status reports up from supervisor listening', () async {
     await registerSite();
     final ws = _FakeWorkspace((cmd) async {
-      if (cmd.contains('vault_site_own_pid')) {
-        return const CommandResult(exitCode: 0, stdout: '1', stderr: '');
-      }
-      return const CommandResult(exitCode: 0, stdout: '0', stderr: '');
+      return const CommandResult(exitCode: 0, stdout: 'ok', stderr: '');
     });
-    final json = await runTool(makeTool(ws), {'action': 'status'});
+    final supervisor = MemorySiteSupervisorClient();
+    await supervisor.startSite(
+      id: projectPath,
+      cwd: '/root/projects/$projectPath',
+      cmd: 'python3 app.py',
+    );
+    final json = await runTool(makeTool(ws, supervisor: supervisor), {
+      'action': 'status',
+    });
     expect(json['ok'], isTrue);
     expect(json['up'], isTrue);
   });
@@ -223,12 +256,17 @@ void main() {
       ),
     );
     final ws = _FakeWorkspace((cmd) async {
-      if (cmd.contains('vault_site_own_pid')) {
-        return const CommandResult(exitCode: 0, stdout: '1', stderr: '');
-      }
-      return const CommandResult(exitCode: 0, stdout: '0', stderr: '');
+      return const CommandResult(exitCode: 0, stdout: 'ok', stderr: '');
     });
-    final json = await runTool(makeTool(ws), {'action': 'list'});
+    final supervisor = MemorySiteSupervisorClient();
+    await supervisor.startSite(
+      id: projectPath,
+      cwd: '/root/projects/$projectPath',
+      cmd: 'python3 app.py',
+    );
+    final json = await runTool(makeTool(ws, supervisor: supervisor), {
+      'action': 'list',
+    });
     expect(json['ok'], isTrue);
     expect(json['registered'], isTrue);
     expect(json['up'], isTrue);

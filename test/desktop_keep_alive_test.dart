@@ -5,6 +5,7 @@ void main() {
   test('desktopTrayTooltip names a running site', () {
     expect(desktopTrayTooltip(), contains('工作区在后台运行'));
     expect(desktopTrayTooltip(siteName: ' 网站 '), contains('「网站」'));
+    expect(desktopTrayTooltip(siteName: '甲、乙'), contains('「甲、乙」'));
   });
 
   test('desktopTrayMenuSpecs adds stop when a site is up', () {

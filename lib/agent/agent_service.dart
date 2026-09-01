@@ -4,6 +4,7 @@ import 'dart:convert';
 import 'package:dio/dio.dart';
 import 'package:uuid/uuid.dart';
 import 'package:vault/agent/agent_inbox.dart';
+import 'package:vault/agent/agent_site_controller.dart';
 import 'package:vault/agent/agent_settings.dart';
 import 'package:vault/agent/agent_stream_mapper.dart';
 import 'package:vault/agent/agent_system_prompt.dart';
@@ -25,6 +26,7 @@ import 'package:vault/agent/tools/manage_site_tool.dart';
 import 'package:vault/agent/tools/present_file_tool.dart';
 import 'package:vault/agent/tools/read_tool.dart';
 import 'package:vault/agent/tools/scaffold_site_tool.dart';
+import 'package:vault/agent/tools/shell_job.dart';
 import 'package:vault/agent/tools/shell_tool.dart';
 import 'package:vault/agent/vault_host_device.dart';
 import 'package:vault/agent/vault_meta_db.dart';
@@ -79,6 +81,7 @@ class AgentService {
     String? projectPath,
     WorkspaceMode mode = WorkspaceMode.chat,
     SiteGateway? siteGateway,
+    AgentSiteController? siteController,
   }) : _workspace = workspace,
        _settings = settings,
        _shellTimeout = shellTimeout,
@@ -87,6 +90,7 @@ class AgentService {
        _projectStore = projectStore,
        _mode = mode,
        _siteGateway = siteGateway,
+       _siteController = siteController,
        _projectPath =
            projectPath ?? initialState?.metadata['projectPath'] as String?,
        // AgentState.sessionId is the engine field for conversation id.
@@ -103,6 +107,7 @@ class AgentService {
     Duration shellTimeout = kDefaultShellToolTimeout,
     WorkspaceMode mode = WorkspaceMode.chat,
     SiteGateway? siteGateway,
+    AgentSiteController? siteController,
   }) async {
     final store =
         conversationStore ??
@@ -122,6 +127,7 @@ class AgentService {
       initialState: opened.state,
       mode: mode,
       siteGateway: siteGateway,
+      siteController: siteController,
     );
   }
 
@@ -134,6 +140,7 @@ class AgentService {
     Duration shellTimeout = kDefaultShellToolTimeout,
     WorkspaceMode mode = WorkspaceMode.chat,
     SiteGateway? siteGateway,
+    AgentSiteController? siteController,
   }) {
     return AgentService(
       workspace: workspace,
@@ -143,6 +150,7 @@ class AgentService {
       projectStore: projectStore,
       mode: mode,
       siteGateway: siteGateway,
+      siteController: siteController,
     );
   }
 
@@ -153,6 +161,7 @@ class AgentService {
   final ProjectStore? _projectStore;
   final WorkspaceMode _mode;
   final SiteGateway? _siteGateway;
+  final AgentSiteController? _siteController;
   final AskUserHost askUser = AskUserHost();
 
   StatefulAgent? _agent;
@@ -162,6 +171,7 @@ class AgentService {
   String? _conversationId;
   String? _projectPath;
   CancelToken? _cancelToken;
+  final GuestShellJobTracker _shellJobs = GuestShellJobTracker();
   bool _running = false;
   StreamSubscription<BackgroundToolJobEvent>? _backgroundSub;
   final List<BackgroundToolJob> _pendingCompletions = [];
@@ -285,6 +295,11 @@ class AgentService {
         timeout: _shellTimeout,
         chatSessionId: conversationId,
         projectPath: projectPath,
+        jobs: _shellJobs,
+        registeredStartCommand: () async {
+          final sites = await _projectSites(projectPath);
+          return sites.isEmpty ? null : sites.first.startCommand;
+        },
       ),
       if (_mode == WorkspaceMode.dev && projectStore != null) ...[
         createScaffoldSiteTool(
@@ -296,11 +311,12 @@ class AgentService {
         ),
         createManageSiteTool(
           workspace: _workspace,
-          launcher: ProjectSiteLauncher(_workspace),
+          launcher: _siteController?.launcher ?? ProjectSiteLauncher(_workspace),
           projectStore: projectStore,
           workspaceId: workspaceId,
           projectPath: projectPath,
           gateway: gateway,
+          siteController: _siteController,
         ),
       ],
       if (_mode == WorkspaceMode.dev && gateway != null)
@@ -975,6 +991,7 @@ class AgentService {
     if (token != null && !token.isCancelled) {
       token.cancel('用户取消');
     }
+    unawaited(_shellJobs.killAll(_workspace));
   }
 
   Future<void> dispose() async {

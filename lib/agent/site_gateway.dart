@@ -47,6 +47,9 @@ class SiteGateway {
   /// When true, inject probe.js into HTML and keep a ring buffer of errors.
   bool captureEnabled = false;
 
+  /// Fired when a proxied backend cannot be reached (502).
+  void Function(String slug)? onBackendUnreachable;
+
   int? get port => _port;
   bool get isRunning => _server != null;
   List<SiteRoute> get routes => _routes;
@@ -306,6 +309,7 @@ class SiteGateway {
         status: HttpStatus.badGateway,
         message: '站点未启动（502）',
       );
+      onBackendUnreachable?.call(route.slug);
       await _writeHtml(
         req,
         HttpStatus.badGateway,

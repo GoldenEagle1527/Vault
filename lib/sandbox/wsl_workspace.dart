@@ -170,6 +170,37 @@ class WslWorkspace implements SandboxWorkspace {
     return '\\\\wsl\$\\$distroName\\${relative.replaceAll('/', '\\')}';
   }
 
+  /// Dedicated guest command (does not occupy PersistentShell).
+  Future<GuestStreamSession> spawnDetached(String cmd) async {
+    final proc = await Process.start(
+      'wsl.exe',
+      [
+        '-d',
+        distroName,
+        '-u',
+        'root',
+        '--cd',
+        kGuestHome,
+        '-e',
+        '/bin/sh',
+        '-c',
+        cmd,
+      ],
+      environment: wslHostEnvironment,
+      includeParentEnvironment: false,
+    );
+    final lines = proc.stdout
+        .transform(utf8.decoder)
+        .transform(const LineSplitter());
+    return GuestStreamSession(
+      lines: lines,
+      kill: () async {
+        proc.kill();
+        await proc.exitCode;
+      },
+    );
+  }
+
   @override
   Future<void> dispose() async {
     if (_disposed) return;

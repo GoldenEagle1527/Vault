@@ -1,9 +1,14 @@
 import 'dart:async';
 import 'dart:convert';
 
+import 'package:dio/dio.dart';
 import 'package:vault/agent/tools/shell_job.dart';
+import 'package:vault/agent/tools/site_start_guard.dart';
 import 'package:vault/sandbox/sandbox_models.dart';
 import 'package:vault_agent_core/vault_agent_core.dart';
+
+/// Exit code written when the user cancels a detached guest job.
+const int kShellJobCancelledExitCode = 130;
 
 /// Agent-loop threshold: tools still running past this are detached as
 /// background jobs (Cursor-style). Shell wall-clock limit is longer so
@@ -33,6 +38,8 @@ Tool createShellTool(
   String? chatSessionId,
   String? projectPath,
   Duration pollInterval = kShellJobPollInterval,
+  GuestShellJobTracker? jobs,
+  Future<String?> Function()? registeredStartCommand,
 }) {
   final sessionEnv = (chatSessionId == null || chatSessionId.trim().isEmpty)
       ? null
@@ -105,6 +112,22 @@ Tool createShellTool(
         }
       }
 
+      final bypass = siteStartBypassError(
+        command,
+        registeredStartCommand: registeredStartCommand == null
+            ? null
+            : await registeredStartCommand(),
+      );
+      if (bypass != null) {
+        return jsonEncode({
+          'ok': false,
+          'error': bypass,
+          'exitCode': -1,
+          'stdout': '',
+          'stderr': bypass,
+        });
+      }
+
       try {
         if (notifyPattern != null) {
           return await _startMonitoredShellJob(
@@ -117,6 +140,7 @@ Tool createShellTool(
             notifyRegexRaw: notifyRegexRaw,
             notifyOnce: notifyOnce,
             cwdHint: cwdHint,
+            jobs: jobs,
           );
         }
 
@@ -126,6 +150,7 @@ Tool createShellTool(
           environment: sessionEnv,
           timeout: timeout,
           pollInterval: pollInterval,
+          jobs: jobs,
         );
         return _encodeCommandResult(result, timeout: timeout, cwdHint: cwdHint);
       } catch (e) {
@@ -158,6 +183,16 @@ String _encodeCommandResult(
       'cwdHint': cwdHint,
     });
   }
+  if (result.exitCode == kShellJobCancelledExitCode) {
+    return jsonEncode({
+      'ok': false,
+      'error': '用户取消',
+      'exitCode': kShellJobCancelledExitCode,
+      'stdout': result.stdout,
+      'stderr': result.stderr.isEmpty ? '用户取消' : result.stderr,
+      'cwdHint': cwdHint,
+    });
+  }
   return jsonEncode({
     'ok': result.success,
     'exitCode': result.exitCode,
@@ -178,11 +213,13 @@ Future<String> _startMonitoredShellJob(
   required String notifyRegexRaw,
   required bool notifyOnce,
   required String cwdHint,
+  GuestShellJobTracker? jobs,
 }) async {
   final ctx = AgentCallToolContext.current;
   final agent = ctx?.agent;
   final jobId = newShellJobId();
   final callId = ctx?.callId ?? jobId;
+  final cancelToken = ctx?.cancelToken;
 
   final start = await workspace.run(
     buildStartDetachedShellJobCommand(
@@ -203,6 +240,7 @@ Future<String> _startMonitoredShellJob(
     });
   }
 
+  jobs?.remember(jobId);
   if (agent != null) {
     agent.backgroundJobs.register(
       jobId: jobId,
@@ -229,6 +267,8 @@ Future<String> _startMonitoredShellJob(
       notifyPattern: notifyPattern,
       notifyRegexRaw: notifyRegexRaw,
       notifyOnce: notifyOnce,
+      jobs: jobs,
+      cancelToken: cancelToken,
     ),
   );
 
@@ -248,6 +288,35 @@ Future<String> _startMonitoredShellJob(
   });
 }
 
+bool _shellCancelled(CancelToken? token) => token?.isCancelled == true;
+
+Future<CommandResult> _killShellJob(
+  SandboxWorkspace workspace,
+  String jobId, {
+  GuestShellJobTracker? jobs,
+}) async {
+  try {
+    await workspace.run(
+      buildKillDetachedShellJobCommand(jobId),
+      timeout: const Duration(seconds: 10),
+    );
+  } catch (_) {}
+  jobs?.forget(jobId);
+  String partial = '';
+  try {
+    final last = await workspace.run(
+      buildPollDetachedShellJobCommand(jobId),
+      timeout: const Duration(seconds: 10),
+    );
+    partial = parseShellJobPollStdout(last.stdout).output ?? '';
+  } catch (_) {}
+  return CommandResult(
+    exitCode: kShellJobCancelledExitCode,
+    stdout: partial,
+    stderr: '用户取消',
+  );
+}
+
 Future<void> _monitorDetachedShellJob(
   SandboxWorkspace workspace, {
   required String jobId,
@@ -258,6 +327,8 @@ Future<void> _monitorDetachedShellJob(
   required RegExp notifyPattern,
   required String notifyRegexRaw,
   required bool notifyOnce,
+  GuestShellJobTracker? jobs,
+  CancelToken? cancelToken,
 }) async {
   final deadline = DateTime.now().add(timeout);
   var previousOutput = '';
@@ -265,6 +336,17 @@ Future<void> _monitorDetachedShellJob(
 
   try {
     while (true) {
+      if (_shellCancelled(cancelToken)) {
+        final killed = await _killShellJob(workspace, jobId, jobs: jobs);
+        _completeMonitor(
+          agent,
+          jobId: jobId,
+          callId: callId,
+          result: killed,
+          isError: true,
+        );
+        return;
+      }
       final remaining = deadline.difference(DateTime.now());
       if (remaining <= Duration.zero) {
         try {
@@ -282,6 +364,7 @@ Future<void> _monitorDetachedShellJob(
           final parsed = parseShellJobPollStdout(last.stdout);
           partial = parsed.output ?? '';
         } catch (_) {}
+        jobs?.forget(jobId);
         _completeMonitor(
           agent,
           jobId: jobId,
@@ -324,6 +407,7 @@ Future<void> _monitorDetachedShellJob(
       previousOutput = output;
 
       if (parsed.done) {
+        jobs?.forget(jobId);
         _completeMonitor(
           agent,
           jobId: jobId,
@@ -341,6 +425,7 @@ Future<void> _monitorDetachedShellJob(
       await Future<void>.delayed(pollInterval);
     }
   } catch (e) {
+    jobs?.forget(jobId);
     _completeMonitor(
       agent,
       jobId: jobId,
@@ -409,8 +494,11 @@ Future<CommandResult> runDetachedShellJob(
   Duration timeout = kDefaultShellToolTimeout,
   Duration pollInterval = kShellJobPollInterval,
   String? jobId,
+  GuestShellJobTracker? jobs,
+  CancelToken? cancelToken,
 }) async {
   final id = jobId ?? newShellJobId();
+  cancelToken ??= AgentCallToolContext.current?.cancelToken;
   final start = await workspace.run(
     buildStartDetachedShellJobCommand(
       jobId: id,
@@ -427,44 +515,52 @@ Future<CommandResult> runDetachedShellJob(
     );
   }
 
+  jobs?.remember(id);
   final deadline = DateTime.now().add(timeout);
   String? partialOut;
-  while (true) {
-    final remaining = deadline.difference(DateTime.now());
-    if (remaining <= Duration.zero) {
-      try {
-        await workspace.run(
-          buildKillDetachedShellJobCommand(id),
-          timeout: const Duration(seconds: 10),
+  try {
+    while (true) {
+      if (_shellCancelled(cancelToken)) {
+        return _killShellJob(workspace, id, jobs: jobs);
+      }
+      final remaining = deadline.difference(DateTime.now());
+      if (remaining <= Duration.zero) {
+        try {
+          await workspace.run(
+            buildKillDetachedShellJobCommand(id),
+            timeout: const Duration(seconds: 10),
+          );
+        } catch (_) {}
+        try {
+          final last = await workspace.run(
+            buildPollDetachedShellJobCommand(id),
+            timeout: const Duration(seconds: 10),
+          );
+          final parsed = parseShellJobPollStdout(last.stdout);
+          partialOut = parsed.output;
+        } catch (_) {}
+        return CommandResult(
+          exitCode: 124,
+          stdout: partialOut ?? '',
+          stderr: '命令在 ${timeout.inSeconds} 秒内未完成',
         );
-      } catch (_) {}
-      try {
-        final last = await workspace.run(
-          buildPollDetachedShellJobCommand(id),
-          timeout: const Duration(seconds: 10),
-        );
-        final parsed = parseShellJobPollStdout(last.stdout);
-        partialOut = parsed.output;
-      } catch (_) {}
-      return CommandResult(
-        exitCode: 124,
-        stdout: partialOut ?? '',
-        stderr: '命令在 ${timeout.inSeconds} 秒内未完成',
-      );
-    }
+      }
 
-    final poll = await workspace.run(
-      buildPollDetachedShellJobCommand(id),
-      timeout: const Duration(seconds: 15),
-    );
-    final parsed = parseShellJobPollStdout(poll.stdout);
-    if (parsed.done) {
-      return CommandResult(
-        exitCode: parsed.exitCode ?? -1,
-        stdout: parsed.output ?? '',
-        stderr: '',
+      final poll = await workspace.run(
+        buildPollDetachedShellJobCommand(id),
+        timeout: const Duration(seconds: 15),
       );
+      final parsed = parseShellJobPollStdout(poll.stdout);
+      if (parsed.done) {
+        return CommandResult(
+          exitCode: parsed.exitCode ?? -1,
+          stdout: parsed.output ?? '',
+          stderr: '',
+        );
+      }
+      await Future<void>.delayed(pollInterval);
     }
-    await Future<void>.delayed(pollInterval);
+  } finally {
+    jobs?.forget(id);
   }
 }

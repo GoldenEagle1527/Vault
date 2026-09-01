@@ -228,16 +228,17 @@ lib/screens/
 
 ## F10 — 站点监控（日志页 / WS 声明 / 回前台）（P2）
 
-**状态：** ✅ 2026-08-31 已落地。
+**状态：** ✅ 2026-08-31 已落地；2026-08-31 改为工作区看守推送。
 
 **行为：**
 
-1. 侧栏已登记站点即可打开 `SiteLogsScreen`：进程 `stem.log` 尾部 + `probe.js` / 网关事件，2 秒刷新  
+1. 侧栏已登记站点即可打开 `SiteLogsScreen`：进程 `stem.log` 尾部 + `probe.js` / 网关事件，2 秒刷新；页上订 `siteUp`（运行中 / 已停），每次现读当前 `entry`  
 2. 网关对 `Upgrade: websocket` 回 501，并记 gateway 事件；UI 写明只反代 HTTP，**不实现** WebSocket 反代  
-3. Android 回前台与桌面托盘「显示窗口」走同一条刷新链；设置页桌面保活读真实 `siteName`  
-4. **不新增** Android FGS
+3. Android 回前台与桌面托盘「显示窗口」走同一条刷新链（读看守 `state.json` + 重接 follow）；设置页 / 托盘 / 通知带全部运行中站点名  
+4. **不新增** Android FGS  
+5. 工作区级 Python 看守（`site_supervisor.py`）是所有 Flask / `http.server` 的亲爹：`waitpid` + 端口 inode 属主。启停走看守 RPC；死亡 / 假活推事件。Flutter **不再 4 秒探测**。绿灯 = 看守 `listening`。`manage_site` 与侧栏同一 `AgentSiteController`。网关 502 作保险灭灯。对话模式不注入 `probe.js`。
 
-**关键文件：** `lib/screens/agent/site_logs_screen.dart`、`agent_navigation.dart`、`site_gateway.dart`、`desktop_keep_alive.dart`、`agent_screen.dart`
+**关键文件：** `lib/agent/site_supervisor.dart`、`site_supervisor_script.dart`、`agent_site_controller.dart`、`project_site_launcher.dart`、`lib/screens/agent/site_logs_screen.dart`、`site_gateway.dart`、`desktop_keep_alive.dart`、`agent_screen.dart`
 
 ---
 

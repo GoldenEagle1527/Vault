@@ -1,5 +1,6 @@
 import 'dart:convert';
 
+import 'package:vault/agent/agent_site_controller.dart';
 import 'package:vault/agent/project_site_launcher.dart';
 import 'package:vault/agent/project_store.dart';
 import 'package:vault/agent/site_gateway.dart';
@@ -22,6 +23,7 @@ Tool createManageSiteTool({
   required String workspaceId,
   required String projectPath,
   SiteGateway? gateway,
+  AgentSiteController? siteController,
   void Function()? onChanged,
 }) {
   Future<ProjectUrlEntry?> registeredSite() async {
@@ -150,12 +152,19 @@ Tool createManageSiteTool({
         case 'start':
           final openBrowser = args['open_browser'] == true;
           try {
-            final result = await launcher.start(
-              projectPath: projectPath,
-              entry: site,
-              openInBrowser: openBrowser,
-              openUrl: publicUrlOf(site),
-            );
+            final result = siteController != null
+                ? await siteController.start(
+                    site,
+                    projectPath: projectPath,
+                    openInBrowser: openBrowser,
+                    announce: false,
+                  )
+                : await launcher.start(
+                    projectPath: projectPath,
+                    entry: site,
+                    openInBrowser: openBrowser,
+                    openUrl: publicUrlOf(site),
+                  );
             final ok = result.startedProcess || result.alreadyUp;
             if (ok) onChanged?.call();
             return jsonEncode({
@@ -167,6 +176,7 @@ Tool createManageSiteTool({
               'public_url': publicUrlOf(site),
               'site': siteJson(site),
               if (result.message != null) 'message': result.message,
+              if (!ok) 'error': result.message ?? '启动失败',
               if (result.logTail != null) 'logTail': result.logTail,
             });
           } catch (e) {
@@ -175,16 +185,23 @@ Tool createManageSiteTool({
 
         case 'stop':
           try {
-            final result = await launcher.stop(
-              projectPath: projectPath,
-              entry: site,
-            );
+            final result = siteController != null
+                ? await siteController.stop(
+                    site,
+                    projectPath: projectPath,
+                    announce: false,
+                  )
+                : await launcher.stop(
+                    projectPath: projectPath,
+                    entry: site,
+                  );
             onChanged?.call();
             return jsonEncode({
               'ok': result.stopped,
               'action': 'stop',
               'stopped': result.stopped,
               if (result.message != null) 'message': result.message,
+              if (!result.stopped) 'error': result.message ?? '终止失败',
               'site': siteJson(site),
             });
           } catch (e) {

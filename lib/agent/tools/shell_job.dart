@@ -72,21 +72,82 @@ fi
       .trim();
 }
 
-/// Best-effort kill of a detached job (used on wall-clock timeout).
+/// Best-effort kill of a detached job (timeout or user cancel).
+///
+/// Walks children so `python3 app.py` under the wrapper dies; writes exit 130
+/// so the poller does not wait out the wall clock.
 String buildKillDetachedShellJobCommand(String jobId) {
   final base = guestShellJobBase(jobId);
   final pidF = shellSingleQuote('$base.pid');
+  final exitF = shellSingleQuote('$base.exit');
   return '''
+_kill_tree() {
+  _root=\$1
+  [ -z "\$_root" ] && return 0
+  [ "\$_root" = "1" ] && return 0
+  for st in /proc/[0-9]*/status; do
+    [ -f "\$st" ] || continue
+    ppid=\$(awk '/^PPid:/{print \$2}' "\$st" 2>/dev/null || true)
+    if [ "\$ppid" = "\$_root" ]; then
+      cpid=\${st#/proc/}
+      cpid=\${cpid%/status}
+      _kill_tree "\$cpid"
+    fi
+  done
+  kill -TERM "\$_root" 2>/dev/null || true
+}
+_kill_tree_hard() {
+  _root=\$1
+  [ -z "\$_root" ] && return 0
+  [ "\$_root" = "1" ] && return 0
+  for st in /proc/[0-9]*/status; do
+    [ -f "\$st" ] || continue
+    ppid=\$(awk '/^PPid:/{print \$2}' "\$st" 2>/dev/null || true)
+    if [ "\$ppid" = "\$_root" ]; then
+      cpid=\${st#/proc/}
+      cpid=\${cpid%/status}
+      _kill_tree_hard "\$cpid"
+    fi
+  done
+  kill -9 "\$_root" 2>/dev/null || true
+}
 if [ -f $pidF ]; then
   _pid=\$(cat $pidF 2>/dev/null || true)
   if [ -n "\$_pid" ]; then
-    kill "\$_pid" 2>/dev/null || true
+    _kill_tree "\$_pid"
     sleep 0.2
-    kill -9 "\$_pid" 2>/dev/null || true
+    _kill_tree_hard "\$_pid"
   fi
+fi
+if [ ! -f $exitF ]; then
+  printf '%s' '130' > $exitF
 fi
 '''
       .trim();
+}
+
+/// Live guest job ids for this Agent session. Cancel kills these, not sites.
+class GuestShellJobTracker {
+  final Set<String> _ids = {};
+
+  List<String> get liveIds => List<String>.unmodifiable(_ids);
+
+  void remember(String jobId) => _ids.add(jobId);
+
+  void forget(String jobId) => _ids.remove(jobId);
+
+  Future<void> killAll(SandboxWorkspace workspace) async {
+    final ids = liveIds;
+    for (final id in ids) {
+      try {
+        await workspace.run(
+          buildKillDetachedShellJobCommand(id),
+          timeout: const Duration(seconds: 10),
+        );
+      } catch (_) {}
+      forget(id);
+    }
+  }
 }
 
 class ShellJobPollResult {
