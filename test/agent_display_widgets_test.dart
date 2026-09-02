@@ -6,10 +6,17 @@ import 'package:vault/agent/present_file.dart';
 import 'package:vault/sandbox/guest_media_kind.dart';
 import 'package:vault/agent/agent_navigation_coordinator.dart';
 import 'package:vault/agent/project_store.dart';
+import 'package:vault/agent/sub_agent_display.dart';
 import 'package:vault/screens/agent/widgets/agent_chat_widgets.dart';
 import 'package:vault/screens/agent/widgets/agent_navigation.dart';
 
 void main() {
+  test('sub-agent capsule label includes the running count', () {
+    expect(subAgentBackgroundCapsuleLabel(1), '1个子Agent后台运行中...');
+    expect(isSubAgentTool(kDelegateTaskToolName), isTrue);
+    expect(isSubAgentTool('shell'), isFalse);
+  });
+
   testWidgets('chat bubble renders thinking and expandable tool states', (
     tester,
   ) async {
@@ -37,6 +44,40 @@ void main() {
     await tester.tap(find.text('Ran echo ok'));
     await tester.pump();
     expect(find.textContaining('ok'), findsWidgets);
+  });
+
+  testWidgets('delegate_task bubble shows 启动子Agent instead of raw args', (
+    tester,
+  ) async {
+    final tool = AgentChatItem.tool(
+      name: kDelegateTaskToolName,
+      arguments:
+          '{"assignee":"clone","task_description":"请帮我写一个电影感黑洞壁纸网页"}',
+      backgrounded: true,
+      callId: 'sub-1',
+    );
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(body: AgentChatBubble(item: tool)),
+      ),
+    );
+
+    expect(find.text(kStartSubAgentSummary), findsOneWidget);
+    expect(find.textContaining('assignee'), findsNothing);
+    expect(find.textContaining('Ran'), findsNothing);
+  });
+
+  testWidgets('sub-agent capsule shows running count above conversation', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      const MaterialApp(
+        home: Scaffold(body: SubAgentBackgroundCapsule(count: 2)),
+      ),
+    );
+
+    expect(find.text(subAgentBackgroundCapsuleLabel(2)), findsOneWidget);
+    expect(find.byIcon(Icons.hourglass_top_rounded), findsOneWidget);
   });
 
   testWidgets('present_file bubble shows preview and download actions', (

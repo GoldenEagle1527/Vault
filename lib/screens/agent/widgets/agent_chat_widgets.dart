@@ -7,12 +7,14 @@ import 'package:vault/agent/agent_chat_model.dart';
 import 'package:vault/agent/ask_user.dart';
 import 'package:vault/agent/chat_attachment.dart';
 import 'package:vault/agent/present_file.dart';
+import 'package:vault/agent/sub_agent_display.dart';
 import 'package:vault/agent/workspace_mode.dart';
 import 'package:vault/sandbox/guest_fs_ops.dart';
 import 'package:vault/sandbox/guest_media_kind.dart';
 import 'package:vault/sandbox/sandbox_provider.dart';
 import 'package:vault/screens/file_browser/file_preview_screen.dart';
 import 'package:vault/util/guest_export.dart';
+import 'package:vault/widgets/ask_user_panel.dart';
 import 'package:vault/widgets/ask_user_transcript.dart';
 import 'package:vault/widgets/chat_attachment_preview.dart';
 import 'package:vault/widgets/glass.dart';
@@ -179,6 +181,29 @@ Key agentChatItemKey(AgentChatItem item, int index) {
   return ValueKey('chat-$index-${item.kind.name}');
 }
 
+class SubAgentBackgroundCapsule extends StatelessWidget {
+  const SubAgentBackgroundCapsule({super.key, required this.count});
+
+  final int count;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return Chip(
+      label: Text(subAgentBackgroundCapsuleLabel(count)),
+      avatar: Icon(
+        Icons.hourglass_top_rounded,
+        size: 16,
+        color: scheme.primary,
+      ),
+      visualDensity: VisualDensity.compact,
+      side: BorderSide.none,
+      backgroundColor: scheme.primaryContainer.withValues(alpha: 0.75),
+      labelStyle: TextStyle(color: scheme.onPrimaryContainer),
+    );
+  }
+}
+
 class AgentChatBubble extends StatelessWidget {
   const AgentChatBubble({
     super.key,
@@ -186,6 +211,9 @@ class AgentChatBubble extends StatelessWidget {
     this.running = false,
     this.provider,
     this.workspaceId,
+    this.interactiveAskUser = false,
+    this.pendingAskUser,
+    this.onAskUserSubmit,
     this.onCopy,
     this.onEdit,
     this.onReselectAskUser,
@@ -196,6 +224,9 @@ class AgentChatBubble extends StatelessWidget {
   final bool running;
   final SandboxProvider? provider;
   final String? workspaceId;
+  final bool interactiveAskUser;
+  final AskUserSession? pendingAskUser;
+  final ValueChanged<List<AskUserAnswer>>? onAskUserSubmit;
   final VoidCallback? onCopy;
   final VoidCallback? onEdit;
   final VoidCallback? onReselectAskUser;
@@ -217,6 +248,24 @@ class AgentChatBubble extends StatelessWidget {
       );
     }
     if (item.kind == AgentChatKind.tool && item.toolName == kAskUserToolName) {
+      final session = pendingAskUser;
+      final submit = onAskUserSubmit;
+      if (interactiveAskUser && session != null && submit != null) {
+        return Padding(
+          padding: const EdgeInsets.symmetric(vertical: 6),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              AskUserPanel(
+                key: ObjectKey(session),
+                questionnaire: session.questionnaire,
+                onSubmit: submit,
+              ),
+              if (branchSwitcher != null) branchSwitcher!,
+            ],
+          ),
+        );
+      }
       return AskUserTranscript(
         arguments: item.toolArguments ?? '',
         result: item.toolResult,
@@ -863,6 +912,7 @@ String _toolSummary({
   required bool done,
   required bool backgrounded,
 }) {
+  if (isSubAgentTool(toolName)) return kStartSubAgentSummary;
   final firstLine = command.split(RegExp(r'\r?\n')).first.trim();
   final preview = firstLine.length > 72
       ? '${firstLine.substring(0, 72)}…'

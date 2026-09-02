@@ -335,7 +335,11 @@ class _AgentScreenState extends State<AgentScreen> with WidgetsBindingObserver {
   }
 
   void _onAskUserChanged() {
-    if (mounted) setState(() {});
+    if (!mounted) return;
+    setState(() {});
+    if (_askUserHost?.pending.value != null) {
+      _scrollToEnd();
+    }
   }
 
   void _bindAskUser(AgentService? service) {
@@ -953,10 +957,12 @@ class _AgentScreenState extends State<AgentScreen> with WidgetsBindingObserver {
             top: 16,
             bottom: MediaQuery.viewInsetsOf(ctx).bottom + 16,
           ),
-          child: AskUserPanel(
-            questionnaire: q,
-            initialAnswers: initial,
-            onSubmit: (value) => Navigator.pop(ctx, value),
+          child: SingleChildScrollView(
+            child: AskUserPanel(
+              questionnaire: q,
+              initialAnswers: initial,
+              onSubmit: (value) => Navigator.pop(ctx, value),
+            ),
           ),
         );
       },
@@ -1144,6 +1150,7 @@ class _AgentScreenState extends State<AgentScreen> with WidgetsBindingObserver {
       mode: widget.mode,
       items: _items,
       running: _running,
+      subAgentCount: _service?.runningSubAgentCount ?? 0,
       provider: widget.provider,
       workspaceId: widget.workspace.workspaceId,
       scrollController: _scrollCtrl,
@@ -1203,7 +1210,6 @@ class _AgentScreenState extends State<AgentScreen> with WidgetsBindingObserver {
         workspaceTitle: widget.title,
         wide: wide,
         running: _running,
-        backgroundJobCount: _service?.runningBackgroundJobCount ?? 0,
         onOpenNavigation: () => _scaffoldKey.currentState?.openDrawer(),
         onOpenSettings: () => unawaited(_openSettings()),
       ),

@@ -47,9 +47,11 @@ class AgentChatPane extends StatelessWidget {
     required this.onDragEntered,
     required this.onDragExited,
     required this.onDropDone,
+    this.subAgentCount = 0,
   });
 
   final String? status;
+  final int subAgentCount;
   final bool hasProject;
   final WorkspaceMode mode;
   final List<AgentChatItem> items;
@@ -92,6 +94,13 @@ class AgentChatPane extends StatelessWidget {
         children: [
           Column(
             children: [
+              if (subAgentCount > 0)
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(12, 8, 12, 4),
+                  child: Center(
+                    child: SubAgentBackgroundCapsule(count: subAgentCount),
+                  ),
+                ),
               if (status != null)
                 Padding(
                   padding: const EdgeInsets.fromLTRB(12, 0, 12, 8),
@@ -125,13 +134,6 @@ class AgentChatPane extends StatelessWidget {
                       constraints: const BoxConstraints(maxWidth: 840),
                       child: Column(
                         children: [
-                          if (pendingAskUser != null) ...[
-                            AskUserPanel(
-                              questionnaire: pendingAskUser!.questionnaire,
-                              onSubmit: onAskUserSubmit,
-                            ),
-                            const SizedBox(height: 8),
-                          ],
                           AgentComposer(
                             controller: inputController,
                             focusNode: inputFocus,
@@ -164,20 +166,49 @@ class AgentChatPane extends StatelessWidget {
     );
   }
 
+  int? get _pendingAskUserIndex {
+    if (pendingAskUser == null) return null;
+    for (var i = items.length - 1; i >= 0; i--) {
+      final item = items[i];
+      if (item.kind == AgentChatKind.tool &&
+          item.toolName == kAskUserToolName &&
+          (item.toolResult == null || item.toolResult!.isEmpty)) {
+        return i;
+      }
+    }
+    return null;
+  }
+
+  Widget _buildAskUserPanel() {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 6),
+      child: AskUserPanel(
+        key: ObjectKey(pendingAskUser),
+        questionnaire: pendingAskUser!.questionnaire,
+        onSubmit: onAskUserSubmit,
+      ),
+    );
+  }
+
   Widget _buildTranscript() {
+    final pendingIndex = _pendingAskUserIndex;
+    final fallbackPanel = pendingAskUser != null && pendingIndex == null;
     return Align(
       alignment: Alignment.topCenter,
       child: ConstrainedBox(
         constraints: const BoxConstraints(maxWidth: 840),
         child: !hasProject
             ? AgentEmptyProject(onCreate: onCreateProject)
-            : items.isEmpty
+            : items.isEmpty && !fallbackPanel
             ? AgentEmptyChat(mode: mode, onPrompt: onPrompt)
             : ListView.builder(
                 controller: scrollController,
                 padding: const EdgeInsets.fromLTRB(16, 16, 16, 24),
-                itemCount: items.length,
+                itemCount: items.length + (fallbackPanel ? 1 : 0),
                 itemBuilder: (context, index) {
+                  if (index >= items.length) {
+                    return _buildAskUserPanel();
+                  }
                   final item = items[index];
                   return KeyedSubtree(
                     key: agentChatItemKey(item, index),
@@ -186,6 +217,9 @@ class AgentChatPane extends StatelessWidget {
                       running: running,
                       provider: provider,
                       workspaceId: workspaceId,
+                      interactiveAskUser: index == pendingIndex,
+                      pendingAskUser: pendingAskUser,
+                      onAskUserSubmit: onAskUserSubmit,
                       onCopy:
                           item.kind == AgentChatKind.user ||
                               item.kind == AgentChatKind.assistant

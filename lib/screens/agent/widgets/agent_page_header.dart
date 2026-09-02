@@ -9,7 +9,6 @@ class AgentPageHeader extends StatelessWidget implements PreferredSizeWidget {
     required this.workspaceTitle,
     required this.wide,
     required this.running,
-    required this.backgroundJobCount,
     required this.onOpenNavigation,
     required this.onOpenSettings,
   });
@@ -20,7 +19,6 @@ class AgentPageHeader extends StatelessWidget implements PreferredSizeWidget {
   final String workspaceTitle;
   final bool wide;
   final bool running;
-  final int backgroundJobCount;
   final VoidCallback onOpenNavigation;
   final VoidCallback onOpenSettings;
 
@@ -65,19 +63,9 @@ class AgentPageHeader extends StatelessWidget implements PreferredSizeWidget {
           Padding(
             padding: const EdgeInsets.only(right: 4),
             child: Chip(
-              label: Text(
-                running
-                    ? '运行中'
-                    : backgroundJobCount > 0
-                    ? '后台 $backgroundJobCount'
-                    : '已连接',
-              ),
+              label: Text(running ? '运行中' : '已连接'),
               avatar: Icon(
-                running
-                    ? Icons.sync
-                    : backgroundJobCount > 0
-                    ? Icons.hourglass_top_rounded
-                    : Icons.check_circle,
+                running ? Icons.sync : Icons.check_circle,
                 size: 16,
                 color: scheme.primary,
               ),

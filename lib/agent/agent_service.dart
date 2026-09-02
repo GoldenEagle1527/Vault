@@ -18,6 +18,7 @@ import 'package:vault/agent/project_store.dart';
 import 'package:vault/agent/site_gateway.dart';
 import 'package:vault/agent/ask_user.dart';
 import 'package:vault/agent/present_file.dart';
+import 'package:vault/agent/sub_agent_display.dart';
 import 'package:vault/agent/conversation_state.dart';
 import 'package:vault/agent/project_checkpoint.dart';
 import 'package:vault/agent/tools/ask_user_tool.dart';
@@ -195,6 +196,13 @@ class AgentService {
   /// Tools still running after the agent loop released them.
   int get runningBackgroundJobCount =>
       _agent?.backgroundJobs.runningJobs.length ?? 0;
+
+  /// [delegate_task] jobs still running after the agent loop released them.
+  int get runningSubAgentCount =>
+      _agent?.backgroundJobs.runningJobs
+          .where((job) => isSubAgentTool(job.toolName))
+          .length ??
+      0;
 
   String? get projectPath => _projectPath;
 
