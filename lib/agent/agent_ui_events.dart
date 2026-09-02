@@ -22,14 +22,16 @@ class AgentUiUserMessage extends AgentUiEvent {
 }
 
 class AgentUiAssistantDelta extends AgentUiEvent {
-  const AgentUiAssistantDelta(this.text);
+  const AgentUiAssistantDelta(this.text, {this.thought});
 
   final String text;
+  final String? thought;
 }
 
 class AgentUiAssistantFinal extends AgentUiEvent {
   const AgentUiAssistantFinal(
     this.text, {
+    this.thought,
     this.promptTokens,
     this.completionTokens,
     this.totalTokens,
@@ -38,6 +40,7 @@ class AgentUiAssistantFinal extends AgentUiEvent {
   });
 
   final String text;
+  final String? thought;
   final int? promptTokens;
   final int? completionTokens;
   final int? totalTokens;

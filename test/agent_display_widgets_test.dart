@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:vault/agent/agent_chat_model.dart';
+import 'package:vault/agent/agent_chat_transcript.dart';
+import 'package:vault/agent/ask_user.dart';
 import 'package:vault/agent/chat_attachment.dart';
 import 'package:vault/agent/present_file.dart';
 import 'package:vault/sandbox/guest_media_kind.dart';
@@ -39,11 +41,98 @@ void main() {
       ),
     );
 
-    expect(find.text('Agent 正在思考…'), findsOneWidget);
+    expect(find.text('思考中'), findsOneWidget);
+    expect(find.text('正在思考…'), findsNothing);
+    await tester.tap(find.text('思考中'));
+    await tester.pump();
+    expect(find.text('正在思考…'), findsOneWidget);
     expect(find.text('Ran echo ok'), findsOneWidget);
     await tester.tap(find.text('Ran echo ok'));
     await tester.pump();
     expect(find.textContaining('ok'), findsWidgets);
+  });
+
+  test(
+    'groupAgentTranscript folds consecutive tools and keeps ask_user out',
+    () {
+      final items = [
+        AgentChatItem(kind: AgentChatKind.user, text: '做一下'),
+        AgentChatItem.tool(name: 'shell', arguments: '{"command":"ls"}'),
+        AgentChatItem.tool(name: 'read_file', arguments: '{"path":"a"}'),
+        AgentChatItem.tool(name: 'shell', arguments: '{"command":"pwd"}'),
+        AgentChatItem.tool(name: kAskUserToolName, arguments: '{}'),
+        AgentChatItem(kind: AgentChatKind.assistant, text: '好了'),
+      ];
+      final spans = groupAgentTranscript(items);
+      expect(spans, hasLength(4));
+      expect(spans[0], isA<AgentTranscriptSingle>());
+      expect((spans[1] as AgentTranscriptToolGroup).count, 3);
+      expect((spans[2] as AgentTranscriptSingle).index, 4);
+      expect((spans[3] as AgentTranscriptSingle).index, 5);
+      expect(agentToolGroupLabel(count: 3, running: false), '执行了 3 个工具');
+    },
+  );
+
+  testWidgets('tool group stays collapsed until opened', (tester) async {
+    final tools = [
+      AgentChatItem.tool(
+        name: 'shell',
+        arguments: '{"command":"git status"}',
+        result: 'ok',
+        callId: 'a',
+      ),
+      AgentChatItem.tool(
+        name: 'shell',
+        arguments: '{"command":"git diff"}',
+        result: 'ok',
+        callId: 'b',
+      ),
+      AgentChatItem.tool(
+        name: 'shell',
+        arguments: '{"command":"git log"}',
+        result: 'ok',
+        callId: 'c',
+      ),
+    ];
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(body: AgentToolCallGroup(items: tools)),
+      ),
+    );
+
+    expect(find.text('执行了 3 个工具'), findsOneWidget);
+    expect(find.text('Ran git status'), findsNothing);
+    await tester.tap(find.text('执行了 3 个工具'));
+    await tester.pumpAndSettle();
+    expect(find.text('Ran git status'), findsOneWidget);
+    expect(find.text('Ran git diff'), findsOneWidget);
+    expect(find.text('Ran git log'), findsOneWidget);
+  });
+
+  testWidgets('thinking row stays collapsed and reveals detail on tap', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: AgentChatBubble(
+            item: AgentChatItem(
+              kind: AgentChatKind.assistant,
+              text: '结论',
+              thinkingText: '先核对工作区再提交',
+              duration: const Duration(seconds: 4),
+            ),
+          ),
+        ),
+      ),
+    );
+
+    expect(find.textContaining('思考'), findsOneWidget);
+    expect(find.text('先核对工作区再提交'), findsNothing);
+    await tester.tap(find.textContaining('思考'));
+    await tester.pumpAndSettle();
+    expect(find.text('先核对工作区再提交'), findsOneWidget);
+    expect(find.text('结论'), findsOneWidget);
   });
 
   testWidgets('delegate_task bubble shows 启动子Agent instead of raw args', (
@@ -51,8 +140,7 @@ void main() {
   ) async {
     final tool = AgentChatItem.tool(
       name: kDelegateTaskToolName,
-      arguments:
-          '{"assignee":"clone","task_description":"请帮我写一个电影感黑洞壁纸网页"}',
+      arguments: '{"assignee":"clone","task_description":"请帮我写一个电影感黑洞壁纸网页"}',
       backgrounded: true,
       callId: 'sub-1',
     );
@@ -159,7 +247,9 @@ void main() {
     expect(openedTerminal, 'project-id');
   });
 
-  testWidgets('navigation panel opens site logs when registered', (tester) async {
+  testWidgets('navigation panel opens site logs when registered', (
+    tester,
+  ) async {
     final now = DateTime.utc(2026);
     final project = ProjectInfo(
       path: 'project-id',

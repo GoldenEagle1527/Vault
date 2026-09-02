@@ -36,6 +36,7 @@ class AgentChatEventApplier {
         );
       case AgentUiAssistantFinal(
         :final text,
+        :final thought,
         :final promptTokens,
         :final completionTokens,
         :final totalTokens,
@@ -46,6 +47,7 @@ class AgentChatEventApplier {
           AgentChatItem(
             kind: AgentChatKind.assistant,
             text: text,
+            thinkingText: thought,
             promptTokens: promptTokens,
             completionTokens: completionTokens,
             totalTokens: totalTokens,
@@ -53,8 +55,14 @@ class AgentChatEventApplier {
             at: at,
           ),
         );
-      case AgentUiAssistantDelta(:final text):
-        items.add(AgentChatItem(kind: AgentChatKind.assistant, text: text));
+      case AgentUiAssistantDelta(:final text, :final thought):
+        items.add(
+          AgentChatItem(
+            kind: AgentChatKind.assistant,
+            text: text,
+            thinkingText: thought,
+          ),
+        );
       case AgentUiModelUsage(
         :final promptTokens,
         :final completionTokens,
@@ -155,7 +163,10 @@ class AgentChatEventApplier {
             text: text,
           ),
         );
-      case AgentUiAssistantDelta(:final text):
+      case AgentUiAssistantDelta(:final text, :final thought):
+        if (thought != null && thought.isNotEmpty) {
+          _rememberThought(thought, replace: false);
+        }
         if (!AgentService.isVisibleAssistantText(text)) break;
         if (items.isNotEmpty && items.last.kind == AgentChatKind.assistant) {
           if (items.last.thinkingPlaceholder) {
@@ -170,16 +181,19 @@ class AgentChatEventApplier {
         }
       case AgentUiAssistantFinal(
         :final text,
+        :final thought,
         :final promptTokens,
         :final completionTokens,
         :final totalTokens,
         :final duration,
         :final at,
       ):
+        if (thought != null && thought.isNotEmpty) {
+          _rememberThought(thought, replace: true);
+        }
         if (!AgentService.isVisibleAssistantText(text)) {
-          if (items.isNotEmpty &&
-              items.last.kind == AgentChatKind.assistant &&
-              !items.last.thinkingPlaceholder) {
+          if (items.isNotEmpty && items.last.kind == AgentChatKind.assistant) {
+            _finalizeThinkingItem(items.last);
             _mergeUsageInto(
               items.last,
               promptTokens: promptTokens,
@@ -209,6 +223,7 @@ class AgentChatEventApplier {
             AgentChatItem(
               kind: AgentChatKind.assistant,
               text: text,
+              thinkingText: thought,
               promptTokens: promptTokens,
               completionTokens: completionTokens,
               totalTokens: totalTokens,
@@ -323,6 +338,10 @@ class AgentChatEventApplier {
     while (items.isNotEmpty &&
         items.last.kind == AgentChatKind.assistant &&
         items.last.thinkingPlaceholder) {
+      if (_hasThinkingText(items.last)) {
+        _finalizeThinkingItem(items.last);
+        break;
+      }
       items.removeLast();
     }
   }
@@ -331,8 +350,45 @@ class AgentChatEventApplier {
     while (items.isNotEmpty &&
         items.last.kind == AgentChatKind.assistant &&
         (items.last.thinkingPlaceholder || items.last.text.trim().isEmpty)) {
+      if (_hasThinkingText(items.last)) {
+        _finalizeThinkingItem(items.last);
+        break;
+      }
       items.removeLast();
     }
+  }
+
+  bool _hasThinkingText(AgentChatItem item) =>
+      (item.thinkingText ?? '').trim().isNotEmpty;
+
+  void _finalizeThinkingItem(AgentChatItem item) {
+    item.thinkingPlaceholder = false;
+    if (item.text == 'Agent 正在思考…') item.text = '';
+  }
+
+  void _rememberThought(String thought, {required bool replace}) {
+    if (items.isNotEmpty && items.last.kind == AgentChatKind.assistant) {
+      final last = items.last;
+      final openDraft =
+          last.thinkingPlaceholder ||
+          last.text.trim().isEmpty ||
+          last.text == 'Agent 正在思考…';
+      if (openDraft) {
+        final current = last.thinkingText ?? '';
+        last.thinkingText = replace || current.isEmpty
+            ? thought
+            : '$current$thought';
+        return;
+      }
+    }
+    items.add(
+      AgentChatItem(
+        kind: AgentChatKind.assistant,
+        text: '',
+        thinkingPlaceholder: true,
+        thinkingText: thought,
+      ),
+    );
   }
 
   void _addUserOrSystemNotice(
@@ -402,9 +458,8 @@ class AgentChatEventApplier {
     if (promptTokens > 0) _attachPromptTokensToLastUser(promptTokens);
     for (var i = items.length - 1; i >= 0; i--) {
       final item = items[i];
-      if (item.kind != AgentChatKind.assistant || item.thinkingPlaceholder) {
-        continue;
-      }
+      if (item.kind != AgentChatKind.assistant) continue;
+      if (item.thinkingPlaceholder && !_hasThinkingText(item)) continue;
       _mergeUsageInto(
         item,
         promptTokens: promptTokens,

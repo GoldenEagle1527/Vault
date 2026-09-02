@@ -4,6 +4,7 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
 import 'package:vault/agent/agent_chat_model.dart';
+import 'package:vault/agent/agent_chat_transcript.dart';
 import 'package:vault/agent/ask_user.dart';
 import 'package:vault/agent/chat_attachment.dart';
 import 'package:vault/agent/present_file.dart';
@@ -235,8 +236,11 @@ class AgentChatBubble extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
-    if (item.thinkingPlaceholder) {
-      return AgentThinkingRow(label: item.text);
+    final thinking = _thinkingRow();
+    if (item.kind == AgentChatKind.assistant &&
+        thinking != null &&
+        !agentChatItemHasAssistantBody(item)) {
+      return thinking;
     }
     if (item.kind == AgentChatKind.assistant && item.text.trim().isEmpty) {
       return const SizedBox.shrink();
@@ -391,6 +395,7 @@ class AgentChatBubble extends StatelessWidget {
       child: Column(
         crossAxisAlignment: alignment,
         children: [
+          if (thinking != null) thinking,
           ConstrainedBox(
             constraints: BoxConstraints(
               maxWidth: MediaQuery.sizeOf(context).width * 0.88,
@@ -431,6 +436,15 @@ class AgentChatBubble extends StatelessWidget {
           ?branchSwitcher,
         ],
       ),
+    );
+  }
+
+  Widget? _thinkingRow() {
+    if (!agentChatItemHasThinking(item)) return null;
+    return AgentThinkingRow(
+      label: agentThinkingLabel(item),
+      detail: item.thinkingText,
+      running: item.thinkingPlaceholder,
     );
   }
 }
@@ -761,44 +775,223 @@ class _AgentToolCallCardState extends State<AgentToolCallCard> {
   }
 }
 
-class AgentThinkingRow extends StatelessWidget {
-  const AgentThinkingRow({super.key, required this.label});
+class AgentThinkingRow extends StatefulWidget {
+  const AgentThinkingRow({
+    super.key,
+    required this.label,
+    this.detail,
+    this.running = false,
+  });
 
   final String label;
+  final String? detail;
+  final bool running;
+
+  @override
+  State<AgentThinkingRow> createState() => _AgentThinkingRowState();
+}
+
+class _AgentThinkingRowState extends State<AgentThinkingRow> {
+  bool _expanded = false;
 
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
+    final detail = widget.detail?.trim() ?? '';
+    final duration = MediaQuery.disableAnimationsOf(context)
+        ? Duration.zero
+        : const Duration(milliseconds: 200);
     return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 6, horizontal: 4),
-      child: Row(
+      padding: const EdgeInsets.symmetric(vertical: 2, horizontal: 4),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          Icon(
-            Icons.keyboard_arrow_right,
-            size: 18,
-            color: scheme.onSurfaceVariant,
-          ),
-          const SizedBox(width: 4),
-          SizedBox(
-            width: 12,
-            height: 12,
-            child: CircularProgressIndicator(
-              strokeWidth: 1.5,
-              color: scheme.primary,
-            ),
-          ),
-          const SizedBox(width: 8),
-          Expanded(
-            child: Text(
-              label,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                color: scheme.onSurfaceVariant,
-                fontStyle: FontStyle.italic,
-                fontWeight: FontWeight.w500,
+          InkWell(
+            onTap: () => setState(() => _expanded = !_expanded),
+            borderRadius: BorderRadius.circular(8),
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(minHeight: 44),
+              child: Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 4),
+                child: Row(
+                  children: [
+                    if (widget.running) ...[
+                      SizedBox(
+                        width: 12,
+                        height: 12,
+                        child: CircularProgressIndicator(
+                          strokeWidth: 1.5,
+                          color: scheme.primary,
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                    ],
+                    Expanded(
+                      child: Text.rich(
+                        TextSpan(
+                          children: [
+                            TextSpan(
+                              text: widget.label.split(' ').first,
+                              style: Theme.of(context).textTheme.bodyMedium
+                                  ?.copyWith(
+                                    color: scheme.onSurface,
+                                    fontWeight: FontWeight.w600,
+                                  ),
+                            ),
+                            if (widget.label.contains(' '))
+                              TextSpan(
+                                text: widget.label.substring(
+                                  widget.label.indexOf(' '),
+                                ),
+                                style: Theme.of(context).textTheme.bodyMedium
+                                    ?.copyWith(color: scheme.onSurfaceVariant),
+                              ),
+                          ],
+                        ),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ),
+                    Icon(
+                      _expanded
+                          ? Icons.keyboard_arrow_down
+                          : Icons.keyboard_arrow_right,
+                      size: 18,
+                      color: scheme.onSurfaceVariant,
+                    ),
+                  ],
+                ),
               ),
             ),
+          ),
+          AnimatedSize(
+            duration: duration,
+            curve: Curves.easeOut,
+            alignment: Alignment.topCenter,
+            child: _expanded
+                ? Padding(
+                    padding: const EdgeInsets.fromLTRB(4, 0, 4, 8),
+                    child: SelectableText(
+                      detail.isEmpty
+                          ? (widget.running ? '正在思考…' : '没有思考内容')
+                          : detail,
+                      style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                        color: scheme.onSurfaceVariant,
+                        height: 1.45,
+                      ),
+                    ),
+                  )
+                : const SizedBox(width: double.infinity),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class AgentToolCallGroup extends StatefulWidget {
+  const AgentToolCallGroup({super.key, required this.items});
+
+  final List<AgentChatItem> items;
+
+  @override
+  State<AgentToolCallGroup> createState() => _AgentToolCallGroupState();
+}
+
+class _AgentToolCallGroupState extends State<AgentToolCallGroup> {
+  late bool _expanded;
+
+  bool get _anyRunning => widget.items.any(
+    (item) => item.toolResult == null || item.toolBackgrounded,
+  );
+
+  @override
+  void initState() {
+    super.initState();
+    _expanded = _anyRunning;
+  }
+
+  @override
+  void didUpdateWidget(covariant AgentToolCallGroup oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (_anyRunning && !_expanded) {
+      setState(() => _expanded = true);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final running = _anyRunning;
+    final label = agentToolGroupLabel(
+      count: widget.items.length,
+      running: running,
+    );
+    final duration = MediaQuery.disableAnimationsOf(context)
+        ? Duration.zero
+        : const Duration(milliseconds: 200);
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 2),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          InkWell(
+            onTap: () => setState(() => _expanded = !_expanded),
+            borderRadius: BorderRadius.circular(8),
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(minHeight: 44),
+              child: Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 4),
+                child: Row(
+                  children: [
+                    if (running) ...[
+                      SizedBox(
+                        width: 12,
+                        height: 12,
+                        child: CircularProgressIndicator(
+                          strokeWidth: 1.5,
+                          color: scheme.primary,
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                    ],
+                    Expanded(
+                      child: Text(
+                        label,
+                        style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                          color: scheme.onSurfaceVariant,
+                          fontWeight: FontWeight.w500,
+                        ),
+                      ),
+                    ),
+                    Icon(
+                      _expanded
+                          ? Icons.keyboard_arrow_down
+                          : Icons.keyboard_arrow_right,
+                      size: 18,
+                      color: scheme.onSurfaceVariant,
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+          AnimatedSize(
+            duration: duration,
+            curve: Curves.easeOut,
+            alignment: Alignment.topCenter,
+            child: _expanded
+                ? Padding(
+                    padding: const EdgeInsets.only(left: 16),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        for (final item in widget.items)
+                          AgentToolCallCard(item: item),
+                      ],
+                    ),
+                  )
+                : const SizedBox(width: double.infinity),
           ),
         ],
       ),

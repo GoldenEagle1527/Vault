@@ -25,10 +25,18 @@ class AgentStreamMapper {
   /// paragraph again once tools have cleared [buffer].
   bool _visibleTextEmitted = false;
 
+  /// True after this model call already showed thinking/reasoning deltas.
+  bool _thoughtEmitted = false;
+
   Stream<AgentUiEvent> map(StreamingEvent event, StringBuffer buffer) async* {
     switch (event.eventType) {
       case StreamingEventType.modelChunkMessage:
         final chunk = event.data as ModelMessage;
+        final thought = chunk.thought;
+        if (thought != null && thought.isNotEmpty) {
+          _thoughtEmitted = true;
+          yield AgentUiAssistantDelta('', thought: thought);
+        }
         final text = chunk.textOutput;
         if (isVisibleAssistantText(text)) {
           buffer.write(text);
@@ -54,6 +62,11 @@ class AgentStreamMapper {
         }
       case StreamingEventType.fullModelMessage:
         final full = event.data as ModelMessage;
+        final thought = full.thought;
+        if (thought != null && thought.isNotEmpty && !_thoughtEmitted) {
+          _thoughtEmitted = true;
+          yield AgentUiAssistantDelta('', thought: thought);
+        }
         final text = full.textOutput;
         if (isVisibleAssistantText(text) &&
             buffer.isEmpty &&
@@ -162,11 +175,13 @@ class AgentStreamMapper {
       case StreamingEventType.modelRetrying:
         buffer.clear();
         _visibleTextEmitted = false;
+        _thoughtEmitted = false;
         _modelCallStartedAt = DateTime.now();
         yield const AgentUiDiscardDraftAssistant();
         yield const AgentUiStatus('正在调用模型…');
       case StreamingEventType.beforeCallModel:
         _visibleTextEmitted = false;
+        _thoughtEmitted = false;
         _modelCallStartedAt = DateTime.now();
         yield const AgentUiStatus('正在调用模型…');
     }

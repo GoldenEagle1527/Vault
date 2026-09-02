@@ -9,6 +9,7 @@ import 'package:vault/agent/conversation_store.dart';
 import 'package:vault/agent/project_store.dart';
 import 'package:vault/agent/vault_meta_db.dart';
 import 'package:vault/widgets/ask_user_panel.dart';
+import 'package:vault/widgets/ask_user_transcript.dart';
 import 'package:vault_agent_core/vault_agent_core.dart';
 
 void main() {
@@ -159,6 +160,31 @@ void main() {
     expect(find.byIcon(Icons.radio_button_checked), findsWidgets);
     expect(find.text('给同事用'), findsOneWidget);
     expect(find.text('选好了'), findsOneWidget);
+  });
+
+  testWidgets('AskUserTranscript shows answers without raw JSON toggle', (
+    tester,
+  ) async {
+    const args =
+        '{"questions":[{"id":"who","prompt":"给谁用？","options":[{"id":"self","label":"自己"},{"id":"others","label":"别人"}]}]}';
+    final result = jsonEncode(
+      AskUserSubmission.ok(const [
+        AskUserAnswer(id: 'who', selectedIds: ['self']),
+      ]).toToolResult(),
+    );
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: AskUserTranscript(arguments: args, result: result),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(find.text('回答'), findsOneWidget);
+    expect(find.text('给谁用？'), findsOneWidget);
+    expect(find.text('自己'), findsOneWidget);
+    expect(find.text('原始数据'), findsNothing);
+    expect(find.text(args), findsNothing);
   });
 
   test('fork keeps ask_user call and replaces the tool result', () async {

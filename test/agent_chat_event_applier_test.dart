@@ -22,6 +22,40 @@ void main() {
     expect(applier.items.single.thinkingPlaceholder, isFalse);
   });
 
+  test('live thought deltas stay on the thinking item when tools start', () {
+    final applier = AgentChatEventApplier();
+
+    applier.applyLive(const AgentUiStatus('正在思考…'));
+    applier.applyLive(const AgentUiAssistantDelta('', thought: '先看仓库'));
+    applier.applyLive(const AgentUiAssistantDelta('', thought: '再提交'));
+    applier.applyLive(
+      const AgentUiToolCall(
+        name: 'shell',
+        arguments: '{"command":"git status"}',
+        callId: 'c1',
+      ),
+    );
+
+    expect(applier.items, hasLength(2));
+    expect(applier.items.first.thinkingText, '先看仓库再提交');
+    expect(applier.items.first.thinkingPlaceholder, isFalse);
+    expect(applier.items.last.kind, AgentChatKind.tool);
+  });
+
+  test('restored assistant final keeps thought for collapsed display', () {
+    final applier = AgentChatEventApplier();
+    applier.applyRestored(
+      const AgentUiAssistantFinal(
+        '可以提交',
+        thought: '先核对 diff',
+        duration: Duration(seconds: 4),
+      ),
+    );
+    expect(applier.items.single.thinkingText, '先核对 diff');
+    expect(applier.items.single.text, '可以提交');
+    expect(applier.items.single.duration, const Duration(seconds: 4));
+  });
+
   test(
     'tool result is attached by call id and emits project refresh effect',
     () {

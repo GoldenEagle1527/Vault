@@ -45,6 +45,17 @@ void main() {
     expect((events[4] as AgentUiAssistantFinal).text, '完成了');
   });
 
+  test('uiEventsFromHistory maps model thought onto assistant final', () {
+    final events = AgentService.uiEventsFromHistory([
+      ModelMessage(model: 'm', thought: '先核对 diff', textOutput: '可以提交'),
+    ]);
+
+    expect(events, hasLength(1));
+    final assistant = events.single as AgentUiAssistantFinal;
+    expect(assistant.thought, '先核对 diff');
+    expect(assistant.text, '可以提交');
+  });
+
   test('uiEventsFromHistory maps usage onto assistant and prior user', () {
     const t0 = 1 * 1000 * 1000;
     const t1 = 3 * 1000 * 1000;

@@ -2,6 +2,7 @@ import 'package:desktop_drop/desktop_drop.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:vault/agent/agent_chat_model.dart';
+import 'package:vault/agent/agent_chat_transcript.dart';
 import 'package:vault/agent/agent_inbox.dart';
 import 'package:vault/agent/ask_user.dart';
 import 'package:vault/agent/chat_input_keys.dart';
@@ -193,6 +194,7 @@ class AgentChatPane extends StatelessWidget {
   Widget _buildTranscript() {
     final pendingIndex = _pendingAskUserIndex;
     final fallbackPanel = pendingAskUser != null && pendingIndex == null;
+    final spans = groupAgentTranscript(items);
     return Align(
       alignment: Alignment.topCenter,
       child: ConstrainedBox(
@@ -204,42 +206,58 @@ class AgentChatPane extends StatelessWidget {
             : ListView.builder(
                 controller: scrollController,
                 padding: const EdgeInsets.fromLTRB(16, 16, 16, 24),
-                itemCount: items.length + (fallbackPanel ? 1 : 0),
-                itemBuilder: (context, index) {
-                  if (index >= items.length) {
+                itemCount: spans.length + (fallbackPanel ? 1 : 0),
+                itemBuilder: (context, rowIndex) {
+                  if (rowIndex >= spans.length) {
                     return _buildAskUserPanel();
                   }
-                  final item = items[index];
-                  return KeyedSubtree(
-                    key: agentChatItemKey(item, index),
-                    child: AgentChatBubble(
-                      item: item,
-                      running: running,
-                      provider: provider,
-                      workspaceId: workspaceId,
-                      interactiveAskUser: index == pendingIndex,
-                      pendingAskUser: pendingAskUser,
-                      onAskUserSubmit: onAskUserSubmit,
-                      onCopy:
-                          item.kind == AgentChatKind.user ||
-                              item.kind == AgentChatKind.assistant
-                          ? () => onCopy(item)
-                          : null,
-                      onEdit:
-                          item.kind == AgentChatKind.user &&
-                              item.historyIndex != null
-                          ? () => onEdit(item)
-                          : null,
-                      onReselectAskUser:
-                          item.kind == AgentChatKind.tool &&
-                              item.toolName == kAskUserToolName
-                          ? () => onReselectAskUser(item)
-                          : null,
-                      branchSwitcher: branchSwitcherBuilder(item.historyIndex),
+                  return switch (spans[rowIndex]) {
+                    AgentTranscriptSingle(:final index) => _bubbleFor(
+                      items[index],
+                      index,
+                      pendingIndex,
                     ),
-                  );
+                    AgentTranscriptToolGroup(
+                      :final start,
+                      :final endExclusive,
+                    ) =>
+                      AgentToolCallGroup(
+                        key: ValueKey(
+                          'tool-group-${items[start].toolCallId ?? start}',
+                        ),
+                        items: items.sublist(start, endExclusive),
+                      ),
+                  };
                 },
               ),
+      ),
+    );
+  }
+
+  Widget _bubbleFor(AgentChatItem item, int index, int? pendingIndex) {
+    return KeyedSubtree(
+      key: agentChatItemKey(item, index),
+      child: AgentChatBubble(
+        item: item,
+        running: running,
+        provider: provider,
+        workspaceId: workspaceId,
+        interactiveAskUser: index == pendingIndex,
+        pendingAskUser: pendingAskUser,
+        onAskUserSubmit: onAskUserSubmit,
+        onCopy:
+            item.kind == AgentChatKind.user ||
+                item.kind == AgentChatKind.assistant
+            ? () => onCopy(item)
+            : null,
+        onEdit: item.kind == AgentChatKind.user && item.historyIndex != null
+            ? () => onEdit(item)
+            : null,
+        onReselectAskUser:
+            item.kind == AgentChatKind.tool && item.toolName == kAskUserToolName
+            ? () => onReselectAskUser(item)
+            : null,
+        branchSwitcher: branchSwitcherBuilder(item.historyIndex),
       ),
     );
   }

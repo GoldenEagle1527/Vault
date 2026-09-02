@@ -76,10 +76,14 @@ void _mapModelMessage(
   final at = DateTime.fromMicrosecondsSinceEpoch(message.timestamp);
   final duration = _durationBetween(previous, message);
   final text = message.textOutput?.trim();
-  if (text != null && text.isNotEmpty) {
+  final thought = message.thought?.trim();
+  final hasText = text != null && text.isNotEmpty;
+  final hasThought = thought != null && thought.isNotEmpty;
+  if (hasText || hasThought) {
     out.add(
       AgentUiAssistantFinal(
-        text,
+        text ?? '',
+        thought: hasThought ? thought : null,
         promptTokens: usage?.promptTokens,
         completionTokens: usage?.completionTokens,
         totalTokens: usage == null
