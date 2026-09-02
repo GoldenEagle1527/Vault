@@ -39,6 +39,20 @@ void main() {
     ];
 
     expect(events.map(classifyAgentScreenEvent), AgentScreenEventKind.values);
+    expect(
+      coalesceAgentChatUiFlush(const AgentUiAssistantDelta('delta')),
+      isTrue,
+    );
+    expect(
+      coalesceAgentChatUiFlush(const AgentUiAssistantFinal('final')),
+      isFalse,
+    );
+    expect(
+      coalesceAgentChatUiFlush(
+        const AgentUiToolCall(name: 't', arguments: '{}'),
+      ),
+      isFalse,
+    );
   });
 
   test('AgentScreen status mapping preserves placeholder behavior', () {

@@ -240,6 +240,10 @@ class AgentChatBubble extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    return RepaintBoundary(child: _buildContent(context));
+  }
+
+  Widget _buildContent(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
     final thinking = _thinkingRow();
     if (item.kind == AgentChatKind.assistant &&
@@ -368,7 +372,12 @@ class AgentChatBubble extends StatelessWidget {
               ],
             ),
           ),
-        if (showText) _ChatMarkdown(data: item.text, color: foreground),
+        if (showText)
+          AgentChatMessageText(
+            data: item.text,
+            color: foreground,
+            plain: agentChatItemRendersPlainText(item),
+          ),
       ],
     );
     final bubble = solid
@@ -573,42 +582,81 @@ class _TokenLabel extends StatelessWidget {
   }
 }
 
-class _ChatMarkdown extends StatelessWidget {
-  const _ChatMarkdown({required this.data, required this.color});
+class AgentChatMessageText extends StatefulWidget {
+  const AgentChatMessageText({
+    super.key,
+    required this.data,
+    required this.color,
+    this.plain = false,
+  });
 
   final String data;
   final Color color;
+  final bool plain;
 
   @override
-  Widget build(BuildContext context) {
+  State<AgentChatMessageText> createState() => _AgentChatMessageTextState();
+}
+
+class _AgentChatMessageTextState extends State<AgentChatMessageText> {
+  Widget? _child;
+  ThemeData? _theme;
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
     final theme = Theme.of(context);
+    if (_child == null || !identical(_theme, theme)) {
+      _rebuildChild(theme);
+    }
+  }
+
+  @override
+  void didUpdateWidget(covariant AgentChatMessageText oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.data != widget.data ||
+        oldWidget.color != widget.color ||
+        oldWidget.plain != widget.plain) {
+      _rebuildChild(Theme.of(context));
+    }
+  }
+
+  void _rebuildChild(ThemeData theme) {
+    _theme = theme;
     final base = theme.textTheme;
-    final codeBackground = color.withValues(alpha: 0.14);
-    return MarkdownBody(
-      data: data,
+    if (widget.plain) {
+      _child = SelectableText(
+        widget.data,
+        style: base.bodyMedium?.copyWith(color: widget.color, height: 1.35),
+      );
+      return;
+    }
+    final codeBackground = widget.color.withValues(alpha: 0.14);
+    _child = MarkdownBody(
+      data: widget.data,
       selectable: true,
       softLineBreak: true,
       styleSheet: MarkdownStyleSheet.fromTheme(theme).copyWith(
-        p: base.bodyMedium?.copyWith(color: color, height: 1.35),
-        h1: base.titleLarge?.copyWith(color: color),
-        h2: base.titleMedium?.copyWith(color: color),
-        h3: base.titleSmall?.copyWith(color: color),
+        p: base.bodyMedium?.copyWith(color: widget.color, height: 1.35),
+        h1: base.titleLarge?.copyWith(color: widget.color),
+        h2: base.titleMedium?.copyWith(color: widget.color),
+        h3: base.titleSmall?.copyWith(color: widget.color),
         strong: base.bodyMedium?.copyWith(
-          color: color,
+          color: widget.color,
           fontWeight: FontWeight.w700,
           fontVariations: const [FontVariation.weight(700)],
         ),
         em: base.bodyMedium?.copyWith(
-          color: color,
+          color: widget.color,
           fontStyle: FontStyle.italic,
         ),
         a: base.bodyMedium?.copyWith(
-          color: color,
+          color: widget.color,
           decoration: TextDecoration.underline,
         ),
-        listBullet: base.bodyMedium?.copyWith(color: color),
+        listBullet: base.bodyMedium?.copyWith(color: widget.color),
         code: base.bodySmall?.copyWith(
-          color: color,
+          color: widget.color,
           fontFamily: 'monospace',
           backgroundColor: codeBackground,
         ),
@@ -618,16 +666,22 @@ class _ChatMarkdown extends StatelessWidget {
         ),
         codeblockPadding: const EdgeInsets.all(10),
         blockquote: base.bodyMedium?.copyWith(
-          color: color.withValues(alpha: 0.85),
+          color: widget.color.withValues(alpha: 0.85),
         ),
         blockquoteDecoration: BoxDecoration(
           border: Border(
-            left: BorderSide(color: color.withValues(alpha: 0.35), width: 3),
+            left: BorderSide(
+              color: widget.color.withValues(alpha: 0.35),
+              width: 3,
+            ),
           ),
         ),
       ),
     );
   }
+
+  @override
+  Widget build(BuildContext context) => _child!;
 }
 
 class AgentToolCallCard extends StatefulWidget {
@@ -944,71 +998,76 @@ class _AgentToolCallGroupState extends State<AgentToolCallGroup> {
     final duration = MediaQuery.disableAnimationsOf(context)
         ? Duration.zero
         : const Duration(milliseconds: 200);
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 2),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          InkWell(
-            onTap: () => setState(() => _expanded = !_expanded),
-            borderRadius: BorderRadius.circular(8),
-            child: ConstrainedBox(
-              constraints: const BoxConstraints(minHeight: 44),
-              child: Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 4),
-                child: Row(
-                  children: [
-                    if (running) ...[
-                      SizedBox(
-                        width: 12,
-                        height: 12,
-                        child: CircularProgressIndicator(
-                          strokeWidth: 1.5,
-                          color: scheme.primary,
+    return RepaintBoundary(
+      child: Padding(
+        padding: const EdgeInsets.symmetric(vertical: 2),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            InkWell(
+              onTap: () => setState(() => _expanded = !_expanded),
+              borderRadius: BorderRadius.circular(8),
+              child: ConstrainedBox(
+                constraints: const BoxConstraints(minHeight: 44),
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 4),
+                  child: Row(
+                    children: [
+                      if (running) ...[
+                        SizedBox(
+                          width: 12,
+                          height: 12,
+                          child: CircularProgressIndicator(
+                            strokeWidth: 1.5,
+                            color: scheme.primary,
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                      ],
+                      Expanded(
+                        child: Text(
+                          label,
+                          style: Theme.of(context).textTheme.bodyMedium
+                              ?.copyWith(
+                                color: scheme.onSurfaceVariant,
+                                fontWeight: FontWeight.w500,
+                                fontVariations: const [
+                                  FontVariation.weight(500),
+                                ],
+                              ),
                         ),
                       ),
-                      const SizedBox(width: 8),
+                      Icon(
+                        _expanded
+                            ? Icons.keyboard_arrow_down
+                            : Icons.keyboard_arrow_right,
+                        size: 18,
+                        color: scheme.onSurfaceVariant,
+                      ),
                     ],
-                    Expanded(
-                      child: Text(
-                        label,
-                        style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                          color: scheme.onSurfaceVariant,
-                          fontWeight: FontWeight.w500,
-                          fontVariations: const [FontVariation.weight(500)],
-                        ),
-                      ),
-                    ),
-                    Icon(
-                      _expanded
-                          ? Icons.keyboard_arrow_down
-                          : Icons.keyboard_arrow_right,
-                      size: 18,
-                      color: scheme.onSurfaceVariant,
-                    ),
-                  ],
+                  ),
                 ),
               ),
             ),
-          ),
-          AnimatedSize(
-            duration: duration,
-            curve: Curves.easeOut,
-            alignment: Alignment.topCenter,
-            child: _expanded
-                ? Padding(
-                    padding: const EdgeInsets.only(left: 16),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.stretch,
-                      children: [
-                        for (final item in widget.items)
-                          AgentToolCallCard(item: item),
-                      ],
-                    ),
-                  )
-                : const SizedBox(width: double.infinity),
-          ),
-        ],
+            AnimatedSize(
+              duration: duration,
+              curve: Curves.easeOut,
+              alignment: Alignment.topCenter,
+              child: _expanded
+                  ? Padding(
+                      padding: const EdgeInsets.only(left: 16),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                        children: [
+                          for (final item in widget.items)
+                            AgentToolCallCard(item: item),
+                        ],
+                      ),
+                    )
+                  : const SizedBox(width: double.infinity),
+            ),
+          ],
+        ),
       ),
     );
   }

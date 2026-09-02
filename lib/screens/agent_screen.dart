@@ -8,6 +8,8 @@ import 'package:url_launcher/url_launcher.dart';
 import 'package:vault/agent/agent_attachment_coordinator.dart';
 import 'package:vault/agent/agent_chat_event_applier.dart';
 import 'package:vault/agent/agent_chat_model.dart';
+import 'package:vault/agent/agent_chat_ui_scheduler.dart';
+import 'package:vault/agent/agent_screen_policy.dart';
 import 'package:vault/agent/agent_inbox.dart';
 import 'package:vault/agent/agent_navigation_coordinator.dart';
 import 'package:vault/agent/agent_service.dart';
@@ -79,6 +81,7 @@ class _AgentScreenState extends State<AgentScreen> with WidgetsBindingObserver {
   late final FocusNode _inputFocus;
   final _scrollCtrl = ScrollController();
   late final AgentChatEventApplier _chat;
+  late final AgentChatUiScheduler _chatUi;
   late final AgentAttachmentCoordinator _attachments;
   late final AgentSiteController _siteController;
   final AgentNavigationCoordinator _navigationCoordinator =
@@ -100,6 +103,9 @@ class _AgentScreenState extends State<AgentScreen> with WidgetsBindingObserver {
   bool _promptedNewProject = false;
 
   StreamSubscription<AgentUiEvent>? _backgroundUiSub;
+  bool _chatUiScrollJump = false;
+  bool _scrollScheduled = false;
+  bool _scrollUseJump = false;
   AskUserHost? _askUserHost;
   Map<String, bool> get _siteUp => _siteController.siteUp;
   Set<String> get _siteBusy => _siteController.siteBusy;
@@ -145,6 +151,7 @@ class _AgentScreenState extends State<AgentScreen> with WidgetsBindingObserver {
         );
       },
     );
+    _chatUi = AgentChatUiScheduler(onFlush: _flushChatUi);
     _attachments = AgentAttachmentCoordinator(
       provider: widget.provider,
       workspaceId: widget.workspace.workspaceId,
@@ -360,15 +367,16 @@ class _AgentScreenState extends State<AgentScreen> with WidgetsBindingObserver {
               event.message == 'shell 匹配通知已送达，正在继续…')) {
         _running = true;
       }
-      _applyLiveEvent(event);
       if (event is AgentUiStatus && event.message == '已完成') {
+        _applyLiveEvent(event);
         _running = false;
         _status = null;
         _discardThinkingPlaceholder();
+        _conversationTitle = service.conversationTitle;
+        _presentLiveUi(immediate: true);
+        return;
       }
-      _conversationTitle = service.conversationTitle;
-      setState(() {});
-      _scrollToEnd();
+      _presentLiveEvent(event, conversationTitle: service.conversationTitle);
     });
   }
 
@@ -893,6 +901,7 @@ class _AgentScreenState extends State<AgentScreen> with WidgetsBindingObserver {
     await for (final event in stream) {
       if (!mounted) return;
       if (event is AgentUiConversationForked) {
+        _chatUi.cancel();
         await _refreshConversationList();
         _hydrateFromService();
         _conversationTitle = service.conversationTitle;
@@ -900,11 +909,9 @@ class _AgentScreenState extends State<AgentScreen> with WidgetsBindingObserver {
         _scrollToEnd();
         continue;
       }
-      _applyLiveEvent(event);
-      _conversationTitle = service.conversationTitle;
-      setState(() {});
-      _scrollToEnd();
+      _presentLiveEvent(event, conversationTitle: service.conversationTitle);
     }
+    _chatUi.flushNow();
 
     if (!mounted) return;
     await _refreshProjects();
@@ -1065,11 +1072,47 @@ class _AgentScreenState extends State<AgentScreen> with WidgetsBindingObserver {
     _service?.cancel();
   }
 
-  void _scrollToEnd() {
+  void _presentLiveEvent(AgentUiEvent event, {String? conversationTitle}) {
+    _applyLiveEvent(event);
+    if (conversationTitle != null) {
+      _conversationTitle = conversationTitle;
+    }
+    _presentLiveUi(immediate: !coalesceAgentChatUiFlush(event));
+  }
+
+  void _presentLiveUi({required bool immediate}) {
+    if (immediate) {
+      _chatUiScrollJump = false;
+      _chatUi.flushNow();
+      return;
+    }
+    _chatUiScrollJump = true;
+    _chatUi.schedule();
+  }
+
+  void _flushChatUi() {
+    if (!mounted) return;
+    setState(() {});
+    _scrollToEnd(jump: _chatUiScrollJump);
+  }
+
+  void _scrollToEnd({bool jump = false}) {
+    if (_scrollScheduled) {
+      _scrollUseJump = _scrollUseJump || jump;
+      return;
+    }
+    _scrollScheduled = true;
+    _scrollUseJump = jump;
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!_scrollCtrl.hasClients) return;
+      _scrollScheduled = false;
+      if (!mounted || !_scrollCtrl.hasClients) return;
+      final target = _scrollCtrl.position.maxScrollExtent;
+      if (_scrollUseJump) {
+        _scrollCtrl.jumpTo(target);
+        return;
+      }
       _scrollCtrl.animateTo(
-        _scrollCtrl.position.maxScrollExtent,
+        target,
         duration: const Duration(milliseconds: 200),
         curve: Curves.easeOut,
       );
@@ -1087,6 +1130,7 @@ class _AgentScreenState extends State<AgentScreen> with WidgetsBindingObserver {
     _siteGateway.onBackendUnreachable = null;
     _siteController.dispose();
     unawaited(_siteGateway.stop());
+    _chatUi.dispose();
     _askUserHost?.pending.removeListener(_onAskUserChanged);
     _askUserHost = null;
     unawaited(_backgroundUiSub?.cancel());

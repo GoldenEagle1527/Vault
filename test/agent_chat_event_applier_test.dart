@@ -20,6 +20,11 @@ void main() {
     expect(applier.items.single.kind, AgentChatKind.assistant);
     expect(applier.items.single.text, '你好！');
     expect(applier.items.single.thinkingPlaceholder, isFalse);
+    expect(applier.items.single.streaming, isTrue);
+
+    applier.applyLive(const AgentUiAssistantFinal('你好！'));
+    expect(applier.items.single.streaming, isFalse);
+    expect(applier.items.single.text, '你好！');
   });
 
   test('live thought deltas stay on the thinking item when tools start', () {

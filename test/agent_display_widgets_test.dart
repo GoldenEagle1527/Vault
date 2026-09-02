@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:vault/agent/agent_chat_model.dart';
 import 'package:vault/agent/agent_chat_transcript.dart';
@@ -50,6 +51,75 @@ void main() {
     await tester.tap(find.text('Ran echo ok'));
     await tester.pump();
     expect(find.textContaining('ok'), findsWidgets);
+  });
+
+  test('streaming assistant body uses plain text until finalized', () {
+    final streaming = AgentChatItem(
+      kind: AgentChatKind.assistant,
+      text: '**hello**',
+      streaming: true,
+    );
+    expect(agentChatItemRendersPlainText(streaming), isTrue);
+    streaming.streaming = false;
+    expect(agentChatItemRendersPlainText(streaming), isFalse);
+  });
+
+  testWidgets('completed markdown is reused across parent rebuilds', (
+    tester,
+  ) async {
+    const color = Color(0xFF111111);
+    var data = 'hello **x**';
+    late void Function(VoidCallback) rebuild;
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: StatefulBuilder(
+            builder: (context, setState) {
+              rebuild = setState;
+              return AgentChatMessageText(data: data, color: color);
+            },
+          ),
+        ),
+      ),
+    );
+    final first = tester.widget<MarkdownBody>(find.byType(MarkdownBody));
+    rebuild(() {});
+    await tester.pump();
+    expect(
+      identical(first, tester.widget<MarkdownBody>(find.byType(MarkdownBody))),
+      isTrue,
+    );
+
+    rebuild(() => data = 'hello **y**');
+    await tester.pump();
+    expect(
+      identical(first, tester.widget<MarkdownBody>(find.byType(MarkdownBody))),
+      isFalse,
+    );
+  });
+
+  testWidgets('streaming bubble skips markdown parse', (tester) async {
+    final item = AgentChatItem(
+      kind: AgentChatKind.assistant,
+      text: '**hello**',
+      streaming: true,
+    );
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(body: AgentChatBubble(item: item)),
+      ),
+    );
+    expect(find.byType(MarkdownBody), findsNothing);
+    expect(find.text('**hello**'), findsOneWidget);
+
+    item.streaming = false;
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(body: AgentChatBubble(item: item)),
+      ),
+    );
+    expect(find.byType(MarkdownBody), findsOneWidget);
+    expect(find.byType(RepaintBoundary), findsWidgets);
   });
 
   test(

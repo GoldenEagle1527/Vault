@@ -18,6 +18,11 @@ enum AgentScreenEventKind {
   status,
 }
 
+/// Streaming token deltas coalesce into one list rebuild per frame.
+bool coalesceAgentChatUiFlush(AgentUiEvent event) {
+  return event is AgentUiAssistantDelta;
+}
+
 AgentScreenEventKind classifyAgentScreenEvent(AgentUiEvent event) {
   return switch (event) {
     AgentUiUserMessage() => AgentScreenEventKind.user,

@@ -172,12 +172,21 @@ class AgentChatEventApplier {
           if (items.last.thinkingPlaceholder) {
             items.last
               ..thinkingPlaceholder = false
+              ..streaming = true
               ..text = text;
           } else {
-            items.last.text += text;
+            items.last
+              ..streaming = true
+              ..text += text;
           }
         } else {
-          items.add(AgentChatItem(kind: AgentChatKind.assistant, text: text));
+          items.add(
+            AgentChatItem(
+              kind: AgentChatKind.assistant,
+              text: text,
+              streaming: true,
+            ),
+          );
         }
       case AgentUiAssistantFinal(
         :final text,
@@ -209,6 +218,7 @@ class AgentChatEventApplier {
           final item = items.last;
           item
             ..thinkingPlaceholder = false
+            ..streaming = false
             ..text = text;
           _mergeUsageInto(
             item,
@@ -363,6 +373,7 @@ class AgentChatEventApplier {
 
   void _finalizeThinkingItem(AgentChatItem item) {
     item.thinkingPlaceholder = false;
+    item.streaming = false;
     if (item.text == 'Agent 正在思考…') item.text = '';
   }
 

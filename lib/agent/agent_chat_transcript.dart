@@ -22,6 +22,11 @@ bool agentChatItemHasAssistantBody(AgentChatItem item) {
   return item.text.trim().isNotEmpty;
 }
 
+/// Streaming assistant bodies skip markdown until [AgentUiAssistantFinal].
+bool agentChatItemRendersPlainText(AgentChatItem item) {
+  return item.kind == AgentChatKind.assistant && item.streaming;
+}
+
 String agentThinkingLabel(AgentChatItem item) {
   if (item.thinkingPlaceholder) return '思考中';
   final seconds = item.duration?.inSeconds ?? 0;

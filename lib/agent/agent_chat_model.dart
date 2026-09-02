@@ -13,6 +13,7 @@ class AgentChatItem {
     this.toolJobId,
     this.toolBackgrounded = false,
     this.thinkingPlaceholder = false,
+    this.streaming = false,
     this.thinkingText,
     this.promptTokens,
     this.completionTokens,
@@ -64,6 +65,7 @@ class AgentChatItem {
   String? toolJobId;
   bool toolBackgrounded;
   bool thinkingPlaceholder;
+  bool streaming;
   String? thinkingText;
   int? promptTokens;
   int? completionTokens;
