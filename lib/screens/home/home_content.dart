@@ -90,6 +90,7 @@ class HomeContent extends StatelessWidget {
                               ?.copyWith(
                                 color: scheme.onPrimaryContainer,
                                 fontWeight: FontWeight.w600,
+                                fontVariations: const [FontVariation.weight(600)],
                               ),
                         ),
                         const SizedBox(height: 8),
@@ -195,6 +196,7 @@ class WorkspaceRow extends StatelessWidget {
                     overflow: TextOverflow.ellipsis,
                     style: Theme.of(context).textTheme.titleMedium?.copyWith(
                       fontWeight: FontWeight.w600,
+                      fontVariations: const [FontVariation.weight(600)],
                     ),
                   ),
                   Text(

@@ -130,7 +130,10 @@ class _AskUserPanelState extends State<AskUserPanel> {
                   '请选一下',
                   style: Theme.of(
                     context,
-                  ).textTheme.titleSmall?.copyWith(fontWeight: FontWeight.w600),
+                  ).textTheme.titleSmall?.copyWith(
+                    fontWeight: FontWeight.w600,
+                    fontVariations: const [FontVariation.weight(600)],
+                  ),
                 ),
               ),
               Text(
@@ -242,7 +245,10 @@ class _QuestionPage extends StatelessWidget {
           question.prompt,
           style: Theme.of(
             context,
-          ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w600),
+          ).textTheme.titleMedium?.copyWith(
+            fontWeight: FontWeight.w600,
+            fontVariations: const [FontVariation.weight(600)],
+          ),
         ),
         if (question.allowMultiple)
           Padding(

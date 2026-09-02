@@ -136,6 +136,7 @@ class _QaBlock extends StatelessWidget {
           style: Theme.of(context).textTheme.bodyMedium?.copyWith(
             color: scheme.onSurface,
             fontWeight: FontWeight.w700,
+            fontVariations: const [FontVariation.weight(700)],
             height: 1.45,
           ),
         ),

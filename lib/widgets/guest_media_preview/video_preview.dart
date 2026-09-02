@@ -313,6 +313,7 @@ class _GuestVideoPreviewState extends State<GuestVideoPreview> {
                         style: const TextStyle(
                           color: Colors.white,
                           fontWeight: FontWeight.w600,
+                          fontVariations: [FontVariation.weight(600)],
                           fontSize: 15,
                         ),
                       ),

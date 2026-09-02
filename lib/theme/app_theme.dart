@@ -15,10 +15,73 @@ enum VaultAccent {
 }
 
 abstract final class AppTheme {
+  /// Bundled Noto Sans SC (variable `wght`). File default instance is Thin (100).
+  static const fontFamily = 'NotoSansSC';
+
+  /// UI default is Regular — file default is Thin.
+  static const defaultWeight = FontWeight.w400;
+
+  static const fontFamilyFallback = <String>[
+    'Segoe UI',
+    'Microsoft YaHei',
+    'PingFang SC',
+    'Noto Color Emoji',
+  ];
+
+  static List<FontVariation> weightAxis([FontWeight? weight]) => [
+    FontVariation.weight((weight ?? defaultWeight).value.toDouble()),
+  ];
+
   static ThemeData light(VaultAccent accent) =>
       _build(accent, Brightness.light);
 
   static ThemeData dark(VaultAccent accent) => _build(accent, Brightness.dark);
+
+  static TextStyle _uiStyle({
+    Color? color,
+    double? fontSize,
+    FontWeight? fontWeight,
+  }) {
+    final weight = fontWeight ?? defaultWeight;
+    return TextStyle(
+      fontFamily: fontFamily,
+      fontFamilyFallback: fontFamilyFallback,
+      color: color,
+      fontSize: fontSize,
+      fontWeight: weight,
+      fontVariations: weightAxis(weight),
+    );
+  }
+
+  static TextTheme _applyFont(TextTheme theme) {
+    TextStyle pin(TextStyle? style) {
+      final weight = style?.fontWeight ?? defaultWeight;
+      return (style ?? const TextStyle()).copyWith(
+        fontFamily: fontFamily,
+        fontFamilyFallback: fontFamilyFallback,
+        fontWeight: weight,
+        fontVariations: weightAxis(weight),
+      );
+    }
+
+    return TextTheme(
+      displayLarge: pin(theme.displayLarge),
+      displayMedium: pin(theme.displayMedium),
+      displaySmall: pin(theme.displaySmall),
+      headlineLarge: pin(theme.headlineLarge),
+      headlineMedium: pin(theme.headlineMedium),
+      headlineSmall: pin(theme.headlineSmall),
+      titleLarge: pin(theme.titleLarge),
+      titleMedium: pin(theme.titleMedium),
+      titleSmall: pin(theme.titleSmall),
+      bodyLarge: pin(theme.bodyLarge),
+      bodyMedium: pin(theme.bodyMedium),
+      bodySmall: pin(theme.bodySmall),
+      labelLarge: pin(theme.labelLarge),
+      labelMedium: pin(theme.labelMedium),
+      labelSmall: pin(theme.labelSmall),
+    );
+  }
 
   static ThemeData _build(VaultAccent accent, Brightness brightness) {
     final scheme = ColorScheme.fromSeed(
@@ -34,9 +97,11 @@ abstract final class AppTheme {
           ? const Color(0xFF0F1113)
           : const Color(0xFFFFFFFF),
     );
-    return ThemeData(
+    final theme = ThemeData(
       useMaterial3: true,
       colorScheme: tuned,
+      fontFamily: fontFamily,
+      fontFamilyFallback: fontFamilyFallback,
       scaffoldBackgroundColor: Colors.transparent,
       visualDensity: VisualDensity.standard,
       splashFactory: InkSparkle.splashFactory,
@@ -58,13 +123,13 @@ abstract final class AppTheme {
         backgroundColor: Colors.transparent,
         indicatorColor: tuned.secondaryContainer.withValues(alpha: 0.85),
         selectedIconTheme: IconThemeData(color: tuned.onSecondaryContainer),
-        selectedLabelTextStyle: TextStyle(
+        selectedLabelTextStyle: _uiStyle(
           color: tuned.onSecondaryContainer,
           fontWeight: FontWeight.w600,
           fontSize: 12,
         ),
         unselectedIconTheme: IconThemeData(color: tuned.onSurfaceVariant),
-        unselectedLabelTextStyle: TextStyle(
+        unselectedLabelTextStyle: _uiStyle(
           color: tuned.onSurfaceVariant,
           fontSize: 12,
         ),
@@ -77,7 +142,7 @@ abstract final class AppTheme {
         indicatorColor: tuned.secondaryContainer.withValues(alpha: 0.9),
         labelTextStyle: WidgetStateProperty.resolveWith((states) {
           final selected = states.contains(WidgetState.selected);
-          return TextStyle(
+          return _uiStyle(
             fontSize: 12,
             fontWeight: selected ? FontWeight.w600 : FontWeight.w500,
             color: selected
@@ -145,6 +210,10 @@ abstract final class AppTheme {
           TargetPlatform.macOS: CupertinoPageTransitionsBuilder(),
         },
       ),
+    );
+    return theme.copyWith(
+      textTheme: _applyFont(theme.textTheme),
+      primaryTextTheme: _applyFont(theme.primaryTextTheme),
     );
   }
 }

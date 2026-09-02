@@ -99,6 +99,7 @@ class _ModeOption extends StatelessWidget {
                       title,
                       style: Theme.of(context).textTheme.titleMedium?.copyWith(
                             fontWeight: FontWeight.w600,
+                            fontVariations: const [FontVariation.weight(600)],
                           ),
                     ),
                     const SizedBox(height: 2),

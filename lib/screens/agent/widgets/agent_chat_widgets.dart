@@ -156,7 +156,12 @@ class AgentEmptyChat extends StatelessWidget {
                               child: Text(
                                 prompt.$2,
                                 style: Theme.of(context).textTheme.titleMedium
-                                    ?.copyWith(fontWeight: FontWeight.w600),
+                                    ?.copyWith(
+                                      fontWeight: FontWeight.w600,
+                                      fontVariations: const [
+                                        FontVariation.weight(600),
+                                      ],
+                                    ),
                               ),
                             ),
                           ],
@@ -557,7 +562,11 @@ class _TokenLabel extends StatelessWidget {
         const SizedBox(width: 2),
         Text(
           label,
-          style: style?.copyWith(color: color, fontWeight: FontWeight.w600),
+          style: style?.copyWith(
+            color: color,
+            fontWeight: FontWeight.w600,
+            fontVariations: const [FontVariation.weight(600)],
+          ),
         ),
       ],
     );
@@ -587,6 +596,7 @@ class _ChatMarkdown extends StatelessWidget {
         strong: base.bodyMedium?.copyWith(
           color: color,
           fontWeight: FontWeight.w700,
+          fontVariations: const [FontVariation.weight(700)],
         ),
         em: base.bodyMedium?.copyWith(
           color: color,
@@ -704,6 +714,7 @@ class _AgentToolCallCardState extends State<AgentToolCallCard> {
                           ? scheme.tertiary
                           : scheme.onSurfaceVariant,
                       fontWeight: FontWeight.w500,
+                      fontVariations: const [FontVariation.weight(500)],
                     ),
                   ),
                 ),
@@ -836,6 +847,9 @@ class _AgentThinkingRowState extends State<AgentThinkingRow> {
                                   ?.copyWith(
                                     color: scheme.onSurface,
                                     fontWeight: FontWeight.w600,
+                                    fontVariations: const [
+                                      FontVariation.weight(600),
+                                    ],
                                   ),
                             ),
                             if (widget.label.contains(' '))
@@ -961,6 +975,7 @@ class _AgentToolCallGroupState extends State<AgentToolCallGroup> {
                         style: Theme.of(context).textTheme.bodyMedium?.copyWith(
                           color: scheme.onSurfaceVariant,
                           fontWeight: FontWeight.w500,
+                          fontVariations: const [FontVariation.weight(500)],
                         ),
                       ),
                     ),

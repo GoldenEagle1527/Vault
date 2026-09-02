@@ -58,7 +58,10 @@ class AgentNavigationPanel extends StatelessWidget {
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
                         style: Theme.of(context).textTheme.titleMedium
-                            ?.copyWith(fontWeight: FontWeight.w600),
+                            ?.copyWith(
+                          fontWeight: FontWeight.w600,
+                          fontVariations: const [FontVariation.weight(600)],
+                        ),
                       ),
                       Text(
                         '工作区导航',
@@ -198,6 +201,7 @@ class AgentProjectHeader extends StatelessWidget {
                         overflow: TextOverflow.ellipsis,
                         style: Theme.of(context).textTheme.titleSmall?.copyWith(
                           fontWeight: FontWeight.w600,
+                          fontVariations: const [FontVariation.weight(600)],
                         ),
                       ),
                     ),
@@ -317,6 +321,9 @@ class AgentConversationTile extends StatelessWidget {
                       fontWeight: item.selected
                           ? FontWeight.w600
                           : FontWeight.w400,
+                      fontVariations: [
+                        FontVariation.weight(item.selected ? 600 : 400),
+                      ],
                     ),
                   ),
                 ),

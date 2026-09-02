@@ -40,7 +40,10 @@ class AgentPageHeader extends StatelessWidget implements PreferredSizeWidget {
             overflow: TextOverflow.ellipsis,
             style: Theme.of(
               context,
-            ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w600),
+            ).textTheme.titleMedium?.copyWith(
+              fontWeight: FontWeight.w600,
+              fontVariations: const [FontVariation.weight(600)],
+            ),
           ),
           Text(
             hasProject
