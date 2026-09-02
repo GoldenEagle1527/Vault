@@ -39,7 +39,6 @@ class _AskUserDraft {
 }
 
 class _AskUserPanelState extends State<AskUserPanel> {
-  late final PageController _pageCtrl;
   late final List<_AskUserDraft> _drafts;
   late final List<TextEditingController> _customCtrls;
   var _page = 0;
@@ -49,7 +48,6 @@ class _AskUserPanelState extends State<AskUserPanel> {
   @override
   void initState() {
     super.initState();
-    _pageCtrl = PageController();
     _drafts = [for (final _ in _questions) _AskUserDraft()];
     _customCtrls = [for (final _ in _questions) TextEditingController()];
     final initials = widget.initialAnswers;
@@ -71,7 +69,6 @@ class _AskUserPanelState extends State<AskUserPanel> {
 
   @override
   void dispose() {
-    _pageCtrl.dispose();
     for (final c in _customCtrls) {
       c.dispose();
     }
@@ -81,12 +78,9 @@ class _AskUserPanelState extends State<AskUserPanel> {
   bool get _allAnswered => _drafts.every((d) => d.hasAnswer);
 
   void _goTo(int index) {
-    final clamped = index.clamp(0, _questions.length - 1);
-    _pageCtrl.animateToPage(
-      clamped,
-      duration: const Duration(milliseconds: 220),
-      curve: Curves.easeOut,
-    );
+    setState(() {
+      _page = index.clamp(0, _questions.length - 1);
+    });
   }
 
   void _toggleSingle(_AskUserDraft draft, String id) {
@@ -120,22 +114,25 @@ class _AskUserPanelState extends State<AskUserPanel> {
     final scheme = Theme.of(context).colorScheme;
     final last = _page >= _questions.length - 1;
     return GlassPanel(
-      borderRadius: 24,
-      tone: GlassTone.strong,
-      padding: const EdgeInsets.fromLTRB(16, 14, 16, 12),
+      borderRadius: 16,
+      tone: GlassTone.regular,
+      padding: const EdgeInsets.fromLTRB(14, 12, 14, 12),
       child: Column(
         mainAxisSize: MainAxisSize.min,
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
           Row(
             children: [
-              Text(
-                '请选一下',
-                style: Theme.of(
-                  context,
-                ).textTheme.titleSmall?.copyWith(fontWeight: FontWeight.w600),
+              Icon(Icons.quiz_outlined, size: 18, color: scheme.primary),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  '请选一下',
+                  style: Theme.of(
+                    context,
+                  ).textTheme.titleSmall?.copyWith(fontWeight: FontWeight.w600),
+                ),
               ),
-              const Spacer(),
               Text(
                 '${_page + 1} / ${_questions.length}',
                 style: Theme.of(context).textTheme.labelMedium?.copyWith(
@@ -145,36 +142,25 @@ class _AskUserPanelState extends State<AskUserPanel> {
             ],
           ),
           const SizedBox(height: 8),
-          SizedBox(
-            height: (MediaQuery.sizeOf(context).height * 0.32).clamp(
-              180.0,
-              280.0,
+          _QuestionPage(
+            question: _questions[_page],
+            draft: _drafts[_page],
+            customCtrl: _customCtrls[_page],
+            onSelect: (id) {
+              final q = _questions[_page];
+              if (q.allowMultiple) {
+                _toggleMulti(_drafts[_page], id);
+              } else {
+                _toggleSingle(_drafts[_page], id);
+              }
+            },
+            onToggleWriteIn: () => _toggleWriteIn(
+              _drafts[_page],
+              single: !_questions[_page].allowMultiple,
             ),
-            child: PageView.builder(
-              controller: _pageCtrl,
-              itemCount: _questions.length,
-              onPageChanged: (i) => setState(() => _page = i),
-              itemBuilder: (context, i) => _QuestionPage(
-                question: _questions[i],
-                draft: _drafts[i],
-                customCtrl: _customCtrls[i],
-                onSelect: (id) {
-                  final q = _questions[i];
-                  if (q.allowMultiple) {
-                    _toggleMulti(_drafts[i], id);
-                  } else {
-                    _toggleSingle(_drafts[i], id);
-                  }
-                },
-                onToggleWriteIn: () => _toggleWriteIn(
-                  _drafts[i],
-                  single: !_questions[i].allowMultiple,
-                ),
-                onCustomChanged: (text) {
-                  setState(() => _drafts[i].customText = text);
-                },
-              ),
-            ),
+            onCustomChanged: (text) {
+              setState(() => _drafts[_page].customText = text);
+            },
           ),
           if (_questions.length > 1) ...[
             const SizedBox(height: 4),
@@ -248,8 +234,9 @@ class _QuestionPage extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
-    return ListView(
-      padding: const EdgeInsets.only(right: 4),
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         Text(
           question.prompt,
