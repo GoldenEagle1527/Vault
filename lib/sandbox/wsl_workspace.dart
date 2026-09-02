@@ -4,6 +4,7 @@ import 'dart:typed_data';
 
 import 'package:flutter_pty/flutter_pty.dart';
 import 'package:path/path.dart' as p;
+import 'package:vault/sandbox/guest_fs_list.dart';
 import 'package:vault/sandbox/persistent_shell.dart';
 import 'package:vault/sandbox/sandbox_models.dart';
 import 'package:vault/sandbox/wsl_process_config.dart';
@@ -161,6 +162,33 @@ class WslWorkspace implements SandboxWorkspace {
     } catch (_) {
       return null;
     }
+  }
+
+  @override
+  Future<List<GuestFsEntry>> listGuestDirectory(
+    String guestAbsolutePath,
+  ) async {
+    final guest = assertGuestPathUnderHome(guestAbsolutePath);
+    try {
+      return await listGuestDirectoryOnHost(
+        hostPath: _wslUncPath(guest),
+        guestDir: guest,
+      );
+    } catch (_) {
+      // Fall through to guest ls.
+    }
+    final result = await run(
+      'if [ -d ${shellSingleQuote(guest)} ]; then '
+      'ls -1Ap -- ${shellSingleQuote(guest)}; '
+      'else exit 2; fi',
+    );
+    if (result.exitCode == 2) {
+      throw StateError('目录不存在：$guest');
+    }
+    if (!result.success) {
+      throw StateError('无法列出沙箱目录 $guest：${result.stderr}'.trim());
+    }
+    return parseLsMinusOneAp(result.stdout, guest);
   }
 
   String _wslUncPath(String guestAbsolutePath) {

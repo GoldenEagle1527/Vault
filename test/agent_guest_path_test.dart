@@ -52,6 +52,10 @@ void main() {
     expect(joined, contains('Python 3.12'));
     expect(joined, contains('python3'));
     expect(joined, contains('read（读文本或图片'));
+    expect(joined, contains('write（新建或整文件覆盖文本）'));
+    expect(joined, contains('edit（精确替换'));
+    expect(joined, contains('grep（按正则搜文本）'));
+    expect(joined, contains('glob（按文件名模式列路径）'));
     expect(joined, isNot(contains('scaffold_site')));
     expect(joined, isNot(contains('manage_site')));
     expect(joined, isNot(contains('inspect_site')));
@@ -127,7 +131,16 @@ void main() {
         hasProjectStore: true,
         hasGateway: true,
       ),
-      ['ask_user', 'read', 'present_file', 'shell'],
+      [
+        'ask_user',
+        'read',
+        'write',
+        'edit',
+        'grep',
+        'glob',
+        'present_file',
+        'shell',
+      ],
     );
     expect(
       vaultMountedToolNames(
@@ -138,6 +151,10 @@ void main() {
       [
         'ask_user',
         'read',
+        'write',
+        'edit',
+        'grep',
+        'glob',
         'present_file',
         'shell',
         'scaffold_site',

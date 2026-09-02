@@ -59,6 +59,11 @@ class _FakeWorkspace implements SandboxWorkspace {
   }
 
   @override
+  Future<List<GuestFsEntry>> listGuestDirectory(
+    String guestAbsolutePath,
+  ) async => const [];
+
+  @override
   Future<void> dispose() async {}
 }
 
@@ -177,38 +182,41 @@ void main() {
     expect(changed, 0);
   });
 
-  test('start through controller surfaces swallowed supervisor errors', () async {
-    await registerSite();
-    final ws = _FakeWorkspace((cmd) async {
-      return const CommandResult(exitCode: 0, stdout: 'ok', stderr: '');
-    });
-    final supervisor = MemorySiteSupervisorClient()
-      ..throwOnStart = StateError('无法启动站点看守');
-    final controller = AgentSiteController(
-      workspace: ws,
-      projects: () => const [],
-      isMounted: () => true,
-      onChanged: () {},
-      publicUrl: (entry) => entry.url,
-      beforeStart: (_) async {},
-      syncKeepAlive: (_) async {},
-      onMessage: (_) {},
-      supervisor: supervisor,
-    );
-    addTearDown(controller.dispose);
-    final tool = createManageSiteTool(
-      workspace: ws,
-      launcher: controller.launcher,
-      projectStore: projects,
-      workspaceId: 'ws1',
-      projectPath: projectPath,
-      siteController: controller,
-    );
-    final json = await runTool(tool, {'action': 'start'});
-    expect(json['ok'], isFalse);
-    expect(json['error'], contains('无法启动站点看守'));
-    expect(json['startedProcess'], isFalse);
-  });
+  test(
+    'start through controller surfaces swallowed supervisor errors',
+    () async {
+      await registerSite();
+      final ws = _FakeWorkspace((cmd) async {
+        return const CommandResult(exitCode: 0, stdout: 'ok', stderr: '');
+      });
+      final supervisor = MemorySiteSupervisorClient()
+        ..throwOnStart = StateError('无法启动站点看守');
+      final controller = AgentSiteController(
+        workspace: ws,
+        projects: () => const [],
+        isMounted: () => true,
+        onChanged: () {},
+        publicUrl: (entry) => entry.url,
+        beforeStart: (_) async {},
+        syncKeepAlive: (_) async {},
+        onMessage: (_) {},
+        supervisor: supervisor,
+      );
+      addTearDown(controller.dispose);
+      final tool = createManageSiteTool(
+        workspace: ws,
+        launcher: controller.launcher,
+        projectStore: projects,
+        workspaceId: 'ws1',
+        projectPath: projectPath,
+        siteController: controller,
+      );
+      final json = await runTool(tool, {'action': 'start'});
+      expect(json['ok'], isFalse);
+      expect(json['error'], contains('无法启动站点看守'));
+      expect(json['startedProcess'], isFalse);
+    },
+  );
 
   test('logs returns tail of the site log', () async {
     await registerSite();

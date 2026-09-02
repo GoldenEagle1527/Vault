@@ -72,8 +72,8 @@ String _sharedSandboxFacts({
             '- 项目登记与会话历史在主机侧数据库中，不在本 Linux 内；不要查找或修改 *.db';
 
   final toolsLine = mode == WorkspaceMode.dev
-      ? '- 工具：ask_user（向用户展示选择题，等他们点选或自己填写）、read（读文本或图片；对话里已出现的图会自动带上）、shell（沙箱命令；不要用它起网站）、present_file（把成品文件挂到对话里供预览/下载）、scaffold_site（空项目写骨架、分配端口并登记）、manage_site（start / stop / status / logs / list / adopt / update / unregister）、inspect_site（当前项目站点在用户浏览器里的错误；服务没启动会直接告诉你，不要让用户开 F12）'
-      : '- 工具：ask_user（向用户展示选择题，等他们点选或自己填写）、read（读文本或图片；对话里已出现的图会自动带上）、shell（沙箱命令；不要用它起网站）、present_file（把成品文件挂到对话里供预览/下载）。当前是对话工作区，没有建站工具。';
+      ? '- 工具：ask_user（向用户展示选择题，等他们点选或自己填写）、read（读文本或图片；对话里已出现的图会自动带上）、write（新建或整文件覆盖文本）、edit（精确替换已有文件片段；默认只改一处）、grep（按正则搜文本）、glob（按文件名模式列路径）、shell（沙箱命令：安装、运行、git、非文本处理；不要用它改文本文件或起网站）、present_file（把成品文件挂到对话里供预览/下载）、scaffold_site（空项目写骨架、分配端口并登记）、manage_site（start / stop / status / logs / list / adopt / update / unregister）、inspect_site（当前项目站点在用户浏览器里的错误；服务没启动会直接告诉你，不要让用户开 F12）'
+      : '- 工具：ask_user（向用户展示选择题，等他们点选或自己填写）、read（读文本或图片；对话里已出现的图会自动带上）、write（新建或整文件覆盖文本）、edit（精确替换已有文件片段；默认只改一处）、grep（按正则搜文本）、glob（按文件名模式列路径）、shell（沙箱命令：安装、运行、git、非文本处理；不要用它改文本文件或起网站）、present_file（把成品文件挂到对话里供预览/下载）。当前是对话工作区，没有建站工具。';
 
   final rule6 = mode == WorkspaceMode.dev
       ? '6. 空项目：`scaffold_site` → 改业务文件 → `manage_site` start。已有代码未登记：`manage_site` adopt → start。改名/换端口：`manage_site` update。不要这个站了：`manage_site` unregister（文件还在）。坏了：`inspect_site`，不够再 logs。用户打开 `public_url`。不要用 shell / nohup 起站，不要自造端口或启动命令。'
@@ -111,6 +111,7 @@ $rule6
 8. 长效观察用 `notify_regex`（如 `Listening on|ERROR|ready`），不要自己空转反复调 shell 轮询；收到 `<shell-notify>` 后再行动，进程默认仍在跑。
 9. 用户要拿走或查看的成品（格式转换、表格、导出文档、生成图等）写完后必须 `present_file`；中间 scratch / log 不要挂。
 10. 不要泄露 API Key。
+11. 改文本文件必须用 write（新建/整文件覆盖）或 edit（局部替换，先 read 确认原文）。用 grep 搜内容、glob 找文件名。不要用 shell 的 echo/tee/sed/python 写代码。
 '''
       .trim();
 }
@@ -127,7 +128,7 @@ $projectLine
 
 需要用户做选择或澄清时，调用 `ask_user`，不要在聊天正文里提问或列出选项让用户打字回复。等工具返回 answers 再继续。
 
-不要把每件事都做成网站。用户没说要网页时，就按普通助手来：读文件、改表格、教东西、跑命令即可。改完或生成用户要拿走的文件后，调用 `present_file` 挂到对话里。
+不要把每件事都做成网站。用户没说要网页时，就按普通助手来：读文件、用 write/edit 改表格或文本、教东西、跑命令即可。改完或生成用户要拿走的文件后，调用 `present_file` 挂到对话里。
 
 用户要做网页或网站时：说明当前是对话工作区，没有建站工具；请到首页新建「开发」工作区。不要用 shell 起站。
 '''
@@ -159,12 +160,12 @@ $currentProject
 做完后告诉用户：做好了，去侧栏点启动或刷新就能用。以后直接说「我想加个……」就行。
 
 内部执行（不要向用户展示这些步骤或术语）：
-- 空项目：`scaffold_site` → 改业务文件 → `manage_site` start。骨架写在**当前项目目录**。Flask：`app.py` / `config.py` / `templates/` / `static/` / `modules/` / `data/`；静态：`index.html`。
+- 空项目：`scaffold_site` → 用 write/edit 改业务文件 → `manage_site` start。骨架写在**当前项目目录**。Flask：`app.py` / `config.py` / `templates/` / `static/` / `modules/` / `data/`；静态：`index.html`。
 - 已有代码未登记：`manage_site` adopt → start。
 - 改名/换端口：`manage_site` update（不要自造 start_command）。
 - 不要这个站了：`manage_site` unregister（项目文件还在）。
 - 坏了：`inspect_site` → 不够再 `manage_site` logs。
-- 加功能：在骨架上改业务文件；模板继承 `base.html`；不要弄坏已有代码和数据。
+- 加功能：在骨架上用 write/edit 改业务文件；模板继承 `base.html`；不要弄坏已有代码和数据。先 grep/glob 再改。
 - 改之前先 `git commit`（或 stash）；用 git 还原。不要建 `backups/`。
 - 用户打开 `public_url`。不要用 shell 起站。
 - 不要臆造主机侧数据库写入；站点登记在主机，不在本 Linux 的 *.db 里。

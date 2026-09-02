@@ -4,6 +4,7 @@ import 'dart:typed_data';
 
 import 'package:flutter_pty/flutter_pty.dart';
 import 'package:path/path.dart' as p;
+import 'package:vault/sandbox/guest_fs_list.dart';
 import 'package:vault/sandbox/offload_host.dart';
 import 'package:vault/sandbox/persistent_shell.dart';
 import 'package:vault/sandbox/sandbox_models.dart';
@@ -137,6 +138,15 @@ class ProotWorkspace implements SandboxWorkspace {
     return Uint8List.fromList(await file.readAsBytes());
   }
 
+  @override
+  Future<List<GuestFsEntry>> listGuestDirectory(
+    String guestAbsolutePath,
+  ) async {
+    final guest = assertGuestPathUnderHome(guestAbsolutePath);
+    final hostPath = p.join(rootfsPath, guest.substring(1));
+    return listGuestDirectoryOnHost(hostPath: hostPath, guestDir: guest);
+  }
+
   /// Dedicated guest command (does not occupy PersistentShell).
   Future<GuestStreamSession> spawnDetached(String cmd) async {
     final proc = await Process.start(
@@ -160,8 +170,7 @@ class ProotWorkspace implements SandboxWorkspace {
         'PROOT_NO_SECCOMP': '1',
         'PROOT_TMP_DIR': p.join(rootfsPath, 'tmp'),
         'TMPDIR': p.join(rootfsPath, 'tmp'),
-        'PATH':
-            '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin',
+        'PATH': '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin',
         'HOME': kGuestHome,
       },
       workingDirectory: rootfsPath,

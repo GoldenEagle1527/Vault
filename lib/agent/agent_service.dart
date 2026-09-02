@@ -22,11 +22,15 @@ import 'package:vault/agent/sub_agent_display.dart';
 import 'package:vault/agent/conversation_state.dart';
 import 'package:vault/agent/project_checkpoint.dart';
 import 'package:vault/agent/tools/ask_user_tool.dart';
+import 'package:vault/agent/tools/edit_tool.dart';
+import 'package:vault/agent/tools/glob_tool.dart';
+import 'package:vault/agent/tools/grep_tool.dart';
 import 'package:vault/agent/tools/inspect_site_tool.dart';
 import 'package:vault/agent/tools/manage_site_tool.dart';
 import 'package:vault/agent/tools/present_file_tool.dart';
 import 'package:vault/agent/tools/read_tool.dart';
 import 'package:vault/agent/tools/scaffold_site_tool.dart';
+import 'package:vault/agent/tools/write_tool.dart';
 import 'package:vault/agent/tools/shell_job.dart';
 import 'package:vault/agent/tools/shell_tool.dart';
 import 'package:vault/agent/vault_host_device.dart';
@@ -48,6 +52,10 @@ List<String> vaultMountedToolNames({
   return [
     kAskUserToolName,
     kReadToolName,
+    kWriteToolName,
+    kEditToolName,
+    kGrepToolName,
+    kGlobToolName,
     kPresentFileToolName,
     'shell',
     if (mode == WorkspaceMode.dev && hasProjectStore) ...[
@@ -297,6 +305,10 @@ class AgentService {
     final tools = <Tool>[
       createAskUserTool(askUser, onPresent: _snapshotAskUserPresented),
       createReadTool(_workspace, projectPath: projectPath),
+      createWriteTool(_workspace, projectPath: projectPath),
+      createEditTool(_workspace, projectPath: projectPath),
+      createGrepTool(_workspace, projectPath: projectPath),
+      createGlobTool(_workspace, projectPath: projectPath),
       createPresentFileTool(_workspace),
       createShellTool(
         _workspace,
@@ -319,7 +331,8 @@ class AgentService {
         ),
         createManageSiteTool(
           workspace: _workspace,
-          launcher: _siteController?.launcher ?? ProjectSiteLauncher(_workspace),
+          launcher:
+              _siteController?.launcher ?? ProjectSiteLauncher(_workspace),
           projectStore: projectStore,
           workspaceId: workspaceId,
           projectPath: projectPath,

@@ -884,19 +884,30 @@ String _toolCommand(String name, String? arguments) {
   try {
     final decoded = jsonDecode(raw);
     if (decoded is Map) {
-      final command = decoded['command'];
-      if (command is String && command.trim().isNotEmpty) {
-        return command.trim();
-      }
+      final preview = _toolArgPreview(decoded);
+      if (preview != null) return preview;
     }
   } catch (_) {
-    final partial = _partialJsonStringField(raw, 'command');
-    if (partial != null && partial.isNotEmpty) return partial;
+    for (final key in const ['path', 'command', 'glob_pattern', 'pattern']) {
+      final partial = _partialJsonStringField(raw, key);
+      if (partial != null && partial.isNotEmpty) return partial;
+    }
     if (name.isNotEmpty && (raw.startsWith('{') || raw.startsWith('['))) {
       return name;
     }
   }
   return raw;
+}
+
+/// Prefer path so write/edit bubbles do not dump the whole file contents.
+String? _toolArgPreview(Map<dynamic, dynamic> decoded) {
+  for (final key in const ['path', 'command', 'glob_pattern', 'pattern']) {
+    final value = decoded[key];
+    if (value is String && value.trim().isNotEmpty) {
+      return value.trim();
+    }
+  }
+  return null;
 }
 
 String? _partialJsonStringField(String raw, String key) {

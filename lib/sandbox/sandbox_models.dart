@@ -214,6 +214,18 @@ abstract class SandboxWorkspace {
   /// Read an absolute guest path. Returns null if missing / unreadable.
   Future<Uint8List?> readGuestFile(String guestAbsolutePath) async => null;
 
+  /// List a guest directory under [kGuestHome] (non-recursive).
+  ///
+  /// Default is empty so test fakes need not override. Production workspaces
+  /// (WSL / proot) walk the host-mapped rootfs. Throws [ArgumentError] on
+  /// path escape and [StateError] when the path is missing or not a directory.
+  Future<List<GuestFsEntry>> listGuestDirectory(
+    String guestAbsolutePath,
+  ) async {
+    assertGuestPathUnderHome(guestAbsolutePath);
+    return const [];
+  }
+
   Future<void> dispose();
 }
 

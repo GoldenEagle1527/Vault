@@ -57,6 +57,11 @@ class _FakeWorkspace implements SandboxWorkspace {
   }
 
   @override
+  Future<List<GuestFsEntry>> listGuestDirectory(
+    String guestAbsolutePath,
+  ) async => const [];
+
+  @override
   Future<void> dispose() async {}
 }
 
@@ -255,32 +260,31 @@ void main() {
     expect(result.message, '已终止');
   });
 
-  test('isProjectSiteUp requires supervisor listening, not pid alone', () async {
-    final ws = _FakeWorkspace((cmd) async {
-      if (cmd.contains('vault_site_own_pid')) {
-        return const CommandResult(exitCode: 0, stdout: '1', stderr: '');
-      }
-      if (cmd.contains('/proc/net/tcp')) {
-        return const CommandResult(exitCode: 0, stdout: '0', stderr: '');
-      }
-      return const CommandResult(exitCode: 0, stdout: '', stderr: '');
-    });
-    final supervisor = MemorySiteSupervisorClient();
-    final down = await ProjectSiteLauncher(
-      ws,
-      supervisor: supervisor,
-    ).isProjectSiteUp(projectPath: 'p1', entry: _site);
-    expect(down, isFalse);
+  test(
+    'isProjectSiteUp requires supervisor listening, not pid alone',
+    () async {
+      final ws = _FakeWorkspace((cmd) async {
+        if (cmd.contains('vault_site_own_pid')) {
+          return const CommandResult(exitCode: 0, stdout: '1', stderr: '');
+        }
+        if (cmd.contains('/proc/net/tcp')) {
+          return const CommandResult(exitCode: 0, stdout: '0', stderr: '');
+        }
+        return const CommandResult(exitCode: 0, stdout: '', stderr: '');
+      });
+      final supervisor = MemorySiteSupervisorClient();
+      final down = await ProjectSiteLauncher(
+        ws,
+        supervisor: supervisor,
+      ).isProjectSiteUp(projectPath: 'p1', entry: _site);
+      expect(down, isFalse);
 
-    await supervisor.startSite(
-      id: 'p1',
-      cwd: '/x',
-      cmd: 'python3 app.py',
-    );
-    final up = await ProjectSiteLauncher(
-      ws,
-      supervisor: supervisor,
-    ).isProjectSiteUp(projectPath: 'p1', entry: _site);
-    expect(up, isTrue);
-  });
+      await supervisor.startSite(id: 'p1', cwd: '/x', cmd: 'python3 app.py');
+      final up = await ProjectSiteLauncher(
+        ws,
+        supervisor: supervisor,
+      ).isProjectSiteUp(projectPath: 'p1', entry: _site);
+      expect(up, isTrue);
+    },
+  );
 }

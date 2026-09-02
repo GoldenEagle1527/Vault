@@ -60,6 +60,11 @@ class _FakeWorkspace implements SandboxWorkspace {
   }
 
   @override
+  Future<List<GuestFsEntry>> listGuestDirectory(
+    String guestAbsolutePath,
+  ) async => const [];
+
+  @override
   Future<void> dispose() async {}
 }
 
@@ -127,24 +132,29 @@ void main() {
     expect(project.site!.url, 'http://127.0.0.1:8765/');
     expect(project.site!.startCommand, 'python3 app.py');
     expect(
-      workspace.commands.any((c) => c.contains('py3-flask') || c.contains('import flask')),
+      workspace.commands.any(
+        (c) => c.contains('py3-flask') || c.contains('import flask'),
+      ),
       isTrue,
     );
   });
 
-  test('flask scaffold fails before writing when flask cannot be installed', () async {
-    workspace = _FakeWorkspace(
-      runHandler: (_) async =>
-          const CommandResult(exitCode: 1, stdout: '', stderr: 'apk failed'),
-    );
-    final json = await runTool(tool(), {'kind': 'flask'});
-    expect(json['ok'], isFalse);
-    expect(json['error'], contains('无法安装 Flask'));
-    expect(
-      workspace.files.containsKey('/root/projects/$projectPath/app.py'),
-      isFalse,
-    );
-  });
+  test(
+    'flask scaffold fails before writing when flask cannot be installed',
+    () async {
+      workspace = _FakeWorkspace(
+        runHandler: (_) async =>
+            const CommandResult(exitCode: 1, stdout: '', stderr: 'apk failed'),
+      );
+      final json = await runTool(tool(), {'kind': 'flask'});
+      expect(json['ok'], isFalse);
+      expect(json['error'], contains('无法安装 Flask'));
+      expect(
+        workspace.files.containsKey('/root/projects/$projectPath/app.py'),
+        isFalse,
+      );
+    },
+  );
 
   test('static scaffold writes index.html and http.server command', () async {
     final json = await runTool(tool(), {'kind': 'static', 'name': '文档'});
@@ -156,10 +166,7 @@ void main() {
       workspace.files.containsKey('/root/projects/$projectPath/index.html'),
       isTrue,
     );
-    expect(
-      workspace.commands.any((c) => c.contains('py3-flask')),
-      isFalse,
-    );
+    expect(workspace.commands.any((c) => c.contains('py3-flask')), isFalse);
   });
 
   test('rejects when app.py already exists', () async {

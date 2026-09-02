@@ -45,6 +45,11 @@ class _FakeWorkspace implements SandboxWorkspace {
   Future<Uint8List?> readGuestFile(String guestAbsolutePath) async => null;
 
   @override
+  Future<List<GuestFsEntry>> listGuestDirectory(
+    String guestAbsolutePath,
+  ) async => const [];
+
+  @override
   Future<void> dispose() async {}
 }
 

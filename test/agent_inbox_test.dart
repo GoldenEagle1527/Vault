@@ -49,6 +49,11 @@ class _MemoryWorkspace implements SandboxWorkspace {
   }
 
   @override
+  Future<List<GuestFsEntry>> listGuestDirectory(
+    String guestAbsolutePath,
+  ) async => const [];
+
+  @override
   Future<void> dispose() async {}
 }
 

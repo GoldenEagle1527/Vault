@@ -66,14 +66,16 @@ class _NotifyWorkspace implements SandboxWorkspace {
       if (exit != null) {
         return CommandResult(
           exitCode: 0,
-          stdout: '$kShellJobDoneMarker\n$exit\n$kShellJobOutMarker\n$out'
+          stdout:
+              '$kShellJobDoneMarker\n$exit\n$kShellJobOutMarker\n$out'
               '$kShellJobEndMarker\n',
           stderr: '',
         );
       }
       return CommandResult(
         exitCode: 0,
-        stdout: '$kShellJobRunningMarker\n7\n$kShellJobOutMarker\n$out'
+        stdout:
+            '$kShellJobRunningMarker\n7\n$kShellJobOutMarker\n$out'
             '$kShellJobEndMarker\n',
         stderr: '',
       );
@@ -89,6 +91,11 @@ class _NotifyWorkspace implements SandboxWorkspace {
 
   @override
   Future<Uint8List?> readGuestFile(String guestAbsolutePath) async => null;
+
+  @override
+  Future<List<GuestFsEntry>> listGuestDirectory(
+    String guestAbsolutePath,
+  ) async => const [];
 
   @override
   Future<void> dispose() async {}

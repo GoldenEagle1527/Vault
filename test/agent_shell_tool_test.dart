@@ -42,8 +42,7 @@ class _FakeWorkspace implements SandboxWorkspace {
     String cmd, {
     Map<String, String>? environment,
     Duration? timeout,
-  }) =>
-      _handler(cmd, environment: environment, timeout: timeout);
+  }) => _handler(cmd, environment: environment, timeout: timeout);
 
   @override
   Future<void> writeGuestFile(
@@ -53,6 +52,11 @@ class _FakeWorkspace implements SandboxWorkspace {
 
   @override
   Future<Uint8List?> readGuestFile(String guestAbsolutePath) async => null;
+
+  @override
+  Future<List<GuestFsEntry>> listGuestDirectory(
+    String guestAbsolutePath,
+  ) async => const [];
 
   @override
   Future<void> dispose() async {}
@@ -99,36 +103,42 @@ class _DetachedJobWorkspace implements SandboxWorkspace {
     try {
       await Future<void>.delayed(const Duration(milliseconds: 5));
       if (cmd.contains('printf') && cmd.contains('_pid') && cmd.contains('&')) {
-        final match = RegExp(r'vault-shell-jobs/([A-Za-z0-9]+)').firstMatch(cmd);
+        final match = RegExp(
+          r'vault-shell-jobs/([A-Za-z0-9]+)',
+        ).firstMatch(cmd);
         final jobId = match?.group(1) ?? 'unknown';
         _started[jobId] = DateTime.now();
         return CommandResult(exitCode: 0, stdout: '99\n', stderr: '');
       }
       if (cmd.contains(kShellJobDoneMarker) ||
           cmd.contains(kShellJobRunningMarker)) {
-        final match = RegExp(r'vault-shell-jobs/([A-Za-z0-9]+)').firstMatch(cmd);
+        final match = RegExp(
+          r'vault-shell-jobs/([A-Za-z0-9]+)',
+        ).firstMatch(cmd);
         final jobId = match?.group(1) ?? '';
         final started = _started[jobId];
         if (_killed.contains(jobId)) {
           return CommandResult(
             exitCode: 0,
-            stdout: '$kShellJobDoneMarker\n130\n$kShellJobOutMarker\n'
+            stdout:
+                '$kShellJobDoneMarker\n130\n$kShellJobOutMarker\n'
                 'cancelled\n$kShellJobEndMarker\n',
             stderr: '',
           );
         }
-        if (started != null &&
-            DateTime.now().difference(started) >= delay) {
+        if (started != null && DateTime.now().difference(started) >= delay) {
           return CommandResult(
             exitCode: 0,
-            stdout: '$kShellJobDoneMarker\n0\n$kShellJobOutMarker\nok-$jobId\n'
+            stdout:
+                '$kShellJobDoneMarker\n0\n$kShellJobOutMarker\nok-$jobId\n'
                 '$kShellJobEndMarker\n',
             stderr: '',
           );
         }
         return CommandResult(
           exitCode: 0,
-          stdout: '$kShellJobRunningMarker\n99\n$kShellJobOutMarker\n'
+          stdout:
+              '$kShellJobRunningMarker\n99\n$kShellJobOutMarker\n'
               'still-running\n$kShellJobEndMarker\n',
           stderr: '',
         );
@@ -157,15 +167,17 @@ class _DetachedJobWorkspace implements SandboxWorkspace {
   Future<Uint8List?> readGuestFile(String guestAbsolutePath) async => null;
 
   @override
+  Future<List<GuestFsEntry>> listGuestDirectory(
+    String guestAbsolutePath,
+  ) async => const [];
+
+  @override
   Future<void> dispose() async {}
 }
 
 void main() {
   test('default shell timeout exceeds agent background threshold', () {
-    expect(
-      kDefaultShellToolTimeout,
-      greaterThan(kAgentToolBackgroundAfter),
-    );
+    expect(kDefaultShellToolTimeout, greaterThan(kAgentToolBackgroundAfter));
     expect(kAgentToolBackgroundAfter, const Duration(minutes: 1));
   });
 
@@ -205,25 +217,28 @@ void main() {
     );
   });
 
-  test('shell tool returns exitCode/stdout/stderr json via detached job', () async {
-    final workspace = _DetachedJobWorkspace(
-      delay: const Duration(milliseconds: 50),
-    );
-    final tool = createShellTool(
-      workspace,
-      pollInterval: const Duration(milliseconds: 20),
-    );
-    final raw = await tool.executable!(<String, dynamic>{'command': 'echo hi'});
-    final map = jsonDecode(raw as String) as Map<String, dynamic>;
-    expect(map['ok'], isTrue);
-    expect(map['exitCode'], 0);
-    expect(map['stdout'], contains('ok-'));
-  });
+  test(
+    'shell tool returns exitCode/stdout/stderr json via detached job',
+    () async {
+      final workspace = _DetachedJobWorkspace(
+        delay: const Duration(milliseconds: 50),
+      );
+      final tool = createShellTool(
+        workspace,
+        pollInterval: const Duration(milliseconds: 20),
+      );
+      final raw = await tool.executable!(<String, dynamic>{
+        'command': 'echo hi',
+      });
+      final map = jsonDecode(raw as String) as Map<String, dynamic>;
+      expect(map['ok'], isTrue);
+      expect(map['exitCode'], 0);
+      expect(map['stdout'], contains('ok-'));
+    },
+  );
 
   test('shell tool maps timeout to Chinese error payload', () async {
-    final workspace = _DetachedJobWorkspace(
-      delay: const Duration(seconds: 5),
-    );
+    final workspace = _DetachedJobWorkspace(delay: const Duration(seconds: 5));
     final tool = createShellTool(
       workspace,
       timeout: const Duration(milliseconds: 80),
@@ -234,10 +249,7 @@ void main() {
     expect(map['ok'], isFalse);
     expect(map['error'], '命令超时');
     expect(map['exitCode'], 124);
-    expect(
-      workspace.commands.any((c) => c.contains('kill')),
-      isTrue,
-    );
+    expect(workspace.commands.any((c) => c.contains('kill')), isTrue);
   });
 
   test('empty command rejected', () async {
@@ -260,7 +272,8 @@ void main() {
       }
       return CommandResult(
         exitCode: 0,
-        stdout: '$kShellJobDoneMarker\n0\n$kShellJobOutMarker\n\n'
+        stdout:
+            '$kShellJobDoneMarker\n0\n$kShellJobOutMarker\n\n'
             '$kShellJobEndMarker\n',
         stderr: '',
       );
@@ -271,35 +284,40 @@ void main() {
     expect(startCmd, contains('sess-abc'));
   });
 
-  test('two shell tools can progress in parallel without serial wait', () async {
-    final workspace = _DetachedJobWorkspace(
-      delay: const Duration(milliseconds: 120),
-    );
-    final tool = createShellTool(
-      workspace,
-      pollInterval: const Duration(milliseconds: 25),
-    );
+  test(
+    'two shell tools can progress in parallel without serial wait',
+    () async {
+      final workspace = _DetachedJobWorkspace(
+        delay: const Duration(milliseconds: 120),
+      );
+      final tool = createShellTool(
+        workspace,
+        pollInterval: const Duration(milliseconds: 25),
+      );
 
-    final sw = Stopwatch()..start();
-    final futures = <Future<Object?>>[
-      tool.executable!(<String, dynamic>{'command': 'job-a'}) as Future<Object?>,
-      tool.executable!(<String, dynamic>{'command': 'job-b'}) as Future<Object?>,
-    ];
-    final results = await Future.wait(futures);
-    sw.stop();
+      final sw = Stopwatch()..start();
+      final futures = <Future<Object?>>[
+        tool.executable!(<String, dynamic>{'command': 'job-a'})
+            as Future<Object?>,
+        tool.executable!(<String, dynamic>{'command': 'job-b'})
+            as Future<Object?>,
+      ];
+      final results = await Future.wait(futures);
+      sw.stop();
 
-    for (final raw in results) {
-      final map = jsonDecode(raw as String) as Map<String, dynamic>;
-      expect(map['ok'], isTrue);
-    }
-    // Parallel: both finish near one delay, not 2x delay.
-    expect(sw.elapsedMilliseconds, lessThan(350));
-    // Start scripts should both have been issued (two job ids).
-    final starts = workspace.commands
-        .where((c) => c.contains('_pid') && c.contains('&'))
-        .length;
-    expect(starts, 2);
-  });
+      for (final raw in results) {
+        final map = jsonDecode(raw as String) as Map<String, dynamic>;
+        expect(map['ok'], isTrue);
+      }
+      // Parallel: both finish near one delay, not 2x delay.
+      expect(sw.elapsedMilliseconds, lessThan(350));
+      // Start scripts should both have been issued (two job ids).
+      final starts = workspace.commands
+          .where((c) => c.contains('_pid') && c.contains('&'))
+          .length;
+      expect(starts, 2);
+    },
+  );
 
   test('shell tool rejects starting a site', () async {
     final workspace = _FakeWorkspace((_, {environment, timeout}) async {
@@ -319,9 +337,7 @@ void main() {
   });
 
   test('cancel kills a detached job and returns 130', () async {
-    final workspace = _DetachedJobWorkspace(
-      delay: const Duration(seconds: 5),
-    );
+    final workspace = _DetachedJobWorkspace(delay: const Duration(seconds: 5));
     final tracker = GuestShellJobTracker();
     final token = CancelToken();
     final running = runDetachedShellJob(
@@ -339,9 +355,6 @@ void main() {
     final result = await running;
     expect(result.exitCode, kShellJobCancelledExitCode);
     expect(tracker.liveIds, isEmpty);
-    expect(
-      workspace.commands.any((c) => c.contains('_kill_tree')),
-      isTrue,
-    );
+    expect(workspace.commands.any((c) => c.contains('_kill_tree')), isTrue);
   });
 }
